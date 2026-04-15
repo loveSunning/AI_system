@@ -1,0 +1,11 @@
+out/
+build/
+.vs/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+*.user
+*.suo
+*.VC.db
+compile_commands.json

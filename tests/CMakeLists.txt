@@ -1,0 +1,6 @@
+add_executable(ai_system_smoke_tests smoke_tests.cpp)
+target_link_libraries(ai_system_smoke_tests PRIVATE ai_system_core)
+target_compile_features(ai_system_smoke_tests PRIVATE cxx_std_20)
+ai_system_enable_warnings(ai_system_smoke_tests)
+
+add_test(NAME ai_system_smoke_tests COMMAND ai_system_smoke_tests)

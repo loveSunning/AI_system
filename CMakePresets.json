@@ -1,0 +1,125 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "AI_SYSTEM_BUILD_LABS": "ON",
+        "AI_SYSTEM_ENABLE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-base",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64"
+    },
+    {
+      "name": "windows-vs2022-cuda-release",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "AI_SYSTEM_ENABLE_CUDA": "ON",
+        "AI_SYSTEM_GPU_PROFILE": "native"
+      }
+    },
+    {
+      "name": "windows-vs2022-cpu-debug",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "AI_SYSTEM_ENABLE_CUDA": "OFF"
+      }
+    },
+    {
+      "name": "linux-base",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "generator": "Unix Makefiles"
+    },
+    {
+      "name": "linux-make-cuda-release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AI_SYSTEM_ENABLE_CUDA": "ON",
+        "AI_SYSTEM_GPU_PROFILE": "native"
+      }
+    },
+    {
+      "name": "linux-make-cpu-debug",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "AI_SYSTEM_ENABLE_CUDA": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-vs2022-cuda-release",
+      "configurePreset": "windows-vs2022-cuda-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-vs2022-cpu-debug",
+      "configurePreset": "windows-vs2022-cpu-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-make-cuda-release",
+      "configurePreset": "linux-make-cuda-release"
+    },
+    {
+      "name": "linux-make-cpu-debug",
+      "configurePreset": "linux-make-cpu-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-vs2022-cuda-release",
+      "configurePreset": "windows-vs2022-cuda-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2022-cpu-debug",
+      "configurePreset": "windows-vs2022-cpu-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-make-cuda-release",
+      "configurePreset": "linux-make-cuda-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-make-cpu-debug",
+      "configurePreset": "linux-make-cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

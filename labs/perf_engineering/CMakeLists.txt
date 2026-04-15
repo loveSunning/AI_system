@@ -1,0 +1,4 @@
+add_executable(perf_engineering_lab perf_engineering_lab.cpp)
+target_link_libraries(perf_engineering_lab PRIVATE ai_system_core)
+target_compile_features(perf_engineering_lab PRIVATE cxx_std_20)
+ai_system_enable_warnings(perf_engineering_lab)
