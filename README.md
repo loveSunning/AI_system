@@ -12,6 +12,7 @@
   - `vector add`
   - `reduction`
   - `naive GEMM`
+  - `cuBLAS SGEMM / HGEMM / Tensor Core GEMM` 对比
 - 一个 CLI 工具，用于查看学习阶段和当前 GPU。
 - 一个 smoke test，用于验证 CPU 与 CUDA 基础路径。
 - 对应表格主题的目录占位和模块说明。
@@ -74,7 +75,13 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 
 ### 使用 perf_engineering_lab
 
-用于对 `vector add`、`reduction`、`naive GEMM` 的 CPU / CUDA 路径做基准测试，并校验 GPU 结果是否和 CPU 基准一致。
+用于对 `vector add`、`reduction`、`GEMM` 的多条实现路径做基准测试，并校验 GPU 结果是否和 CPU 基准一致。当前 GEMM 对比包含：
+
+- `cpu_naive`
+- `cuda_naive`
+- `cublas_sgemm`
+- `cublas_hgemm`
+- `cublas_tensor_core`
 
 ```bash
 ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab
@@ -90,6 +97,12 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `--gemm-k K`：设置 GEMM 的共享维度。
 - `--warmup I`：设置每个 case 的预热轮数。
 - `--iters I`：设置每个 case 的正式测量轮数。
+
+默认尺寸：
+
+- `vector-size=1048576`
+- `reduction-size=1048576`
+- `gemm-m=n=k=1024`
 
 示例：
 

@@ -86,7 +86,7 @@ target_include_directories(
 target_compile_features(ai_system_core PUBLIC cxx_std_20)
 
 if(AI_SYSTEM_ENABLE_CUDA)
-    target_link_libraries(ai_system_core PUBLIC CUDA::cudart)
+    target_link_libraries(ai_system_core PUBLIC CUDA::cudart CUDA::cublas)
     ai_system_configure_cuda_target(ai_system_core)
 endif()
 

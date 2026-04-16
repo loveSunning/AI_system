@@ -7,6 +7,13 @@
 - `vector add`
 - `reduction`
 - `naive GEMM`
+- `cuBLAS SGEMM / HGEMM / Tensor Core GEMM` 对比
+
+当前默认尺寸是：
+
+- `vector-size=1048576`
+- `reduction-size=1048576`
+- `gemm-m=n=k=1024`
 
 建议按周推进：
 

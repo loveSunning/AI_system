@@ -54,6 +54,36 @@ bool naive_gemm_cuda(
     std::string& error
 );
 
+bool cublas_sgemm_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error
+);
+
+bool cublas_hgemm_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error
+);
+
+bool cublas_tensor_core_gemm_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error
+);
+
 bool allclose(
     const std::vector<float>& lhs,
     const std::vector<float>& rhs,

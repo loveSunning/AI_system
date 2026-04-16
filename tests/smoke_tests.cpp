@@ -1,3 +1,4 @@
+#include "ai_system/config.hpp"
 #include "ai_system/kernels/basic_kernels.hpp"
 #include "ai_system/plan/learning_plan.hpp"
 #include "ai_system/runtime/gpu_info.hpp"
@@ -46,6 +47,59 @@ int main() {
             "naive_gemm_cpu should produce a correct 2x2 matrix multiply."
         );
     }
+
+#if AI_SYSTEM_HAS_CUDA
+    {
+        const std::vector<float> lhs {1.0f, 2.0f, 3.0f, 4.0f};
+        const std::vector<float> rhs {5.0f, 6.0f, 7.0f, 8.0f};
+        const std::vector<float> reference {19.0f, 22.0f, 43.0f, 50.0f};
+        std::vector<float> out;
+        std::string error;
+
+        success &= expect(
+            ai_system::kernels::cublas_sgemm_cuda(2, 2, 2, lhs, rhs, out, error),
+            "cublas_sgemm_cuda should run successfully."
+        );
+        success &= expect(
+            ai_system::kernels::allclose(reference, out, 1.0e-4f, 1.0e-4f),
+            "cublas_sgemm_cuda should match the CPU reference."
+        );
+    }
+
+    {
+        const std::vector<float> lhs {1.0f, 2.0f, 3.0f, 4.0f};
+        const std::vector<float> rhs {5.0f, 6.0f, 7.0f, 8.0f};
+        const std::vector<float> reference {19.0f, 22.0f, 43.0f, 50.0f};
+        std::vector<float> out;
+        std::string error;
+
+        success &= expect(
+            ai_system::kernels::cublas_hgemm_cuda(2, 2, 2, lhs, rhs, out, error),
+            "cublas_hgemm_cuda should run successfully."
+        );
+        success &= expect(
+            ai_system::kernels::allclose(reference, out, 1.0e-2f, 1.0e-2f),
+            "cublas_hgemm_cuda should stay close to the CPU reference."
+        );
+    }
+
+    {
+        const std::vector<float> lhs {1.0f, 2.0f, 3.0f, 4.0f};
+        const std::vector<float> rhs {5.0f, 6.0f, 7.0f, 8.0f};
+        const std::vector<float> reference {19.0f, 22.0f, 43.0f, 50.0f};
+        std::vector<float> out;
+        std::string error;
+
+        success &= expect(
+            ai_system::kernels::cublas_tensor_core_gemm_cuda(2, 2, 2, lhs, rhs, out, error),
+            "cublas_tensor_core_gemm_cuda should run successfully."
+        );
+        success &= expect(
+            ai_system::kernels::allclose(reference, out, 1.0e-2f, 1.0e-2f),
+            "cublas_tensor_core_gemm_cuda should stay close to the CPU reference."
+        );
+    }
+#endif
 
     {
         const auto& phases = ai_system::plan::learning_plan();

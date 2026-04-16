@@ -129,6 +129,45 @@ bool naive_gemm_cuda(
     return false;
 }
 
+bool cublas_sgemm_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool cublas_hgemm_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool cublas_tensor_core_gemm_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
 #endif
 
 }  // namespace ai_system::kernels
