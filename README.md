@@ -52,6 +52,94 @@ ctest --preset windows-vs2022-cuda-release
 ctest --preset linux-make-cuda-release
 ```
 
+## 运行生成产物
+
+Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cuda-release/`。
+
+### 使用 ai_system_cli
+
+用于查看当前构建配置、学习阶段和本机 GPU 信息。
+
+```bash
+./out/build/linux-make-cuda-release/ai_system_cli --summary
+./out/build/linux-make-cuda-release/ai_system_cli --list-plan
+./out/build/linux-make-cuda-release/ai_system_cli --print-gpus
+./out/build/linux-make-cuda-release/ai_system_cli --help
+```
+
+- `--summary`：输出工程版本、是否启用 CUDA、当前 GPU profile、编译时目标架构。
+- `--list-plan`：输出 12 个月学习计划及对应目录。
+- `--print-gpus`：输出当前进程可见的 CUDA GPU 和显存信息。
+- `--help`：查看命令行帮助。
+
+### 使用 perf_engineering_lab
+
+用于对 `vector add`、`reduction`、`naive GEMM` 的 CPU / CUDA 路径做基准测试，并校验 GPU 结果是否和 CPU 基准一致。
+
+```bash
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --help
+```
+
+支持的参数：
+
+- `--vector-size N`：设置 vector add 的元素个数。
+- `--reduction-size N`：设置 reduction 的输入长度。
+- `--gemm-m M`：设置 GEMM 输出矩阵行数。
+- `--gemm-n N`：设置 GEMM 输出矩阵列数。
+- `--gemm-k K`：设置 GEMM 的共享维度。
+- `--warmup I`：设置每个 case 的预热轮数。
+- `--iters I`：设置每个 case 的正式测量轮数。
+
+示例：
+
+```bash
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
+  --vector-size 1048576 \
+  --reduction-size 1048576 \
+  --gemm-m 128 --gemm-n 128 --gemm-k 128 \
+  --warmup 2 --iters 6
+
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
+  --vector-size 16777216 \
+  --reduction-size 16777216 \
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --warmup 3 --iters 10
+```
+
+### 如何测试不同尺寸输入的性能
+
+推荐按下面的方式做尺寸扫描：
+
+1. 先固定 `warmup` 和 `iters`，避免不同轮数影响结果对比。
+2. 对 vector add 和 reduction 按 `2^k` 逐步放大输入长度，例如 `2^20`、`2^22`、`2^24`。
+3. 对 GEMM 分别测试 `128x128x128`、`256x256x256`、`512x512x512`、`1024x1024x1024`。
+4. 每次记录输出里的 `avg/min/max`，优先比较 `avg`，同时观察 `min/max` 是否抖动过大。
+
+例如：
+
+```bash
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 2 --iters 8
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 4194304 --reduction-size 4194304 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 2 --iters 8
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 16777216 --reduction-size 16777216 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 2 --iters 8
+```
+
+### 如何判断结果是否准确
+
+`perf_engineering_lab` 会先运行 CPU 版本作为基准，再运行 CUDA 版本，并输出正确性检查结果：
+
+- `[PASS] vector_add correctness`：表示 vector add 的 CPU / GPU 输出一致。
+- `[PASS] reduction correctness`：表示 reduction 的 CPU / GPU 结果在容差内一致。
+- `[PASS] naive_gemm correctness`：表示 GEMM 的 CPU / GPU 输出在容差内一致。
+
+如果出现 `[FAIL]`，或者程序返回非零退出码，说明当前实现或环境有问题，不应继续使用该次 benchmark 数据做性能结论。
+
+建议的判断标准：
+
+1. 只有在三个 correctness 都是 `[PASS]` 时，才比较性能数据。
+2. 如果某个 case 的 CUDA path 直接失败，先检查驱动、CUDA toolkit、目标架构和显存容量。
+3. 对大尺寸 GEMM，如果显存不足，优先缩小 `m/n/k`，不要直接把失败结果当成性能退化。
+
 ## GPU 架构选择
 
 项目通过 `AI_SYSTEM_GPU_PROFILE` 统一管理 CUDA 架构：

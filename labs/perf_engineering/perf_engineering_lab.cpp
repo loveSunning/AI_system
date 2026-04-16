@@ -4,13 +4,121 @@
 #include "ai_system/runtime/gpu_info.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
+
+struct LabOptions {
+    std::size_t vector_size {1U << 20U};
+    std::size_t reduction_size {1U << 20U};
+    std::size_t gemm_m {128};
+    std::size_t gemm_n {128};
+    std::size_t gemm_k {128};
+    std::size_t warmup_iterations {2};
+    std::size_t measured_iterations {6};
+};
+
+void print_usage() {
+    std::cout << "AI_system perf engineering lab\n"
+              << "  --vector-size N      Vector add input length\n"
+              << "  --reduction-size N   Reduction input length\n"
+              << "  --gemm-m M           GEMM rows of lhs/out\n"
+              << "  --gemm-n N           GEMM columns of rhs/out\n"
+              << "  --gemm-k K           GEMM shared dimension\n"
+              << "  --warmup I           Warmup iterations for each benchmark\n"
+              << "  --iters I            Measured iterations for each benchmark\n"
+              << "  --help               Show this help message\n";
+}
+
+bool parse_size_argument(const char* raw_value, const char* option_name, std::size_t& output) {
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(raw_value, &end, 10);
+    if(raw_value == nullptr || *raw_value == '\0' || end == nullptr || *end != '\0' || parsed == 0ULL) {
+        std::cerr << "Invalid value for " << option_name << ": " << (raw_value == nullptr ? "<null>" : raw_value) << "\n";
+        return false;
+    }
+
+    output = static_cast<std::size_t>(parsed);
+    return true;
+}
+
+bool parse_options(int argc, char** argv, LabOptions& options) {
+    for(int index = 1; index < argc; ++index) {
+        const std::string_view argument(argv[index]);
+        auto require_value = [&](std::size_t& destination) -> bool {
+            if(index + 1 >= argc) {
+                std::cerr << "Missing value for " << argument << "\n";
+                return false;
+            }
+            ++index;
+            return parse_size_argument(argv[index], argv[index - 1], destination);
+        };
+
+        if(argument == "--help") {
+            print_usage();
+            return false;
+        }
+        if(argument == "--vector-size") {
+            if(!require_value(options.vector_size)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--reduction-size") {
+            if(!require_value(options.reduction_size)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-m") {
+            if(!require_value(options.gemm_m)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-n") {
+            if(!require_value(options.gemm_n)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-k") {
+            if(!require_value(options.gemm_k)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--warmup") {
+            if(!require_value(options.warmup_iterations)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--iters") {
+            if(!require_value(options.measured_iterations)) {
+                return false;
+            }
+            continue;
+        }
+
+        std::cerr << "Unknown argument: " << argument << "\n";
+        print_usage();
+        return false;
+    }
+
+    return true;
+}
+
+ai_system::benchmark::BenchmarkConfig make_benchmark_config(const LabOptions& options) {
+    return ai_system::benchmark::BenchmarkConfig {options.warmup_iterations, options.measured_iterations};
+}
 
 void print_benchmark(const ai_system::benchmark::BenchmarkResult& result) {
     std::cout << std::left << std::setw(24) << result.name
@@ -27,8 +135,8 @@ void print_case_status(const std::string& label, bool success, const std::string
     std::cout << "\n";
 }
 
-int run_vector_add_case() {
-    constexpr std::size_t element_count = 1U << 20U;
+int run_vector_add_case(const LabOptions& options) {
+    const std::size_t element_count = options.vector_size;
 
     std::vector<float> lhs(element_count);
     std::vector<float> rhs(element_count);
@@ -39,7 +147,8 @@ int run_vector_add_case() {
     ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 13u);
     ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
 
-    const ai_system::benchmark::BenchmarkConfig config {2, 6};
+    const auto config = make_benchmark_config(options);
+    std::cout << "vector_add size=" << element_count << "\n";
     print_benchmark(ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
         ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
     }));
@@ -61,8 +170,8 @@ int run_vector_add_case() {
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_reduction_case() {
-    constexpr std::size_t element_count = 1U << 20U;
+int run_reduction_case(const LabOptions& options) {
+    const std::size_t element_count = options.reduction_size;
 
     std::vector<float> values(element_count);
     ai_system::kernels::fill_random(values, -0.5f, 0.5f, 29u);
@@ -70,7 +179,8 @@ int run_reduction_case() {
     float cpu_sum = 0.0f;
     float cuda_sum = 0.0f;
 
-    const ai_system::benchmark::BenchmarkConfig config {2, 6};
+    const auto config = make_benchmark_config(options);
+    std::cout << "reduction size=" << element_count << "\n";
     print_benchmark(ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
         cpu_sum = ai_system::kernels::reduction_sum_cpu(values);
     }));
@@ -96,10 +206,10 @@ int run_reduction_case() {
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_gemm_case() {
-    constexpr std::size_t m = 128;
-    constexpr std::size_t n = 128;
-    constexpr std::size_t k = 128;
+int run_gemm_case(const LabOptions& options) {
+    const std::size_t m = options.gemm_m;
+    const std::size_t n = options.gemm_n;
+    const std::size_t k = options.gemm_k;
 
     std::vector<float> lhs(m * k);
     std::vector<float> rhs(k * n);
@@ -110,7 +220,8 @@ int run_gemm_case() {
     ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 53u);
     ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
 
-    const ai_system::benchmark::BenchmarkConfig config {1, 4};
+    const auto config = make_benchmark_config(options);
+    std::cout << "naive_gemm shape=" << m << "x" << n << "x" << k << "\n";
     print_benchmark(ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
         ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
     }));
@@ -134,15 +245,22 @@ int run_gemm_case() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    LabOptions options;
+    if(!parse_options(argc, argv, options)) {
+        return argc > 1 && std::string_view(argv[1]) == "--help" ? 0 : 1;
+    }
+
     std::cout << "AI_system perf engineering lab\n";
     std::cout << "Configured architectures: " << AI_SYSTEM_CUDA_ARCHITECTURES << "\n";
+    std::cout << "Warmup iterations: " << options.warmup_iterations << "\n";
+    std::cout << "Measured iterations: " << options.measured_iterations << "\n";
     std::cout << ai_system::runtime::summarize_gpus(ai_system::runtime::query_gpus());
 
     int failures = 0;
-    failures += run_vector_add_case();
-    failures += run_reduction_case();
-    failures += run_gemm_case();
+    failures += run_vector_add_case(options);
+    failures += run_reduction_case(options);
+    failures += run_gemm_case(options);
 
     return failures == 0 ? 0 : 1;
 }
