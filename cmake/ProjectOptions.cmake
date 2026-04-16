@@ -14,10 +14,16 @@ function(ai_system_enable_warnings target_name)
 endfunction()
 
 function(ai_system_configure_cuda_target target_name)
+    if(CMAKE_VERSION VERSION_LESS 3.25)
+        set(cuda_standard 17)
+    else()
+        set(cuda_standard 20)
+    endif()
+
     set_target_properties(
         ${target_name}
         PROPERTIES
-            CUDA_STANDARD 20
+            CUDA_STANDARD ${cuda_standard}
             CUDA_STANDARD_REQUIRED ON
             CUDA_SEPARABLE_COMPILATION ON
             CUDA_RESOLVE_DEVICE_SYMBOLS ON
