@@ -61,6 +61,7 @@ add_library(ai_system_core)
 target_sources(
     ai_system_core
     PRIVATE
+        src/benchmark/benchmark_report.cpp
         src/benchmark/benchmark_runner.cpp
         src/kernels/basic_kernels.cpp
         src/plan/learning_plan.cpp

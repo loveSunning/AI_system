@@ -1,20 +1,16 @@
+#include "ai_system/benchmark/benchmark_report.hpp"
 #include "ai_system/benchmark/benchmark_runner.hpp"
 #include "ai_system/config.hpp"
 #include "ai_system/kernels/basic_kernels.hpp"
 #include "ai_system/runtime/gpu_info.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -27,33 +23,6 @@ struct LabOptions {
     std::size_t gemm_k {128};
     std::size_t warmup_iterations {2};
     std::size_t measured_iterations {6};
-};
-
-struct BenchmarkRow {
-    std::string op;
-    std::string impl;
-    std::string shape;
-    ai_system::benchmark::BenchmarkResult result;
-    std::optional<double> perf_value;
-    std::string perf_unit;
-};
-
-struct StatusRow {
-    std::string op;
-    std::string impl;
-    std::string check;
-    std::string status;
-    std::string detail;
-};
-
-struct TableColumn {
-    std::string header;
-    bool right_align {false};
-};
-
-struct LabReport {
-    std::vector<BenchmarkRow> benchmark_rows;
-    std::vector<StatusRow> status_rows;
 };
 
 void print_usage() {
@@ -151,21 +120,6 @@ ai_system::benchmark::BenchmarkConfig make_benchmark_config(const LabOptions& op
     return ai_system::benchmark::BenchmarkConfig {options.warmup_iterations, options.measured_iterations};
 }
 
-std::string format_decimal(double value, int precision = 3) {
-    std::ostringstream output;
-    output << std::fixed << std::setprecision(precision) << value;
-    return output.str();
-}
-
-std::string sanitize_cell(std::string value) {
-    for(char& ch : value) {
-        if(ch == '\n' || ch == '\r' || ch == '\t') {
-            ch = ' ';
-        }
-    }
-    return value.empty() ? "-" : value;
-}
-
 std::string format_count_shape(std::size_t count) {
     return "N=" + std::to_string(count);
 }
@@ -200,162 +154,7 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
     return flops / 1.0e9 / (average_ms / 1000.0);
 }
 
-void add_benchmark_row(
-    LabReport& report,
-    std::string op,
-    std::string impl,
-    std::string shape,
-    const ai_system::benchmark::BenchmarkResult& result,
-    std::optional<double> perf_value,
-    std::string perf_unit
-) {
-    report.benchmark_rows.push_back(BenchmarkRow {
-        std::move(op),
-        std::move(impl),
-        std::move(shape),
-        result,
-        perf_value,
-        std::move(perf_unit)
-    });
-}
-
-void add_status_row(
-    LabReport& report,
-    std::string op,
-    std::string impl,
-    std::string check,
-    std::string status,
-    std::string detail = {}
-) {
-    report.status_rows.push_back(StatusRow {
-        std::move(op),
-        std::move(impl),
-        std::move(check),
-        std::move(status),
-        std::move(detail)
-    });
-}
-
-void print_horizontal_rule(const std::vector<std::size_t>& widths) {
-    std::cout << '+';
-    for(const std::size_t width : widths) {
-        std::cout << std::string(width + 2, '-') << '+';
-    }
-    std::cout << "\n";
-}
-
-void print_table_row(
-    const std::vector<std::string>& row,
-    const std::vector<std::size_t>& widths,
-    const std::vector<TableColumn>& columns
-) {
-    std::cout << '|';
-    for(std::size_t index = 0; index < row.size(); ++index) {
-        const auto cell = sanitize_cell(row[index]);
-        std::cout << ' ';
-        if(columns[index].right_align) {
-            std::cout << std::right << std::setw(static_cast<int>(widths[index])) << cell;
-        } else {
-            std::cout << std::left << std::setw(static_cast<int>(widths[index])) << cell;
-        }
-        std::cout << ' ' << '|';
-    }
-    std::cout << "\n";
-}
-
-void print_table(const std::vector<TableColumn>& columns, const std::vector<std::vector<std::string>>& rows) {
-    std::vector<std::size_t> widths;
-    widths.reserve(columns.size());
-    for(const auto& column : columns) {
-        widths.push_back(column.header.size());
-    }
-
-    for(const auto& row : rows) {
-        for(std::size_t index = 0; index < row.size(); ++index) {
-            widths[index] = std::max(widths[index], sanitize_cell(row[index]).size());
-        }
-    }
-
-    std::vector<std::string> header_cells;
-    header_cells.reserve(columns.size());
-    for(const auto& column : columns) {
-        header_cells.push_back(column.header);
-    }
-
-    print_horizontal_rule(widths);
-    print_table_row(header_cells, widths, columns);
-    print_horizontal_rule(widths);
-    for(const auto& row : rows) {
-        print_table_row(row, widths, columns);
-    }
-    print_horizontal_rule(widths);
-}
-
-void print_benchmark_table(const LabReport& report) {
-    std::vector<std::vector<std::string>> rows;
-    rows.reserve(report.benchmark_rows.size());
-
-    for(const auto& row : report.benchmark_rows) {
-        rows.push_back({
-            row.op,
-            row.impl,
-            row.shape,
-            format_decimal(row.result.average_ms),
-            format_decimal(row.result.min_ms),
-            format_decimal(row.result.max_ms),
-            row.perf_value.has_value() ? format_decimal(*row.perf_value) : std::string("n/a"),
-            row.perf_unit.empty() ? std::string("-") : row.perf_unit,
-            std::to_string(row.result.warmup_iterations),
-            std::to_string(row.result.measured_iterations)
-        });
-    }
-
-    std::cout << "\nBenchmark Results\n";
-    print_table(
-        {
-            {"op"},
-            {"impl"},
-            {"shape"},
-            {"avg_ms", true},
-            {"min_ms", true},
-            {"max_ms", true},
-            {"perf", true},
-            {"unit"},
-            {"warmup", true},
-            {"iters", true}
-        },
-        rows
-    );
-}
-
-void print_status_table(const LabReport& report) {
-    std::vector<std::vector<std::string>> rows;
-    rows.reserve(report.status_rows.size());
-
-    for(const auto& row : report.status_rows) {
-        rows.push_back({
-            row.op,
-            row.impl,
-            row.check,
-            row.status,
-            row.detail
-        });
-    }
-
-    std::cout << "\nValidation\n";
-    print_table(
-        {
-            {"op"},
-            {"impl"},
-            {"check"},
-            {"status"},
-            {"detail"}
-        },
-        rows
-    );
-}
-
-int run_vector_add_case(const LabOptions& options, LabReport& report) {
+int run_vector_add_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
     const std::size_t element_count = options.vector_size;
     const std::string shape = format_count_shape(element_count);
 
@@ -372,7 +171,7 @@ int run_vector_add_case(const LabOptions& options, LabReport& report) {
     const auto cpu_result = ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
         ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
     });
-    add_benchmark_row(
+    ai_system::benchmark::add_benchmark_row(
         report,
         "vector_add",
         "cpu",
@@ -385,7 +184,7 @@ int run_vector_add_case(const LabOptions& options, LabReport& report) {
     std::string error;
     if(ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, error)) {
         const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out);
-        add_status_row(
+        ai_system::benchmark::add_validation_row(
             report,
             "vector_add",
             "cuda",
@@ -400,7 +199,7 @@ int run_vector_add_case(const LabOptions& options, LabReport& report) {
                 throw std::runtime_error(local_error);
             }
         });
-        add_benchmark_row(
+        ai_system::benchmark::add_benchmark_row(
             report,
             "vector_add",
             "cuda",
@@ -413,11 +212,18 @@ int run_vector_add_case(const LabOptions& options, LabReport& report) {
         return matches ? 0 : 1;
     }
 
-    add_status_row(report, "vector_add", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
+    ai_system::benchmark::add_validation_row(
+        report,
+        "vector_add",
+        "cuda",
+        "runtime",
+        AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+        error
+    );
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_reduction_case(const LabOptions& options, LabReport& report) {
+int run_reduction_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
     const std::size_t element_count = options.reduction_size;
     const std::string shape = format_count_shape(element_count);
 
@@ -431,7 +237,7 @@ int run_reduction_case(const LabOptions& options, LabReport& report) {
     const auto cpu_result = ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
         cpu_sum = ai_system::kernels::reduction_sum_cpu(values);
     });
-    add_benchmark_row(
+    ai_system::benchmark::add_benchmark_row(
         report,
         "reduction",
         "cpu",
@@ -444,13 +250,14 @@ int run_reduction_case(const LabOptions& options, LabReport& report) {
     std::string error;
     if(ai_system::kernels::reduction_sum_cuda(values, cuda_sum, error)) {
         const bool matches = std::fabs(cpu_sum - cuda_sum) < 1.0e-2f;
-        add_status_row(
+        ai_system::benchmark::add_validation_row(
             report,
             "reduction",
             "cuda",
             "correctness",
             matches ? "PASS" : "FAIL",
-            "cpu=" + format_decimal(cpu_sum, 6) + ", gpu=" + format_decimal(cuda_sum, 6)
+            "cpu=" + ai_system::benchmark::format_decimal(cpu_sum, 6) +
+                ", gpu=" + ai_system::benchmark::format_decimal(cuda_sum, 6)
         );
 
         const auto cuda_result = ai_system::benchmark::run_benchmark("reduction/cuda", config, [&]() {
@@ -459,7 +266,7 @@ int run_reduction_case(const LabOptions& options, LabReport& report) {
                 throw std::runtime_error(local_error);
             }
         });
-        add_benchmark_row(
+        ai_system::benchmark::add_benchmark_row(
             report,
             "reduction",
             "cuda",
@@ -472,11 +279,18 @@ int run_reduction_case(const LabOptions& options, LabReport& report) {
         return matches ? 0 : 1;
     }
 
-    add_status_row(report, "reduction", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
+    ai_system::benchmark::add_validation_row(
+        report,
+        "reduction",
+        "cuda",
+        "runtime",
+        AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+        error
+    );
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_gemm_case(const LabOptions& options, LabReport& report) {
+int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
     const std::size_t m = options.gemm_m;
     const std::size_t n = options.gemm_n;
     const std::size_t k = options.gemm_k;
@@ -495,7 +309,7 @@ int run_gemm_case(const LabOptions& options, LabReport& report) {
     const auto cpu_result = ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
         ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
     });
-    add_benchmark_row(
+    ai_system::benchmark::add_benchmark_row(
         report,
         "naive_gemm",
         "cpu",
@@ -508,7 +322,7 @@ int run_gemm_case(const LabOptions& options, LabReport& report) {
     std::string error;
     if(ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, error)) {
         const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out, 1.0e-3f, 1.0e-3f);
-        add_status_row(
+        ai_system::benchmark::add_validation_row(
             report,
             "naive_gemm",
             "cuda",
@@ -523,7 +337,7 @@ int run_gemm_case(const LabOptions& options, LabReport& report) {
                 throw std::runtime_error(local_error);
             }
         });
-        add_benchmark_row(
+        ai_system::benchmark::add_benchmark_row(
             report,
             "naive_gemm",
             "cuda",
@@ -536,7 +350,14 @@ int run_gemm_case(const LabOptions& options, LabReport& report) {
         return matches ? 0 : 1;
     }
 
-    add_status_row(report, "naive_gemm", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
+    ai_system::benchmark::add_validation_row(
+        report,
+        "naive_gemm",
+        "cuda",
+        "runtime",
+        AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+        error
+    );
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
@@ -554,14 +375,14 @@ int main(int argc, char** argv) {
     std::cout << "Measured iterations: " << options.measured_iterations << "\n";
     std::cout << ai_system::runtime::summarize_gpus(ai_system::runtime::query_gpus());
 
-    LabReport report;
+    ai_system::benchmark::BenchmarkReport report;
     int failures = 0;
     failures += run_vector_add_case(options, report);
     failures += run_reduction_case(options, report);
     failures += run_gemm_case(options, report);
 
-    print_benchmark_table(report);
-    print_status_table(report);
+    ai_system::benchmark::print_benchmark_table(report);
+    ai_system::benchmark::print_validation_table(report);
 
     return failures == 0 ? 0 : 1;
 }
