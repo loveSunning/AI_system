@@ -174,3 +174,5 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - 第 12 个月：`accelerators/tpu_mlir` + `capstone`
 
 完整路线见 [docs/learning-roadmap.md](docs/learning-roadmap.md)。
+
+性能分析与 Nsight 工具使用说明见 [docs/profiling/nsight-tools.md](docs/profiling/nsight-tools.md)。
