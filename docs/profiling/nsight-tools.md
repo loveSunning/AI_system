@@ -14,19 +14,19 @@
 ## 文档定位
 
 - Windows 部分：基于当前这台机器的实测结果整理
-- Linux 部分：保留跨平台项目所需的命令模板、推荐流程和平台差异说明
+- Linux 部分：基于当前 CUDA Linux 容器的实际验证结果整理，并保留跨平台仓库所需的工作流说明
 
 这里做一个明确区分：
 
 - “Windows 实测”表示我已经在当前机器上实际跑过命令
-- “Linux 工作流”表示这是面向 `linux-make-cuda-release` preset 的跨平台保留文档，不代表本次会话在 Linux 上重新验过
+- “Linux 工作流”表示这是面向 `linux-make-cuda-release` preset 的 Linux 实测工作流，命令和脚本已在当前容器中重新验证
 
 ## 验证状态总览
 
 | 平台 | 构建/运行 | nsys | ncu | 备注 |
 |---|---|---|---|---|
 | Windows | 已验证 | 已安装，当前非管理员会话下未完成采集 | 已安装，但被 GPU counter 权限阻塞 | 当前主机实测 |
-| Linux | 保留工作流 | 保留命令模板 | 保留命令模板 | 面向跨平台仓库的参考部分 |
+| Linux | 已验证 | 已验证，可生成 `.nsys-rep` | 已验证，可生成 `.ncu-rep` | Ubuntu 22.04 + CUDA 12.8 容器实测 |
 
 ## Windows 本机环境
 
@@ -293,7 +293,7 @@ ctest --preset windows-vs2022-cuda-release
 
 ## Linux 工作流
 
-这一节保留给项目的 Linux 路径，和 `linux-make-cuda-release` preset 对齐。
+这一节对应项目的 Linux 路径，和 `linux-make-cuda-release` preset 对齐；下面的命令和脚本已在当前容器中实际验证。
 
 ### 一键脚本
 
@@ -319,7 +319,7 @@ ctest --preset windows-vs2022-cuda-release
 说明：
 
 - 两个脚本都会优先使用 `PATH` 里的 `nsys` / `ncu`
-- 找不到时再回退到 `/usr/local/cuda/bin/`
+- 找不到时会继续回退到 `/usr/local/cuda/bin/` 或 `/usr/local/cuda-*/bin/`
 - 默认输出目录是 `out/build/<preset>/nsight/`
 - `--dry-run` 会只打印命令，不真正执行
 
@@ -368,6 +368,12 @@ nsys profile --sample=none --trace=cuda,nvtx,osrt -o /tmp/nsys-perf-lab \
 nsys stats /tmp/nsys-perf-lab.nsys-rep
 ```
 
+当前容器中的实测结果：
+
+- `nsys --version` 可用
+- `nsys status -e` 通过
+- 上述最小命令可成功生成 `.nsys-rep`
+
 说明：
 
 - Linux 侧常见的 trace 组合是 `cuda,nvtx,osrt`
@@ -392,6 +398,12 @@ ncu --set basic --target-processes all \
 
 - `reduce_sum_kernel`
 - `naive_gemm_kernel`
+
+当前容器中的实测结果：
+
+- `ncu --version` 可用
+- `vector_add_kernel` 最小命令可成功生成 `.ncu-rep`
+- 可正常输出 `Launch Statistics`、`Occupancy` 等指标
 
 ### 6. Linux 侧权限提示
 
@@ -428,7 +440,7 @@ ncu --set basic --target-processes all \
 ### 可执行文件路径
 
 - Windows：通常是 `C:\Program Files\NVIDIA Corporation\...`
-- Linux：更常见的是 `PATH` 里直接有 `nsys` / `ncu`，或位于 `/usr/local/cuda/bin/`
+- Linux：更常见的是 `PATH` 里直接有 `nsys` / `ncu`，也可能位于 `/usr/local/cuda/bin/` 或 `/usr/local/cuda-*/bin/`
 
 ### 报告文件位置
 

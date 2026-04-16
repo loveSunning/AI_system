@@ -19,6 +19,28 @@ warmup=2
 iters=5
 dry_run=0
 
+resolve_default_tool_path() {
+    if command -v nsys >/dev/null 2>&1; then
+        command -v nsys
+        return 0
+    fi
+
+    if [[ -x "/usr/local/cuda/bin/nsys" ]]; then
+        printf '%s\n' "/usr/local/cuda/bin/nsys"
+        return 0
+    fi
+
+    local candidate
+    for candidate in /usr/local/cuda-*/bin/nsys; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 print_usage() {
     cat <<'EOF'
 Usage: ./scripts/profile_nsys.sh [options]
@@ -73,11 +95,7 @@ if [[ "${vector_size}" == "0" || "${reduction_size}" == "0" || "${gemm_m}" == "0
 fi
 
 if [[ -z "${tool_path}" ]]; then
-    if command -v nsys >/dev/null 2>&1; then
-        tool_path="$(command -v nsys)"
-    elif [[ -x "/usr/local/cuda/bin/nsys" ]]; then
-        tool_path="/usr/local/cuda/bin/nsys"
-    else
+    if ! tool_path="$(resolve_default_tool_path)"; then
         echo "Unable to locate nsys. Install Nsight Systems or pass --tool." >&2
         exit 1
     fi

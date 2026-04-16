@@ -22,6 +22,28 @@ iters=1
 no_export=0
 dry_run=0
 
+resolve_default_tool_path() {
+    if command -v ncu >/dev/null 2>&1; then
+        command -v ncu
+        return 0
+    fi
+
+    if [[ -x "/usr/local/cuda/bin/ncu" ]]; then
+        printf '%s\n' "/usr/local/cuda/bin/ncu"
+        return 0
+    fi
+
+    local candidate
+    for candidate in /usr/local/cuda-*/bin/ncu; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 print_usage() {
     cat <<'EOF'
 Usage: ./scripts/profile_ncu.sh [options]
@@ -82,11 +104,7 @@ if [[ "${launch_count}" == "0" || "${vector_size}" == "0" || "${reduction_size}"
 fi
 
 if [[ -z "${tool_path}" ]]; then
-    if command -v ncu >/dev/null 2>&1; then
-        tool_path="$(command -v ncu)"
-    elif [[ -x "/usr/local/cuda/bin/ncu" ]]; then
-        tool_path="/usr/local/cuda/bin/ncu"
-    else
+    if ! tool_path="$(resolve_default_tool_path)"; then
         echo "Unable to locate ncu. Install Nsight Compute or pass --tool." >&2
         exit 1
     fi
