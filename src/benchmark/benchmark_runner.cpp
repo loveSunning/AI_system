@@ -28,6 +28,8 @@ BenchmarkResult run_benchmark(
 
     BenchmarkResult result;
     result.name = name;
+    result.warmup_iterations = config.warmup_iterations;
+    result.measured_iterations = config.measured_iterations;
 
     if(measurements.empty()) {
         return result;

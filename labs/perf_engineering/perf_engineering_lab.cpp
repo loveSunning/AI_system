@@ -3,14 +3,18 @@
 #include "ai_system/kernels/basic_kernels.hpp"
 #include "ai_system/runtime/gpu_info.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -23,6 +27,33 @@ struct LabOptions {
     std::size_t gemm_k {128};
     std::size_t warmup_iterations {2};
     std::size_t measured_iterations {6};
+};
+
+struct BenchmarkRow {
+    std::string op;
+    std::string impl;
+    std::string shape;
+    ai_system::benchmark::BenchmarkResult result;
+    std::optional<double> perf_value;
+    std::string perf_unit;
+};
+
+struct StatusRow {
+    std::string op;
+    std::string impl;
+    std::string check;
+    std::string status;
+    std::string detail;
+};
+
+struct TableColumn {
+    std::string header;
+    bool right_align {false};
+};
+
+struct LabReport {
+    std::vector<BenchmarkRow> benchmark_rows;
+    std::vector<StatusRow> status_rows;
 };
 
 void print_usage() {
@@ -120,23 +151,213 @@ ai_system::benchmark::BenchmarkConfig make_benchmark_config(const LabOptions& op
     return ai_system::benchmark::BenchmarkConfig {options.warmup_iterations, options.measured_iterations};
 }
 
-void print_benchmark(const ai_system::benchmark::BenchmarkResult& result) {
-    std::cout << std::left << std::setw(24) << result.name
-              << " avg=" << std::setw(10) << std::fixed << std::setprecision(3) << result.average_ms
-              << " ms min=" << std::setw(10) << result.min_ms
-              << " ms max=" << result.max_ms << " ms\n";
+std::string format_decimal(double value, int precision = 3) {
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(precision) << value;
+    return output.str();
 }
 
-void print_case_status(const std::string& label, bool success, const std::string& detail = {}) {
-    std::cout << "[" << (success ? "PASS" : "FAIL") << "] " << label;
-    if(!detail.empty()) {
-        std::cout << " | " << detail;
+std::string sanitize_cell(std::string value) {
+    for(char& ch : value) {
+        if(ch == '\n' || ch == '\r' || ch == '\t') {
+            ch = ' ';
+        }
+    }
+    return value.empty() ? "-" : value;
+}
+
+std::string format_count_shape(std::size_t count) {
+    return "N=" + std::to_string(count);
+}
+
+std::string format_gemm_shape(std::size_t m, std::size_t n, std::size_t k) {
+    return std::to_string(m) + "x" + std::to_string(n) + "x" + std::to_string(k);
+}
+
+double throughput_in_gigabytes(double bytes, double average_ms) {
+    if(average_ms <= 0.0) {
+        return 0.0;
+    }
+    return bytes / 1.0e9 / (average_ms / 1000.0);
+}
+
+double compute_vector_add_gbps(std::size_t element_count, double average_ms) {
+    const double bytes = static_cast<double>(element_count) * static_cast<double>(sizeof(float)) * 3.0;
+    return throughput_in_gigabytes(bytes, average_ms);
+}
+
+double compute_reduction_gbps(std::size_t element_count, double average_ms) {
+    const double bytes = static_cast<double>(element_count) * static_cast<double>(sizeof(float));
+    return throughput_in_gigabytes(bytes, average_ms);
+}
+
+double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double average_ms) {
+    if(average_ms <= 0.0) {
+        return 0.0;
+    }
+
+    const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k);
+    return flops / 1.0e9 / (average_ms / 1000.0);
+}
+
+void add_benchmark_row(
+    LabReport& report,
+    std::string op,
+    std::string impl,
+    std::string shape,
+    const ai_system::benchmark::BenchmarkResult& result,
+    std::optional<double> perf_value,
+    std::string perf_unit
+) {
+    report.benchmark_rows.push_back(BenchmarkRow {
+        std::move(op),
+        std::move(impl),
+        std::move(shape),
+        result,
+        perf_value,
+        std::move(perf_unit)
+    });
+}
+
+void add_status_row(
+    LabReport& report,
+    std::string op,
+    std::string impl,
+    std::string check,
+    std::string status,
+    std::string detail = {}
+) {
+    report.status_rows.push_back(StatusRow {
+        std::move(op),
+        std::move(impl),
+        std::move(check),
+        std::move(status),
+        std::move(detail)
+    });
+}
+
+void print_horizontal_rule(const std::vector<std::size_t>& widths) {
+    std::cout << '+';
+    for(const std::size_t width : widths) {
+        std::cout << std::string(width + 2, '-') << '+';
     }
     std::cout << "\n";
 }
 
-int run_vector_add_case(const LabOptions& options) {
+void print_table_row(
+    const std::vector<std::string>& row,
+    const std::vector<std::size_t>& widths,
+    const std::vector<TableColumn>& columns
+) {
+    std::cout << '|';
+    for(std::size_t index = 0; index < row.size(); ++index) {
+        const auto cell = sanitize_cell(row[index]);
+        std::cout << ' ';
+        if(columns[index].right_align) {
+            std::cout << std::right << std::setw(static_cast<int>(widths[index])) << cell;
+        } else {
+            std::cout << std::left << std::setw(static_cast<int>(widths[index])) << cell;
+        }
+        std::cout << ' ' << '|';
+    }
+    std::cout << "\n";
+}
+
+void print_table(const std::vector<TableColumn>& columns, const std::vector<std::vector<std::string>>& rows) {
+    std::vector<std::size_t> widths;
+    widths.reserve(columns.size());
+    for(const auto& column : columns) {
+        widths.push_back(column.header.size());
+    }
+
+    for(const auto& row : rows) {
+        for(std::size_t index = 0; index < row.size(); ++index) {
+            widths[index] = std::max(widths[index], sanitize_cell(row[index]).size());
+        }
+    }
+
+    std::vector<std::string> header_cells;
+    header_cells.reserve(columns.size());
+    for(const auto& column : columns) {
+        header_cells.push_back(column.header);
+    }
+
+    print_horizontal_rule(widths);
+    print_table_row(header_cells, widths, columns);
+    print_horizontal_rule(widths);
+    for(const auto& row : rows) {
+        print_table_row(row, widths, columns);
+    }
+    print_horizontal_rule(widths);
+}
+
+void print_benchmark_table(const LabReport& report) {
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(report.benchmark_rows.size());
+
+    for(const auto& row : report.benchmark_rows) {
+        rows.push_back({
+            row.op,
+            row.impl,
+            row.shape,
+            format_decimal(row.result.average_ms),
+            format_decimal(row.result.min_ms),
+            format_decimal(row.result.max_ms),
+            row.perf_value.has_value() ? format_decimal(*row.perf_value) : std::string("n/a"),
+            row.perf_unit.empty() ? std::string("-") : row.perf_unit,
+            std::to_string(row.result.warmup_iterations),
+            std::to_string(row.result.measured_iterations)
+        });
+    }
+
+    std::cout << "\nBenchmark Results\n";
+    print_table(
+        {
+            {"op"},
+            {"impl"},
+            {"shape"},
+            {"avg_ms", true},
+            {"min_ms", true},
+            {"max_ms", true},
+            {"perf", true},
+            {"unit"},
+            {"warmup", true},
+            {"iters", true}
+        },
+        rows
+    );
+}
+
+void print_status_table(const LabReport& report) {
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(report.status_rows.size());
+
+    for(const auto& row : report.status_rows) {
+        rows.push_back({
+            row.op,
+            row.impl,
+            row.check,
+            row.status,
+            row.detail
+        });
+    }
+
+    std::cout << "\nValidation\n";
+    print_table(
+        {
+            {"op"},
+            {"impl"},
+            {"check"},
+            {"status"},
+            {"detail"}
+        },
+        rows
+    );
+}
+
+int run_vector_add_case(const LabOptions& options, LabReport& report) {
     const std::size_t element_count = options.vector_size;
+    const std::string shape = format_count_shape(element_count);
 
     std::vector<float> lhs(element_count);
     std::vector<float> rhs(element_count);
@@ -148,30 +369,57 @@ int run_vector_add_case(const LabOptions& options) {
     ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
 
     const auto config = make_benchmark_config(options);
-    std::cout << "vector_add size=" << element_count << "\n";
-    print_benchmark(ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
+    const auto cpu_result = ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
         ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
-    }));
+    });
+    add_benchmark_row(
+        report,
+        "vector_add",
+        "cpu",
+        shape,
+        cpu_result,
+        compute_vector_add_gbps(element_count, cpu_result.average_ms),
+        "GB/s"
+    );
 
     std::string error;
     if(ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, error)) {
         const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out);
-        print_case_status("vector_add correctness", matches);
-        print_benchmark(ai_system::benchmark::run_benchmark("vector_add/cuda", config, [&]() {
+        add_status_row(
+            report,
+            "vector_add",
+            "cuda",
+            "correctness",
+            matches ? "PASS" : "FAIL",
+            matches ? "CPU/GPU outputs match." : "CPU/GPU outputs differ."
+        );
+
+        const auto cuda_result = ai_system::benchmark::run_benchmark("vector_add/cuda", config, [&]() {
             std::string local_error;
             if(!ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, local_error)) {
                 throw std::runtime_error(local_error);
             }
-        }));
+        });
+        add_benchmark_row(
+            report,
+            "vector_add",
+            "cuda",
+            shape,
+            cuda_result,
+            compute_vector_add_gbps(element_count, cuda_result.average_ms),
+            "GB/s"
+        );
+
         return matches ? 0 : 1;
     }
 
-    print_case_status("vector_add CUDA path", false, error);
+    add_status_row(report, "vector_add", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_reduction_case(const LabOptions& options) {
+int run_reduction_case(const LabOptions& options, LabReport& report) {
     const std::size_t element_count = options.reduction_size;
+    const std::string shape = format_count_shape(element_count);
 
     std::vector<float> values(element_count);
     ai_system::kernels::fill_random(values, -0.5f, 0.5f, 29u);
@@ -180,36 +428,59 @@ int run_reduction_case(const LabOptions& options) {
     float cuda_sum = 0.0f;
 
     const auto config = make_benchmark_config(options);
-    std::cout << "reduction size=" << element_count << "\n";
-    print_benchmark(ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
+    const auto cpu_result = ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
         cpu_sum = ai_system::kernels::reduction_sum_cpu(values);
-    }));
+    });
+    add_benchmark_row(
+        report,
+        "reduction",
+        "cpu",
+        shape,
+        cpu_result,
+        compute_reduction_gbps(element_count, cpu_result.average_ms),
+        "GB/s"
+    );
 
     std::string error;
     if(ai_system::kernels::reduction_sum_cuda(values, cuda_sum, error)) {
         const bool matches = std::fabs(cpu_sum - cuda_sum) < 1.0e-2f;
-        print_case_status(
-            "reduction correctness",
-            matches,
-            "cpu=" + std::to_string(cpu_sum) + ", gpu=" + std::to_string(cuda_sum)
+        add_status_row(
+            report,
+            "reduction",
+            "cuda",
+            "correctness",
+            matches ? "PASS" : "FAIL",
+            "cpu=" + format_decimal(cpu_sum, 6) + ", gpu=" + format_decimal(cuda_sum, 6)
         );
-        print_benchmark(ai_system::benchmark::run_benchmark("reduction/cuda", config, [&]() {
+
+        const auto cuda_result = ai_system::benchmark::run_benchmark("reduction/cuda", config, [&]() {
             std::string local_error;
             if(!ai_system::kernels::reduction_sum_cuda(values, cuda_sum, local_error)) {
                 throw std::runtime_error(local_error);
             }
-        }));
+        });
+        add_benchmark_row(
+            report,
+            "reduction",
+            "cuda",
+            shape,
+            cuda_result,
+            compute_reduction_gbps(element_count, cuda_result.average_ms),
+            "GB/s"
+        );
+
         return matches ? 0 : 1;
     }
 
-    print_case_status("reduction CUDA path", false, error);
+    add_status_row(report, "reduction", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
-int run_gemm_case(const LabOptions& options) {
+int run_gemm_case(const LabOptions& options, LabReport& report) {
     const std::size_t m = options.gemm_m;
     const std::size_t n = options.gemm_n;
     const std::size_t k = options.gemm_k;
+    const std::string shape = format_gemm_shape(m, n, k);
 
     std::vector<float> lhs(m * k);
     std::vector<float> rhs(k * n);
@@ -221,25 +492,51 @@ int run_gemm_case(const LabOptions& options) {
     ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
 
     const auto config = make_benchmark_config(options);
-    std::cout << "naive_gemm shape=" << m << "x" << n << "x" << k << "\n";
-    print_benchmark(ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
+    const auto cpu_result = ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
         ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
-    }));
+    });
+    add_benchmark_row(
+        report,
+        "naive_gemm",
+        "cpu",
+        shape,
+        cpu_result,
+        compute_gemm_gflops(m, n, k, cpu_result.average_ms),
+        "GFLOPS"
+    );
 
     std::string error;
     if(ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, error)) {
         const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out, 1.0e-3f, 1.0e-3f);
-        print_case_status("naive_gemm correctness", matches);
-        print_benchmark(ai_system::benchmark::run_benchmark("naive_gemm/cuda", config, [&]() {
+        add_status_row(
+            report,
+            "naive_gemm",
+            "cuda",
+            "correctness",
+            matches ? "PASS" : "FAIL",
+            matches ? "allclose(abs=1e-3, rel=1e-3)." : "CPU/GPU outputs diverged beyond tolerance."
+        );
+
+        const auto cuda_result = ai_system::benchmark::run_benchmark("naive_gemm/cuda", config, [&]() {
             std::string local_error;
             if(!ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, local_error)) {
                 throw std::runtime_error(local_error);
             }
-        }));
+        });
+        add_benchmark_row(
+            report,
+            "naive_gemm",
+            "cuda",
+            shape,
+            cuda_result,
+            compute_gemm_gflops(m, n, k, cuda_result.average_ms),
+            "GFLOPS"
+        );
+
         return matches ? 0 : 1;
     }
 
-    print_case_status("naive_gemm CUDA path", false, error);
+    add_status_row(report, "naive_gemm", "cuda", "runtime", AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP", error);
     return AI_SYSTEM_HAS_CUDA ? 1 : 0;
 }
 
@@ -257,10 +554,14 @@ int main(int argc, char** argv) {
     std::cout << "Measured iterations: " << options.measured_iterations << "\n";
     std::cout << ai_system::runtime::summarize_gpus(ai_system::runtime::query_gpus());
 
+    LabReport report;
     int failures = 0;
-    failures += run_vector_add_case(options);
-    failures += run_reduction_case(options);
-    failures += run_gemm_case(options);
+    failures += run_vector_add_case(options, report);
+    failures += run_reduction_case(options, report);
+    failures += run_gemm_case(options, report);
+
+    print_benchmark_table(report);
+    print_status_table(report);
 
     return failures == 0 ? 0 : 1;
 }

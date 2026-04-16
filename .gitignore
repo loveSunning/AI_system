@@ -9,3 +9,4 @@ __pycache__/
 *.suo
 *.VC.db
 compile_commands.json
+__cmake_systeminformation/

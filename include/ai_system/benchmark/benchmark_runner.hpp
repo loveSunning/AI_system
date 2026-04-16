@@ -16,6 +16,8 @@ struct BenchmarkResult {
     double average_ms {0.0};
     double min_ms {0.0};
     double max_ms {0.0};
+    std::size_t warmup_iterations {0};
+    std::size_t measured_iterations {0};
 };
 
 BenchmarkResult run_benchmark(
