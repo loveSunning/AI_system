@@ -2,6 +2,7 @@
 #include "ai_system/benchmark/benchmark_runner.hpp"
 #include "ai_system/config.hpp"
 #include "ai_system/kernels/basic_kernels.hpp"
+#include "ai_system/profiling/nvtx.hpp"
 #include "ai_system/runtime/gpu_info.hpp"
 
 #include <cmath>
@@ -155,6 +156,8 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
 }
 
 int run_vector_add_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
+    const ai_system::profiling::ScopedNvtxRange case_range("vector_add");
+
     const std::size_t element_count = options.vector_size;
     const std::string shape = format_count_shape(element_count);
 
@@ -163,14 +166,20 @@ int run_vector_add_case(const LabOptions& options, ai_system::benchmark::Benchma
     std::vector<float> cpu_out;
     std::vector<float> cuda_out;
 
-    ai_system::kernels::fill_random(lhs, -1.0f, 1.0f, 7u);
-    ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 13u);
-    ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("prepare_inputs");
+        ai_system::kernels::fill_random(lhs, -1.0f, 1.0f, 7u);
+        ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 13u);
+        ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
+    }
 
     const auto config = make_benchmark_config(options);
-    const auto cpu_result = ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
-        ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
-    });
+    const auto cpu_result = [&]() {
+        const ai_system::profiling::ScopedNvtxRange phase_range("cpu_benchmark");
+        return ai_system::benchmark::run_benchmark("vector_add/cpu", config, [&]() {
+            ai_system::kernels::vector_add_cpu(lhs, rhs, cpu_out);
+        });
+    }();
     ai_system::benchmark::add_benchmark_row(
         report,
         "vector_add",
@@ -183,7 +192,10 @@ int run_vector_add_case(const LabOptions& options, ai_system::benchmark::Benchma
 
     std::string error;
     if(ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, error)) {
-        const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out);
+        const bool matches = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_correctness");
+            return ai_system::kernels::allclose(cpu_out, cuda_out);
+        }();
         ai_system::benchmark::add_validation_row(
             report,
             "vector_add",
@@ -193,12 +205,15 @@ int run_vector_add_case(const LabOptions& options, ai_system::benchmark::Benchma
             matches ? "CPU/GPU outputs match." : "CPU/GPU outputs differ."
         );
 
-        const auto cuda_result = ai_system::benchmark::run_benchmark("vector_add/cuda", config, [&]() {
-            std::string local_error;
-            if(!ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, local_error)) {
-                throw std::runtime_error(local_error);
-            }
-        });
+        const auto cuda_result = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_benchmark");
+            return ai_system::benchmark::run_benchmark("vector_add/cuda", config, [&]() {
+                std::string local_error;
+                if(!ai_system::kernels::vector_add_cuda(lhs, rhs, cuda_out, local_error)) {
+                    throw std::runtime_error(local_error);
+                }
+            });
+        }();
         ai_system::benchmark::add_benchmark_row(
             report,
             "vector_add",
@@ -224,19 +239,27 @@ int run_vector_add_case(const LabOptions& options, ai_system::benchmark::Benchma
 }
 
 int run_reduction_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
+    const ai_system::profiling::ScopedNvtxRange case_range("reduction");
+
     const std::size_t element_count = options.reduction_size;
     const std::string shape = format_count_shape(element_count);
 
     std::vector<float> values(element_count);
-    ai_system::kernels::fill_random(values, -0.5f, 0.5f, 29u);
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("prepare_inputs");
+        ai_system::kernels::fill_random(values, -0.5f, 0.5f, 29u);
+    }
 
     float cpu_sum = 0.0f;
     float cuda_sum = 0.0f;
 
     const auto config = make_benchmark_config(options);
-    const auto cpu_result = ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
-        cpu_sum = ai_system::kernels::reduction_sum_cpu(values);
-    });
+    const auto cpu_result = [&]() {
+        const ai_system::profiling::ScopedNvtxRange phase_range("cpu_benchmark");
+        return ai_system::benchmark::run_benchmark("reduction/cpu", config, [&]() {
+            cpu_sum = ai_system::kernels::reduction_sum_cpu(values);
+        });
+    }();
     ai_system::benchmark::add_benchmark_row(
         report,
         "reduction",
@@ -249,7 +272,10 @@ int run_reduction_case(const LabOptions& options, ai_system::benchmark::Benchmar
 
     std::string error;
     if(ai_system::kernels::reduction_sum_cuda(values, cuda_sum, error)) {
-        const bool matches = std::fabs(cpu_sum - cuda_sum) < 1.0e-2f;
+        const bool matches = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_correctness");
+            return std::fabs(cpu_sum - cuda_sum) < 1.0e-2f;
+        }();
         ai_system::benchmark::add_validation_row(
             report,
             "reduction",
@@ -260,12 +286,15 @@ int run_reduction_case(const LabOptions& options, ai_system::benchmark::Benchmar
                 ", gpu=" + ai_system::benchmark::format_decimal(cuda_sum, 6)
         );
 
-        const auto cuda_result = ai_system::benchmark::run_benchmark("reduction/cuda", config, [&]() {
-            std::string local_error;
-            if(!ai_system::kernels::reduction_sum_cuda(values, cuda_sum, local_error)) {
-                throw std::runtime_error(local_error);
-            }
-        });
+        const auto cuda_result = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_benchmark");
+            return ai_system::benchmark::run_benchmark("reduction/cuda", config, [&]() {
+                std::string local_error;
+                if(!ai_system::kernels::reduction_sum_cuda(values, cuda_sum, local_error)) {
+                    throw std::runtime_error(local_error);
+                }
+            });
+        }();
         ai_system::benchmark::add_benchmark_row(
             report,
             "reduction",
@@ -291,6 +320,8 @@ int run_reduction_case(const LabOptions& options, ai_system::benchmark::Benchmar
 }
 
 int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
+    const ai_system::profiling::ScopedNvtxRange case_range("naive_gemm");
+
     const std::size_t m = options.gemm_m;
     const std::size_t n = options.gemm_n;
     const std::size_t k = options.gemm_k;
@@ -301,14 +332,20 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     std::vector<float> cpu_out;
     std::vector<float> cuda_out;
 
-    ai_system::kernels::fill_random(lhs, -1.0f, 1.0f, 41u);
-    ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 53u);
-    ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("prepare_inputs");
+        ai_system::kernels::fill_random(lhs, -1.0f, 1.0f, 41u);
+        ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 53u);
+        ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
+    }
 
     const auto config = make_benchmark_config(options);
-    const auto cpu_result = ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
-        ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
-    });
+    const auto cpu_result = [&]() {
+        const ai_system::profiling::ScopedNvtxRange phase_range("cpu_benchmark");
+        return ai_system::benchmark::run_benchmark("naive_gemm/cpu", config, [&]() {
+            ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
+        });
+    }();
     ai_system::benchmark::add_benchmark_row(
         report,
         "naive_gemm",
@@ -321,7 +358,10 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
     std::string error;
     if(ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, error)) {
-        const bool matches = ai_system::kernels::allclose(cpu_out, cuda_out, 1.0e-3f, 1.0e-3f);
+        const bool matches = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_correctness");
+            return ai_system::kernels::allclose(cpu_out, cuda_out, 1.0e-3f, 1.0e-3f);
+        }();
         ai_system::benchmark::add_validation_row(
             report,
             "naive_gemm",
@@ -331,12 +371,15 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             matches ? "allclose(abs=1e-3, rel=1e-3)." : "CPU/GPU outputs diverged beyond tolerance."
         );
 
-        const auto cuda_result = ai_system::benchmark::run_benchmark("naive_gemm/cuda", config, [&]() {
-            std::string local_error;
-            if(!ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, local_error)) {
-                throw std::runtime_error(local_error);
-            }
-        });
+        const auto cuda_result = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cuda_benchmark");
+            return ai_system::benchmark::run_benchmark("naive_gemm/cuda", config, [&]() {
+                std::string local_error;
+                if(!ai_system::kernels::naive_gemm_cuda(m, n, k, lhs, rhs, cuda_out, local_error)) {
+                    throw std::runtime_error(local_error);
+                }
+            });
+        }();
         ai_system::benchmark::add_benchmark_row(
             report,
             "naive_gemm",
@@ -377,9 +420,12 @@ int main(int argc, char** argv) {
 
     ai_system::benchmark::BenchmarkReport report;
     int failures = 0;
-    failures += run_vector_add_case(options, report);
-    failures += run_reduction_case(options, report);
-    failures += run_gemm_case(options, report);
+    {
+        const ai_system::profiling::ScopedNvtxRange workload_range("profiled_workload");
+        failures += run_vector_add_case(options, report);
+        failures += run_reduction_case(options, report);
+        failures += run_gemm_case(options, report);
+    }
 
     ai_system::benchmark::print_benchmark_table(report);
     ai_system::benchmark::print_validation_table(report);

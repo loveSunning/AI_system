@@ -1,4 +1,5 @@
 #include "ai_system/benchmark/benchmark_runner.hpp"
+#include "ai_system/profiling/nvtx.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -12,6 +13,8 @@ BenchmarkResult run_benchmark(
     const BenchmarkConfig& config,
     const std::function<void()>& fn
 ) {
+    const ai_system::profiling::ScopedNvtxRange benchmark_range(name);
+
     for(std::size_t iteration = 0; iteration < config.warmup_iterations; ++iteration) {
         fn();
     }
@@ -36,13 +39,13 @@ BenchmarkResult run_benchmark(
     }
 
     double total = 0.0;
-    result.min_ms = std::numeric_limits<double>::max();
+    result.min_ms = (std::numeric_limits<double>::max)();
     result.max_ms = 0.0;
 
     for(const double measurement : measurements) {
         total += measurement;
-        result.min_ms = std::min(result.min_ms, measurement);
-        result.max_ms = std::max(result.max_ms, measurement);
+        result.min_ms = (std::min)(result.min_ms, measurement);
+        result.max_ms = (std::max)(result.max_ms, measurement);
     }
 
     result.average_ms = total / static_cast<double>(measurements.size());

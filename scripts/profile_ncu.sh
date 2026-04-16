@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+
+preset="linux-make-cuda-release"
+output_path=""
+tool_path=""
+executable_path=""
+kernel_regex="vector_add_kernel"
+set_name="basic"
+target_processes="all"
+launch_count=1
+vector_size=1048576
+reduction_size=1024
+gemm_m=32
+gemm_n=32
+gemm_k=32
+warmup=1
+iters=1
+no_export=0
+dry_run=0
+
+print_usage() {
+    cat <<'EOF'
+Usage: ./scripts/profile_ncu.sh [options]
+
+Options:
+  --preset NAME            Build preset to profile (default: linux-make-cuda-release)
+  --output PATH            Export report prefix path
+  --tool PATH              Override ncu executable path
+  --exe PATH               Override profiled executable path
+  --kernel-regex REGEX     Kernel name regex (default: vector_add_kernel)
+  --set NAME               Nsight Compute section set (default: basic)
+  --target-processes MODE  Nsight Compute target-processes mode (default: all)
+  --launch-count N         Launch count to capture (default: 1)
+  --vector-size N          Vector add input length
+  --reduction-size N       Reduction input length
+  --gemm-m N               GEMM M dimension
+  --gemm-n N               GEMM N dimension
+  --gemm-k N               GEMM K dimension
+  --warmup N               Warmup iterations
+  --iters N                Measured iterations
+  --no-export              Do not write a .ncu-rep export
+  --dry-run                Print command without executing
+  --help                   Show this help message
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --preset) preset="$2"; shift 2 ;;
+        --output) output_path="$2"; shift 2 ;;
+        --tool) tool_path="$2"; shift 2 ;;
+        --exe) executable_path="$2"; shift 2 ;;
+        --kernel-regex) kernel_regex="$2"; shift 2 ;;
+        --set) set_name="$2"; shift 2 ;;
+        --target-processes) target_processes="$2"; shift 2 ;;
+        --launch-count) launch_count="$2"; shift 2 ;;
+        --vector-size) vector_size="$2"; shift 2 ;;
+        --reduction-size) reduction_size="$2"; shift 2 ;;
+        --gemm-m) gemm_m="$2"; shift 2 ;;
+        --gemm-n) gemm_n="$2"; shift 2 ;;
+        --gemm-k) gemm_k="$2"; shift 2 ;;
+        --warmup) warmup="$2"; shift 2 ;;
+        --iters) iters="$2"; shift 2 ;;
+        --no-export) no_export=1; shift ;;
+        --dry-run) dry_run=1; shift ;;
+        --help) print_usage; exit 0 ;;
+        *)
+            echo "Unknown option: $1" >&2
+            print_usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ "${launch_count}" == "0" || "${vector_size}" == "0" || "${reduction_size}" == "0" || "${gemm_m}" == "0" || "${gemm_n}" == "0" || "${gemm_k}" == "0" || "${warmup}" == "0" || "${iters}" == "0" ]]; then
+    echo "All size and iteration arguments must be positive integers." >&2
+    exit 1
+fi
+
+if [[ -z "${tool_path}" ]]; then
+    if command -v ncu >/dev/null 2>&1; then
+        tool_path="$(command -v ncu)"
+    elif [[ -x "/usr/local/cuda/bin/ncu" ]]; then
+        tool_path="/usr/local/cuda/bin/ncu"
+    else
+        echo "Unable to locate ncu. Install Nsight Compute or pass --tool." >&2
+        exit 1
+    fi
+fi
+
+if [[ -z "${executable_path}" ]]; then
+    executable_path="${repo_root}/out/build/${preset}/labs/perf_engineering/perf_engineering_lab"
+fi
+
+if [[ -z "${output_path}" ]]; then
+    output_path="${repo_root}/out/build/${preset}/nsight/ncu-perf-engineering"
+fi
+
+if [[ ! -x "${tool_path}" ]]; then
+    echo "Nsight Compute CLI not found at '${tool_path}'." >&2
+    exit 1
+fi
+
+if [[ ! -x "${executable_path}" ]]; then
+    echo "Target executable not found at '${executable_path}'. Build the preset first or pass --exe." >&2
+    exit 1
+fi
+
+output_directory="$(dirname "${output_path}")"
+mkdir -p "${output_directory}"
+
+cmd=(
+    "${tool_path}"
+    --set "${set_name}"
+    --target-processes "${target_processes}"
+    --launch-count "${launch_count}"
+)
+
+if [[ -n "${kernel_regex}" ]]; then
+    cmd+=(--kernel-name "regex:${kernel_regex}")
+fi
+
+if [[ "${no_export}" != "1" ]]; then
+    cmd+=(--export "${output_path}")
+fi
+
+cmd+=(
+    "${executable_path}"
+    --vector-size "${vector_size}"
+    --reduction-size "${reduction_size}"
+    --gemm-m "${gemm_m}"
+    --gemm-n "${gemm_n}"
+    --gemm-k "${gemm_k}"
+    --warmup "${warmup}"
+    --iters "${iters}"
+)
+
+printf 'Nsight Compute CLI: %s\n' "${tool_path}"
+printf 'Profiling target   : %s\n' "${executable_path}"
+if [[ "${no_export}" != "1" ]]; then
+    printf 'Report prefix      : %s\n' "${output_path}"
+fi
+printf 'Command            : '
+printf '%q ' "${cmd[@]}"
+printf '\n'
+
+if [[ "${dry_run}" == "1" ]]; then
+    exit 0
+fi
+
+HOME="${output_directory}" "${cmd[@]}"

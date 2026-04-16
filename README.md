@@ -175,4 +175,9 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 
 完整路线见 [docs/learning-roadmap.md](docs/learning-roadmap.md)。
 
-性能分析与 Nsight 工具使用说明见 [docs/profiling/nsight-tools.md](docs/profiling/nsight-tools.md)。
+跨 Windows / Linux 的性能分析与 Nsight 工具使用说明见 [docs/profiling/nsight-tools.md](docs/profiling/nsight-tools.md)。
+
+如果要直接跑 profiling，也可以用现成脚本：
+
+- Windows：`./scripts/profile_nsys.ps1`、`./scripts/profile_ncu.ps1`
+- Linux：`./scripts/profile_nsys.sh`、`./scripts/profile_ncu.sh`
