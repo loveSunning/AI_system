@@ -1,34 +1,101 @@
-# Nsight Systems / Nsight Compute（跨平台）
+# Nsight Systems / Nsight Compute Guide
 
-本文档面向当前仓库的 `perf_engineering_lab`，记录：
+本文档面向当前仓库的 `perf_engineering_lab`，目标是给出一份可直接落地的 Nsight 使用手册，包括：
 
-- Windows 与 Linux 两个平台的 Nsight 使用路径
-- 本机 Windows 环境下 `ncu` / `nsys` 的安装与版本
-- 官方文档中的适配信息
-- 当前仓库新增的最小可用 NVTX 标注
-- `ncu` / `nsys` 输出该怎么看
-- 当前这台 Windows 机器上已经验证成功和暂时受限的部分
+- Windows 与 Linux 的常用命令
+- `nsys` / `ncu` 的使用顺序
+- `ncu` 单独抓一个 kernel 与一次抓多个/全部 kernel 的方法
+- 常见输出文件、GUI 视图和结果解读方式
+- 当前仓库里 NVTX 的接入方式与推荐实践
 
-更新时间：2026-04-16
+更新时间：2026-04-17
 
-## 文档定位
+## 1. 先说结论
 
-- Windows 部分：基于当前这台机器的实测结果整理
-- Linux 部分：基于当前 CUDA Linux 容器的实际验证结果整理，并保留跨平台仓库所需的工作流说明
+对这个仓库，最推荐的 profiling 流程是：
 
-这里做一个明确区分：
+1. 先跑 `perf_engineering_lab`，确认 `Validation` 全部 `PASS`
+2. 先用 `nsys` 看端到端时间线
+3. 再用 `ncu` 抓热点 kernel
+4. 默认优先单 kernel 抓取；只有在“先摸底都有哪些 kernel”时，才建议一次抓全部
 
-- “Windows 实测”表示我已经在当前机器上实际跑过命令
-- “Linux 工作流”表示这是面向 `linux-make-cuda-release` preset 的 Linux 实测工作流，命令和脚本已在当前容器中重新验证
+一句话区分两者：
 
-## 验证状态总览
+- `nsys` 回答：时间花在了哪里，谁在等谁
+- `ncu` 回答：某一个 kernel 为什么快/慢
 
-| 平台 | 构建/运行 | nsys | ncu | 备注 |
-|---|---|---|---|---|
-| Windows | 已验证 | 已安装，当前非管理员会话下未完成采集 | 已安装，但被 GPU counter 权限阻塞 | 当前主机实测 |
-| Linux | 已验证 | 已验证，可生成 `.nsys-rep` | 已验证，可生成 `.ncu-rep` | Ubuntu 22.04 + CUDA 12.8 容器实测 |
+## 2. 输出文件是什么
 
-## Windows 本机环境
+### 2.1 `nsys`
+
+`nsys profile` 最主要的输出是：
+
+- `*.nsys-rep`
+
+这是原始报告文件，GUI 主要直接打开它。
+
+后续执行 `nsys stats xxx.nsys-rep` 时，如果旁边没有 SQLite 导出，通常会自动生成：
+
+- `*.sqlite`
+
+所以常见情况是最终看到两个文件：
+
+- `xxx.nsys-rep`
+- `xxx.sqlite`
+
+但它们不是同一阶段同时生成的：
+
+- `nsys-rep` 来自 `nsys profile`
+- `sqlite` 常常来自 `nsys stats`
+
+### 2.2 `ncu`
+
+`ncu` 导出的主文件是：
+
+- `*.ncu-rep`
+
+这个文件既可以在 GUI 中打开，也可以配合 `ncu --import` 再查看。
+
+## 3. 当前仓库里的 NVTX
+
+当前仓库已经给 `perf_engineering_lab` 接上了最小可用的 NVTX：
+
+- 公共封装：[nvtx.hpp](/E:/learning/AI_system/include/ai_system/profiling/nvtx.hpp:1)
+- benchmark 公共入口：[benchmark_runner.cpp](/E:/learning/AI_system/src/benchmark/benchmark_runner.cpp:10)
+- 实验主逻辑：[perf_engineering_lab.cpp](/E:/learning/AI_system/labs/perf_engineering/perf_engineering_lab.cpp:1)
+
+当前时间线上常见的 NVTX 层级大致是：
+
+```text
+profiled_workload
+|- vector_add
+|- reduction
+`- gemm
+   |- prepare_inputs
+   |- cuda_correctness
+   |- cuda_benchmark
+   |  |- gemm/e2e/cuda_naive
+   |  |- gemm/e2e/cublas_sgemm
+   |  |- gemm/e2e/cublas_hgemm
+   |  `- gemm/e2e/cublas_tensor_core
+   |- kernel_only_correctness
+   `- kernel_only_benchmark
+      |- gemm/kernel_only/cuda_naive
+      |- gemm/kernel_only/cublas_sgemm
+      |- gemm/kernel_only/cublas_hgemm
+      `- gemm/kernel_only/cublas_tensor_core
+```
+
+注意：
+
+- 真正的层级来自作用域里的 NVTX 嵌套
+- 名字里的 `/` 只是命名习惯，不是 NVTX 自动识别出的层级
+
+## 4. 当前环境与验证状态
+
+### Windows：已实测
+
+当前机器实测环境：
 
 - OS：Windows 10 Pro
 - CUDA Toolkit：13.0.88
@@ -38,581 +105,492 @@
 - Nsight Compute CLI：2025.3.1.0
 - Nsight Systems CLI：2025.3.2.474
 
-本机实际命令结果：
+已经实测通过的内容：
+
+- `cmake --build --preset windows-vs2022-cuda-release --config Release`
+- `ctest --preset windows-vs2022-cuda-release`
+- `perf_engineering_lab`
+- 提权后的 `nsys`
+- 提权后的 `ncu`
+
+### Linux：只提供命令，不做本次验证
+
+本节会给出 Linux 工作流和命令模板，方便跨平台项目使用。  
+但这里要明确说明：
+
+- **本次没有在当前会话里验证 Linux 的 `nsys` / `ncu`**
+- Linux 内容按通用 CUDA/Nsight 工作流整理，作为落地命令模板使用
+
+## 5. 推荐工作流
+
+### 5.1 第一步：先跑 benchmark
+
+先确认实验本身是正确的：
 
 ```powershell
-nvcc --version
-nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader
-& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat" --version
-& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" --version
-```
-
-## 官方适配判断
-
-### Nsight Compute
-
-根据 NVIDIA 官方 `Nsight Compute 2025.3` release notes：
-
-- 支持 Windows 10/11、Windows Server 2019/2022 作为 host / target
-- 支持的 GPU 架构覆盖 Turing、Ampere、Ada，且 2025.3 明确加入了 Blackwell 芯片 `GB10x / GB11x / GB20x`
-- 2025.3 新增对 CUDA 13.0 的支持
-
-因此：
-
-- RTX 4090（Ada，`sm_89`）在官方支持范围内
-- RTX 5060（Blackwell，`sm_120`）在官方支持范围内
-- 当前本机 `CUDA 13.0 + RTX 5060 + ncu 2025.3.1` 在版本层面是匹配的
-
-参考：
-
-- [Nsight Compute 2025.3 Release Notes](https://docs.nvidia.com/nsight-compute/ReleaseNotes/index.html)
-- [Nsight Compute System Requirements](https://docs.nvidia.com/nsight-compute/ReleaseNotes/topics/system-requirements.html)
-
-### Nsight Systems
-
-根据 NVIDIA 官方 `Nsight Systems Installation Guide` 与 `2025.3 Release Notes`：
-
-- Host app 支持 Windows 10 / Windows Server 2019
-- 文档中对 x86_64 / Arm SBSA target 提到的 GPU 架构为 Turing 及以上
-- 支持 CUDA 10.0 及以上的大多数平台
-
-这里我做一个明确说明：
-
-- “Turing 及以上”意味着 Ada 和 Blackwell 也落在支持区间内，这是从官方表述推导出的结论
-- `CUDA 10.0+` 也覆盖到了本机的 CUDA 13.0，这同样是基于官方区间做的推导
-
-但 Windows 侧是否能顺利采集，还额外受管理员权限影响。官方文档明确提到 Windows 上 CLI collection 在非 `--trace=none` 场景需要管理员权限；这和本机实测现象是一致的。
-
-参考：
-
-- [Nsight Systems Installation Guide](https://docs.nvidia.com/nsight-systems/InstallationGuide/index.html)
-- [Nsight Systems 2025.3 Release Notes](https://docs.nvidia.com/nsight-systems/ReleaseNotes/index.html)
-- [Nsight Systems User Guide](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
-
-## 当前仓库里的 NVTX 接入
-
-这次已经给 `perf_engineering_lab` 加上了最小可用的 NVTX 标注。
-
-### 代码位置
-
-- 公共 RAII 封装：[nvtx.hpp](/E:/learning/AI_system/include/ai_system/profiling/nvtx.hpp)
-- benchmark 自动 range：[benchmark_runner.cpp](/E:/learning/AI_system/src/benchmark/benchmark_runner.cpp:12)
-- perf lab case / phase range：[perf_engineering_lab.cpp](/E:/learning/AI_system/labs/perf_engineering/perf_engineering_lab.cpp:124)
-
-### 标注层级
-
-当前时间线里会看到这些层级：
-
-- `profiled_workload`
-- `vector_add`
-- `reduction`
-- `naive_gemm`
-- `prepare_inputs`
-- `cpu_benchmark`
-- `cuda_correctness`
-- `cuda_benchmark`
-- 以及 `run_benchmark()` 自动打进去的 `vector_add/cpu`、`vector_add/cuda`、`reduction/cpu`、`naive_gemm/cuda` 这类 benchmark range
-
-### 设计意图
-
-- 先用 `profiled_workload` 包住真正要看的实验阶段
-- 每个算子一层 case range，时间线一眼能分区
-- benchmark 名称作为更细粒度子区间，方便和 `ncu` / `nsys stats` 对上
-
-如果编译环境里没有可用的 NVTX 头，这层封装会自动退化成 no-op，不影响 CPU-only 构建。
-
-## Windows 本机验证结果
-
-### 1. 工程构建与运行
-
-以下验证已经通过：
-
-```powershell
-cmake --build --preset windows-vs2022-cuda-release --config Release
-ctest --preset windows-vs2022-cuda-release
 & "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
-  --vector-size 1024 --reduction-size 1024 `
-  --gemm-m 32 --gemm-n 32 --gemm-k 32 `
-  --warmup 1 --iters 2
-```
-
-说明：
-
-- NVTX 接入没有破坏现有 build/test
-- `perf_engineering_lab` 的 CPU/CUDA correctness 仍然通过
-
-### 2. Nsight Systems
-
-版本检查通过：
-
-```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" --version
-```
-
-环境检查结果：
-
-```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" status -e
-```
-
-本机输出要点：
-
-- `Administrator privileges: No`
-- `Sampling Environment: Fail`
-
-进一步实测：
-
-```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" profile `
-  --sample=none --cpuctxsw=none --trace=cuda,nvtx `
-  -o "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\nsight\perf_lab_nvtx" `
-  "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
-  --vector-size 1024 --reduction-size 1024 `
-  --gemm-m 32 --gemm-n 32 --gemm-k 32 `
+  --vector-size 2048 --reduction-size 2048 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --warmup 1 --iters 1
 ```
 
-当前非管理员会话下，`nsys profile` 在本机超时退出，未成功生成 `.nsys-rep`。
+只有在：
 
-另外一个平台差异也已经确认：
+- 程序能正常退出
+- `Validation` 全是 `PASS` 或预期的 `SKIP`
 
-- Linux 文档里常见的 `--trace=osrt`
-- 在当前 Windows 安装的 `nsys` CLI 中不是合法 trace 值
-- 本机可用值包含 `cuda`、`nvtx`、`wddm` 等
+时，才值得继续做 Nsight。
 
-结论：
+### 5.2 第二步：先用 `nsys`
 
-- `nsys` 已安装，版本检查通过
-- 但当前会话不满足实际采集条件
-- 如果要在 Windows 上真正采到 CUDA timeline，建议使用“管理员 PowerShell / CMD”重新运行
+先回答：
 
-### 3. Nsight Compute
+- 时间到底花在哪
+- 是 host 侧同步、拷贝、分配更重，还是 kernel 更重
+- NVTX 各阶段的时间比例是什么
 
-版本检查通过：
+### 5.3 第三步：再用 `ncu`
 
-```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat" --version
-```
+再回答：
 
-设备识别检查：
+- 某一个 kernel 为什么慢
+- occupancy、throughput、launch 配置有没有问题
+- GEMM 是 compute-bound 还是 memory-bound
 
-```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat" `
-  --query-metrics-mode suffix --metrics launch__waves_per_multiprocessor
-```
+## 6. Windows：`nsys`
 
-本机输出要点：
+### 6.1 最小可用命令
 
-- 能识别 `NVIDIA GeForce RTX 5060 (GB206)`
-- 返回 `ERR_NVGPUCTRPERM`
-
-这表示当前会话缺少访问 GPU performance counters 的权限。官方错误说明见：
-
-- [ERR_NVGPUCTRPERM](https://developer.nvidia.com/ERR_NVGPUCTRPERM)
-
-进一步对 `perf_engineering_lab` 做直接 profile 时，本机还遇到了 target launch 失败；但在真正开始采集之前，权限问题已经是明确阻塞项。
-
-结论：
-
-- `ncu` 已安装，版本检查通过
-- 工具和硬件/Toolkit 的版本匹配没有问题
-- 当前 Windows 会话还不能做真正的 kernel-level profiling
-- 下一步应先解决 GPU counter 权限，再谈 profile 结果分析
-
-## 推荐的 Windows 使用方式
-
-### 一键脚本
-
-仓库里已经提供：
-
-- [profile_nsys.ps1](/E:/learning/AI_system/scripts/profile_nsys.ps1)
-- [profile_ncu.ps1](/E:/learning/AI_system/scripts/profile_ncu.ps1)
-
-最小示例：
-
-```powershell
-./scripts/profile_nsys.ps1 -DryRun
-./scripts/profile_ncu.ps1 -DryRun
-```
-
-实际运行示例：
-
-```powershell
-./scripts/profile_nsys.ps1 -EnableWddm
-./scripts/profile_ncu.ps1 -KernelRegex naive_gemm_kernel
-```
-
-说明：
-
-- 两个脚本都会自动发现最新安装的 `nsys` / `ncu`
-- 默认目标是 `windows-vs2022-cuda-release`
-- 默认输出目录是 `out/build/<preset>/nsight/`
-- `-DryRun` 会只打印命令，不真正执行
-
-### Nsight Systems
-
-先进入管理员 PowerShell，然后运行：
+建议在管理员 PowerShell 中运行：
 
 ```powershell
 & "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" profile `
-  --sample=none --cpuctxsw=none --trace=cuda,nvtx `
+  --sample=none `
+  --cpuctxsw=none `
+  --trace=cuda,nvtx `
   --force-overwrite=true `
-  -o "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\nsight\perf_lab_nvtx" `
+  -o ".\nsys_2048_admin" `
   "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
-  --vector-size 1048576 --reduction-size 1048576 `
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
-  --warmup 1 --iters 3
+  --vector-size 2048 --reduction-size 2048 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --warmup 1 --iters 1
 ```
 
-说明：
+### 6.2 常用 `stats` 命令
 
-- 先只用 `cuda,nvtx`
-- `wddm` 需要更高权限时再加
-- `profiled_workload` / `vector_add` / `cuda_benchmark` 这些 range 会直接出现在时间线上
-
-### Nsight Compute
-
-先确保已启用 GPU performance counters，然后再运行：
+只看最有用的几张表：
 
 ```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat" `
-  --set basic `
-  --target-processes all `
-  --kernel-name regex:vector_add_kernel `
-  --launch-count 1 `
-  "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
-  --vector-size 1048576 --reduction-size 1048576 `
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
-  --warmup 1 --iters 3
+& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" stats `
+  --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,cuda_gpu_mem_size_sum `
+  .\nsys_2048_admin.nsys-rep
 ```
 
-再逐步换成：
+只看 `gemm` 这段：
 
-- `reduce_sum_kernel`
-- `naive_gemm_kernel`
+```powershell
+& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" stats `
+  --filter-nvtx gemm `
+  --report cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum `
+  .\nsys_2048_admin.nsys-rep
+```
 
-## Linux 工作流
+### 6.3 脚本入口
 
-这一节对应项目的 Linux 路径，和 `linux-make-cuda-release` preset 对齐；下面的命令和脚本已在当前容器中实际验证。
+仓库里已有：
 
-### 一键脚本
+- [profile_nsys.ps1](/E:/learning/AI_system/scripts/profile_nsys.ps1:1)
 
-仓库里已经提供：
+例如：
 
-- [profile_nsys.sh](/E:/learning/AI_system/scripts/profile_nsys.sh)
-- [profile_ncu.sh](/E:/learning/AI_system/scripts/profile_ncu.sh)
+```powershell
+./scripts/profile_nsys.ps1 -DryRun
+./scripts/profile_nsys.ps1 -VectorSize 2048 -ReductionSize 2048 -GemmM 2048 -GemmN 2048 -GemmK 2048 -Warmup 1 -Iters 1
+```
 
-最小示例：
+## 7. Linux：`nsys`
+
+下面是 Linux 命令模板，本次未验证。
+
+### 7.1 最小可用命令
+
+```bash
+nsys profile \
+  --sample=none \
+  --trace=cuda,nvtx,osrt \
+  --force-overwrite=true \
+  -o ./nsys_2048_linux \
+  ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
+  --vector-size 2048 --reduction-size 2048 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --warmup 1 --iters 1
+```
+
+### 7.2 常用 `stats` 命令
+
+```bash
+nsys stats \
+  --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,cuda_gpu_mem_size_sum \
+  ./nsys_2048_linux.nsys-rep
+```
+
+只看 `gemm`：
+
+```bash
+nsys stats \
+  --filter-nvtx gemm \
+  --report cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum \
+  ./nsys_2048_linux.nsys-rep
+```
+
+### 7.3 脚本入口
+
+仓库里已有：
+
+- [profile_nsys.sh](/E:/learning/AI_system/scripts/profile_nsys.sh:1)
+
+例如：
 
 ```bash
 ./scripts/profile_nsys.sh --dry-run
-./scripts/profile_ncu.sh --dry-run
+./scripts/profile_nsys.sh --vector-size 2048 --reduction-size 2048 --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 --warmup 1 --iters 1
 ```
 
-实际运行示例：
+## 8. `nsys` GUI 常用视图
 
-```bash
-./scripts/profile_nsys.sh --preset linux-make-cuda-release
-./scripts/profile_ncu.sh --kernel-regex naive_gemm_kernel
+### 8.1 Timeline View
+
+最核心的主界面。常看这三层：
+
+- `NVTX`
+- `Threads -> CUDA API`
+- `CUDA HW -> Kernels / Memory`
+
+它适合回答：
+
+- 哪个阶段最慢
+- memcpy 和 kernel 是否交错
+- host 什么时候在等 GPU
+
+### 8.2 Stats System View
+
+这是 GUI 里的统计报表中心，作用等价于 GUI 版 `nsys stats`。
+
+常用场景：
+
+- 快速看 `CUDA API Summary`
+- 看 `CUDA GPU Kernel Summary`
+- 看 `NVTX Range Summary`
+- 抄数字、做汇报
+
+它是聚合视图，不看时序，只看：
+
+- 总时间
+- 调用次数
+- 平均耗时
+
+### 8.3 Expert System View
+
+这是自动规则诊断视图。
+
+常用场景：
+
+- 快速检查是不是有明显的同步问题
+- 看有没有 GPU gaps
+- 看 memcpy 用法是不是命中了常见坏味道
+
+它更像性能巡检，不等于最终结论：
+
+- 有提示时，要回到 timeline 和 stats 验证
+- 没提示，不代表程序已经最优
+
+## 9. Windows：`ncu`
+
+### 9.1 单独抓一个 kernel，并导出 `.ncu-rep`
+
+这也是最推荐的默认用法。
+
+示例：只抓 `naive_gemm_kernel`
+
+```powershell
+& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\target\windows-desktop-win7-x64\ncu.exe" `
+  --set basic `
+  --target-processes all `
+  --kernel-name-base demangled `
+  --kernel-name regex:naive_gemm_kernel `
+  --launch-count 1 `
+  --export .\ncu_naive_gemm_2048 `
+  "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
+  --vector-size 2048 --reduction-size 2048 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --warmup 1 --iters 1
+```
+
+同理可以分别抓：
+
+- `regex:reduce_sum_kernel`
+- `regex:vector_add_kernel`
+- `regex:cutlass_80_simt_sgemm`
+- `regex:tensorop_h`
+- `regex:tensorop_s`
+
+### 9.2 一次抓多个热点 kernel，导出一个 `.ncu-rep`
+
+如果你已经知道主要关注 GEMM 这几类 kernel，可以用一个 regex 抓一组：
+
+```powershell
+& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\target\windows-desktop-win7-x64\ncu.exe" `
+  --set basic `
+  --target-processes all `
+  --kernel-name-base demangled `
+  --kernel-name "regex:naive_gemm_kernel|cutlass_80_simt_sgemm|tensorop_h|tensorop_s" `
+  --launch-count 8 `
+  --export .\docs\reports\ncu_gemm_group_2048 `
+  "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
+  --vector-size 2048 --reduction-size 2048 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --warmup 1 --iters 1
+```
+
+这种方式适合：
+
+- 想把 GEMM 相关 kernel 放到一个报告里统一浏览
+- 先整体摸底，再决定后面单独抓谁
+
+### 9.3 一次抓这次运行中的所有 GPU kernel，导出一个 `.ncu-rep`
+
+可以，做法就是：
+
+- 不传 `--kernel-name`
+- 不用 `--launch-count 1` 把结果限制死
+
+命令示例：
+
+```powershell
+& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\target\windows-desktop-win7-x64\ncu.exe" `
+  --set basic `
+  --target-processes all `
+  --kernel-name-base demangled `
+  --export .\ncu_all_2048 `
+  "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
+  --vector-size 2048 --reduction-size 2048 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --warmup 1 --iters 1
 ```
 
 说明：
 
-- 两个脚本都会优先使用 `PATH` 里的 `nsys` / `ncu`
-- 找不到时会继续回退到 `/usr/local/cuda/bin/` 或 `/usr/local/cuda-*/bin/`
-- 默认输出目录是 `out/build/<preset>/nsight/`
-- `--dry-run` 会只打印命令，不真正执行
+- 这样会把这次运行中被 profile 到的多个 kernel 放进一个 `.ncu-rep`
+- 它适合做“全量摸底”
+- 但不适合作为日常默认方法，因为报告会变大，分析也会更杂
 
-### 1. 构建与测试
+### 9.4 脚本入口
 
-```bash
-./scripts/configure.sh linux-make-cuda-release native
-./scripts/build.sh linux-make-cuda-release
-ctest --preset linux-make-cuda-release
+仓库里已有：
+
+- [profile_ncu.ps1](/E:/learning/AI_system/scripts/profile_ncu.ps1:1)
+
+例如：
+
+```powershell
+./scripts/profile_ncu.ps1 -DryRun
+./scripts/profile_ncu.ps1 -KernelRegex naive_gemm_kernel -GemmM 2048 -GemmN 2048 -GemmK 2048 -Warmup 1 -Iters 1
 ```
 
-### 2. 运行 `perf_engineering_lab`
+## 10. Linux：`ncu`
+
+下面是 Linux 命令模板，本次未验证。
+
+### 10.1 单独抓一个 kernel
 
 ```bash
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
-  --vector-size 1048576 \
-  --reduction-size 1048576 \
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
-  --warmup 1 --iters 3
-```
-
-### 3. 检查 Nsight 工具
-
-```bash
-command -v nsys
-command -v ncu
-nsys --version
-ncu --version
-```
-
-### 4. Linux 上的 `nsys`
-
-Linux 侧最常用的最小命令是：
-
-```bash
-nsys profile --sample=none --trace=cuda,nvtx,osrt -o /tmp/nsys-perf-lab \
-  ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
-  --vector-size 1048576 --reduction-size 1048576 \
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
-  --warmup 1 --iters 3
-```
-
-生成报告后再看摘要：
-
-```bash
-nsys stats /tmp/nsys-perf-lab.nsys-rep
-```
-
-当前容器中的实测结果：
-
-- `nsys --version` 可用
-- `nsys status -e` 通过
-- 上述最小命令可成功生成 `.nsys-rep`
-
-说明：
-
-- Linux 侧常见的 trace 组合是 `cuda,nvtx,osrt`
-- `osrt` 这类 OS runtime trace 在 Linux 工作流里很常见
-- 如果你要采 system-wide sampling、GPU metrics、syscall trace 等更重的特性，通常要按官方文档用 `sudo`
-
-### 5. Linux 上的 `ncu`
-
-先抓最小 kernel：
-
-```bash
-ncu --set basic --target-processes all \
-  --kernel-name regex:vector_add_kernel \
+ncu \
+  --set basic \
+  --target-processes all \
+  --kernel-name-base demangled \
+  --kernel-name regex:naive_gemm_kernel \
   --launch-count 1 \
+  --export ./ncu_naive_gemm_2048 \
   ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
-  --vector-size 1048576 --reduction-size 1048576 \
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
-  --warmup 1 --iters 3
+  --vector-size 2048 --reduction-size 2048 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --warmup 1 --iters 1
 ```
 
-然后再逐步切换到：
+### 10.2 一次抓多个热点 kernel
 
-- `reduce_sum_kernel`
-- `naive_gemm_kernel`
+```bash
+ncu \
+  --set basic \
+  --target-processes all \
+  --kernel-name-base demangled \
+  --kernel-name 'regex:naive_gemm_kernel|cutlass_80_simt_sgemm|tensorop_h|tensorop_s' \
+  --launch-count 8 \
+  --export ./ncu_gemm_group_2048 \
+  ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
+  --vector-size 2048 --reduction-size 2048 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --warmup 1 --iters 1
+```
 
-当前容器中的实测结果：
+### 10.3 一次抓全部 GPU kernel
 
-- `ncu --version` 可用
-- `vector_add_kernel` 最小命令可成功生成 `.ncu-rep`
-- 可正常输出 `Launch Statistics`、`Occupancy` 等指标
+```bash
+ncu \
+  --set basic \
+  --target-processes all \
+  --kernel-name-base demangled \
+  --export ./ncu_all_2048 \
+  ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
+  --vector-size 2048 --reduction-size 2048 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --warmup 1 --iters 1
+```
 
-### 6. Linux 侧权限提示
+### 10.4 脚本入口
 
-根据 Nsight Systems 官方用户指南：
+仓库里已有：
 
-- 一般的应用级 profiling 可以直接用 `nsys profile <app>`
-- 某些功能，比如 system-wide CPU sampling，需要 `sudo`
-- GPU metrics 也属于更高权限的场景
+- [profile_ncu.sh](/E:/learning/AI_system/scripts/profile_ncu.sh:1)
 
-所以在 Linux 上建议分两步走：
+例如：
 
-1. 先用 `--sample=none --trace=cuda,nvtx,osrt` 跑通最小链路
-2. 再按需要加 `sudo` 去做更重的系统级采集
+```bash
+./scripts/profile_ncu.sh --dry-run
+./scripts/profile_ncu.sh --kernel-regex naive_gemm_kernel --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 --warmup 1 --iters 1
+```
 
-参考：
+## 11. `ncu` 的最佳实践
 
-- [Nsight Systems User Guide](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
+### 11.1 默认优先单 kernel 抓取
 
-## 平台差异
+最佳实践通常不是“一把抓全部”，而是：
 
-这部分是跨平台仓库里最容易踩坑的地方。
+1. 先用 `nsys` 找热点
+2. 再用 `ncu` 单独抓热点 kernel
 
-### `nsys` trace 选项
+原因：
 
-- Linux 工作流里常见 `--trace=cuda,nvtx,osrt`
-- 当前 Windows 安装的 `nsys` CLI 不接受 `osrt`
-- Windows 侧更常见的是 `cuda`、`nvtx`、`wddm`
+- `ncu` 为了拿指标会做 replay
+- 抓的 kernel 越多，开销越大
+- 一个报告里混太多 kernel，不利于对比
 
-### 权限模型
+### 11.2 只有在摸底时才一次抓全部
 
-- Windows：当前机器实测表明，非管理员会话会直接影响 `nsys profile`，`ncu` 还会被 GPU counter 权限卡住
-- Linux：普通 CUDA/NVTX trace 往往更容易先跑通，但 system-wide / sampling / metrics 仍然经常需要 `sudo`
+一次抓全部适合：
 
-### 可执行文件路径
+- 第一次看一份 workload
+- 想确认这次运行到底涉及哪些 kernel
+- 为后续精确过滤准备样本
 
-- Windows：通常是 `C:\Program Files\NVIDIA Corporation\...`
-- Linux：更常见的是 `PATH` 里直接有 `nsys` / `ncu`，也可能位于 `/usr/local/cuda/bin/` 或 `/usr/local/cuda-*/bin/`
+不适合：
 
-### 报告文件位置
+- 作为日常默认命令
+- 用来做最终性能对比报告
 
-- Windows：建议写到项目的 `out/build/.../nsight/`
-- Linux：更常见的是 `/tmp/` 或当前工作目录
+### 11.3 `--set basic` 作为第一步
 
-## `nsys` 输出怎么看
+推荐先从：
 
-`nsys` 的核心价值是看“端到端时间线”和“谁在等谁”。
+```text
+--set basic
+```
 
-### GUI / `.nsys-rep`
+开始。先把：
 
-最重要的几类轨道：
+- Speed Of Light
+- Launch Statistics
+- Occupancy
 
-- CPU 线程轨道：看 host 侧是不是卡住了 launch 或同步
-- CUDA API 轨道：看 `cudaMalloc/cudaMemcpy/cudaLaunchKernel/cudaDeviceSynchronize`
-- GPU 轨道：看 kernel 和 memcpy 的时间分布
-- NVTX 轨道：看你自己定义的阶段边界
+看懂，再逐渐加更重的 section。
 
-在这个仓库里，最值得看的不是单个 kernel 的绝对时长，而是：
+### 11.4 profiling workload 要尽量缩小
 
-- `vector_add` / `reduction` / `naive_gemm` 之间谁更重
-- `cpu_benchmark` 和 `cuda_benchmark` 的时间占比
-- correctness 检查是否把 benchmark 结果“污染”了
-- launch / sync 是否过密
+建议：
 
-### `nsys stats`
+- `--warmup 1 --iters 1`
+- 用能复现问题的最小 shape
+- 不要把 benchmark 的所有 sweep 一次都塞进 `ncu`
 
-官方用户指南列出的常用 report 里，对这个仓库最实用的是：
+否则：
 
-- `cuda_api_sum`
-- `cuda_gpu_trace`
-- `cuda_gpu_sum[:nvtx-name]`
-- `nvtx_sum`
+- 报告太大
+- replay 太慢
+- 干扰更重
 
-参考：
+### 11.5 `--kernel-name-base demangled`
 
-- [Nsight Systems User Guide: report scripts](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
+推荐固定加上：
 
-一个实用心法：
+```text
+--kernel-name-base demangled
+```
 
-- `cuda_api_sum`：看 CPU 侧 API 时间花在哪里
-- `cuda_gpu_trace`：看时间顺序和单次 kernel 细节
-- `cuda_gpu_sum`：看同名 kernel 聚合后谁最重
-- `nvtx_sum`：看自己划分的阶段累计耗时
+这样：
 
-如果你已经加了 NVTX，那么 `cuda_gpu_sum[:nvtx-name]` 很适合把 kernel 按“处于哪个 NVTX phase”重新归组。
+- 过滤时更容易写 regex
+- 输出名也更容易读
 
-## `ncu` 输出怎么看
+### 11.6 合理使用 `--launch-count` / `--launch-skip`
 
-`ncu` 的核心价值是看“单个 kernel 为什么快/慢”。
+常见做法：
 
-在 `--set basic` 下，最常见、最值得先看懂的是下面几组。
+- `--launch-count 1`
+  - 抓一个代表性 launch
+- `--launch-skip N`
+  - 跳过前面的 warmup 或不关心的 launch
 
-### GPU Speed Of Light Throughput
+如果 workload 中同一个 kernel 会重复很多次，这两个参数非常重要。
 
-这是一个高层摘要。
+## 12. `ncu` 输出怎么看
 
-关注点：
+先重点看这几组：
 
-- Compute throughput 接近不接近峰值
-- Memory throughput 接近不接近峰值
+- `GPU Speed Of Light Throughput`
+- `Launch Statistics`
+- `Occupancy`
+- `Memory Workload Analysis`
+- `Compute Workload Analysis`
 
-理解方式：
+最常见的解读方式：
 
-- Compute 很低、Memory 也很低：通常是 launch 太小，GPU 根本没吃满
-- Memory 很高、Compute 一般：更像 memory-bound
-- Compute 很高、Memory 一般：更像 compute-bound
+- `Compute Throughput` 高、`Memory Throughput` 一般：更偏 compute-bound
+- `Memory Throughput` 高、`Compute Throughput` 一般：更偏 memory-bound
+- `Waves Per SM` 很低：工作规模可能太小
+- `Achieved Occupancy` 明显低于 `Theoretical Occupancy`：通常还有调度或负载不均衡问题
 
-### Launch Statistics
+## 13. `nsys` / `ncu` 常见分工
 
-这是 launch 配置层面的信息。
+### 用 `nsys` 回答
 
-关注点：
+- 为什么 `e2e` 慢
+- 是不是 memcpy / malloc / synchronize 很重
+- NVTX 哪个阶段最重
+- CPU 和 GPU 有没有明显等待关系
 
-- Grid / Block 配置
-- Waves Per SM
-- 每次 launch 到底给 GPU 多少工作
+### 用 `ncu` 回答
 
-对这个仓库最常见的意义：
+- 为什么某个 GEMM kernel 慢
+- occupancy 是否受寄存器/shared memory 限制
+- throughput 是否接近设备能力
+- 某个 Tensor Core kernel 到底有没有吃满
 
-- 小尺寸 `vector_add` / `reduction` 常常不是 kernel 写得差，而是 grid 太小
-- `Waves Per SM` 很低时，GPU 利用率低通常很正常
+## 14. 当前仓库的落地建议
 
-### Occupancy
+对 `perf_engineering_lab`，最推荐的实际操作是：
 
-这是“理论上能塞多少 warps”和“实际上达到了多少”的对比。
+1. `nsys` 先抓一份 `2048` 或 `1024` 的 `gemm` workload
+2. 在 GUI 或 `stats` 里确认热点 kernel
+3. 用 `ncu` 依次单独抓：
+   - `naive_gemm_kernel`
+   - `cutlass_80_simt_sgemm`
+   - `tensorop_h`
+   - `tensorop_s`
+4. 如果只是想摸底，再补一份 `ncu_all_2048.ncu-rep`
 
-关注点：
+对后续 `labs/gemm` 的 `sgemm_v1/v2/wmma_demo` 也建议继续沿用：
 
-- Theoretical Occupancy
-- Achieved Occupancy
-- 限制来源是不是寄存器、shared memory 或 block size
+- `nsys` 看端到端
+- `ncu` 看单 kernel
+- `e2e` / `kernel_only` 两套 benchmark 同时保留
 
-常见判断：
-
-- Theoretical 很低：先看 block / register / smem 配置
-- Theoretical 很高但 Achieved 很低：通常是工作规模不够，或者运行时行为没有把 SM 喂满
-
-### Memory Workload Analysis
-
-这是看内存系统压力的主入口。
-
-关注点：
-
-- DRAM / L2 / L1/TEX 利用率
-- load/store 分布
-- 是否出现明显的 memory bottleneck
-
-对 `sgemm_v2` 这类后续优化尤其重要，因为：
-
-- vectorized load
-- padding
-- bank conflict 处理
-
-最后都需要在这里找证据，而不是只看 GFLOPS。
-
-### Compute Workload Analysis
-
-这是看算力管线利用率的入口。
-
-关注点：
-
-- 指令类型
-- 算术吞吐
-- pipeline 利用率
-
-对后面的 `wmma_demo`、Tensor Core、CUTLASS/Triton 对比最有帮助。
-
-参考：
-
-- [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html)
-
-## 结合这个仓库，怎么读结果
-
-### 先看 `perf_engineering_lab` 自己的表
-
-先确认：
-
-- `Validation` 全是 `PASS`
-- benchmark 表里 `avg_ms / min_ms / max_ms / perf` 合理
-
-这一步不通过，就不要继续看 Nsight。
-
-### 再用 `nsys`
-
-先回答这类问题：
-
-- 真正慢的是 GPU kernel、CUDA API，还是 host 同步？
-- 当前 workload 是不是被很多很碎的调用切断了？
-- correctness 路径有没有混进 profiling 区间？
-
-### 最后才用 `ncu`
-
-只在下面这些问题出现时再进 `ncu`：
-
-- 为什么 occupancy 低？
-- 为什么 GEMM 吞吐上不去？
-- 是 DRAM/L2/shared memory 还是算力成为瓶颈？
-
-## 当前结论
-
-截至 2026-04-16，这台 Windows 机器上的状态是：
-
-- `perf_engineering_lab` 已接入最小可用 NVTX 标注
-- 工程构建、测试、lab 运行全部正常
-- `ncu 2025.3.1` 与 `CUDA 13.0 + RTX 5060` 在版本层面匹配
-- `nsys 2025.3.2` 与当前环境在版本层面没有明显冲突
-- 但当前非管理员会话下，`nsys profile` 未成功完成，`ncu` 明确被 GPU performance counter 权限阻塞
-
-如果你要在这台机器上真正开始 profiling，建议按这个顺序处理：
-
-1. 用管理员 PowerShell 重新运行 `nsys`
-2. 处理 GPU performance counter 权限，再运行 `ncu`
-3. 先抓 `vector_add`，再抓 `reduction`，最后抓 `naive_gemm`
