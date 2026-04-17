@@ -16,6 +16,8 @@
 
 namespace {
 
+constexpr std::size_t kMaxCpuGemmDimension = 2048;
+
 struct LabOptions {
     std::size_t vector_size {1U << 20U};
     std::size_t reduction_size {1U << 20U};
@@ -127,6 +129,10 @@ std::string format_count_shape(std::size_t count) {
 
 std::string format_gemm_shape(std::size_t m, std::size_t n, std::size_t k) {
     return std::to_string(m) + "x" + std::to_string(n) + "x" + std::to_string(k);
+}
+
+bool should_include_cpu_naive_gemm(std::size_t m, std::size_t n, std::size_t k) {
+    return m <= kMaxCpuGemmDimension && n <= kMaxCpuGemmDimension && k <= kMaxCpuGemmDimension;
 }
 
 double throughput_in_gigabytes(double bytes, double average_ms) {
@@ -325,35 +331,85 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     const std::size_t m = options.gemm_m;
     const std::size_t n = options.gemm_n;
     const std::size_t k = options.gemm_k;
+    const bool include_cpu_naive = should_include_cpu_naive_gemm(m, n, k);
     const std::string shape = format_gemm_shape(m, n, k);
 
     std::vector<float> lhs(m * k);
     std::vector<float> rhs(k * n);
-    std::vector<float> cpu_out;
+    std::vector<float> reference_out;
+    std::string reference_impl_name;
 
     {
         const ai_system::profiling::ScopedNvtxRange phase_range("prepare_inputs");
         ai_system::kernels::fill_random(lhs, -1.0f, 1.0f, 41u);
         ai_system::kernels::fill_random(rhs, -1.0f, 1.0f, 53u);
-        ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
     }
 
     const auto config = make_benchmark_config(options);
-    const auto cpu_result = [&]() {
-        const ai_system::profiling::ScopedNvtxRange phase_range("cpu_benchmark");
-        return ai_system::benchmark::run_benchmark("gemm/cpu_naive", config, [&]() {
-            ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, cpu_out);
-        });
-    }();
-    ai_system::benchmark::add_benchmark_row(
-        report,
-        "gemm_e2e",
-        "cpu_naive",
-        shape,
-        cpu_result,
-        compute_gemm_gflops(m, n, k, cpu_result.average_ms),
-        "GFLOPS"
-    );
+    bool has_reference = false;
+    if(include_cpu_naive) {
+        ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, reference_out);
+        reference_impl_name = "cpu_naive";
+
+        const auto cpu_result = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("cpu_benchmark");
+            return ai_system::benchmark::run_benchmark("gemm/cpu_naive", config, [&]() {
+                ai_system::kernels::naive_gemm_cpu(m, n, k, lhs, rhs, reference_out);
+            });
+        }();
+        ai_system::benchmark::add_benchmark_row(
+            report,
+            "gemm_e2e",
+            "cpu_naive",
+            shape,
+            cpu_result,
+            compute_gemm_gflops(m, n, k, cpu_result.average_ms),
+            "GFLOPS"
+        );
+        has_reference = true;
+    } else {
+        const std::string detail =
+            "Skipped because max(M,N,K) > " + std::to_string(kMaxCpuGemmDimension) + "; CPU baseline disabled.";
+        ai_system::benchmark::add_validation_row(report, "gemm_e2e", "cpu_naive", "size_gate", "SKIP", detail);
+        ai_system::benchmark::add_validation_row(report, "gemm_kernel_only", "cpu_naive", "size_gate", "SKIP", detail);
+
+        std::string reference_error;
+        if(ai_system::kernels::cublas_sgemm_cuda(m, n, k, lhs, rhs, reference_out, reference_error)) {
+            reference_impl_name = "cublas_sgemm";
+            has_reference = true;
+        } else {
+            ai_system::benchmark::add_validation_row(
+                report,
+                "gemm_e2e",
+                "reference",
+                "runtime",
+                "FAIL",
+                "Failed to build cuBLAS SGEMM reference: " + reference_error
+            );
+            ai_system::benchmark::add_validation_row(
+                report,
+                "gemm_kernel_only",
+                "reference",
+                "runtime",
+                "FAIL",
+                "Failed to build cuBLAS SGEMM reference: " + reference_error
+            );
+        }
+    }
+
+    auto format_reference_detail = [&](const std::string& tolerance_label) {
+        if(reference_impl_name.empty()) {
+            return tolerance_label;
+        }
+        return tolerance_label + " reference=" + reference_impl_name + ".";
+    };
+
+    auto compare_against_reference = [&](const std::vector<float>& gpu_out, float absolute_tolerance, float relative_tolerance) {
+        if(!has_reference) {
+            return false;
+        }
+        return ai_system::kernels::allclose(reference_out, gpu_out, absolute_tolerance, relative_tolerance);
+    };
 
     auto run_e2e_gemm_variant = [&](const std::string& impl_name,
                                     const std::string& benchmark_name,
@@ -364,9 +420,12 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         std::vector<float> gpu_out;
         std::string error;
         if(gemm_fn(m, n, k, lhs, rhs, gpu_out, error)) {
-            const bool matches = [&]() {
+            const bool matches = [&]() -> bool {
+                if(!has_reference) {
+                    return false;
+                }
                 const ai_system::profiling::ScopedNvtxRange phase_range("cuda_correctness");
-                return ai_system::kernels::allclose(cpu_out, gpu_out, absolute_tolerance, relative_tolerance);
+                return compare_against_reference(gpu_out, absolute_tolerance, relative_tolerance);
             }();
 
             ai_system::benchmark::add_validation_row(
@@ -374,8 +433,10 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 "gemm_e2e",
                 impl_name,
                 "correctness",
-                matches ? "PASS" : "FAIL",
-                matches ? tolerance_label : "CPU/GPU outputs diverged beyond tolerance."
+                has_reference ? (matches ? "PASS" : "FAIL") : "SKIP",
+                has_reference ? (matches ? format_reference_detail(tolerance_label)
+                                         : "Reference/GPU outputs diverged beyond tolerance.")
+                              : "No correctness reference is available."
             );
 
             const auto gpu_result = [&]() {
@@ -398,7 +459,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 "GFLOPS"
             );
 
-            return matches ? 0 : 1;
+            return has_reference ? (matches ? 0 : 1) : 0;
         }
 
         ai_system::benchmark::add_validation_row(
@@ -445,17 +506,22 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             return AI_SYSTEM_HAS_CUDA ? 1 : 0;
         }
 
-        const bool matches = [&]() {
+        const bool matches = [&]() -> bool {
+            if(!has_reference) {
+                return false;
+            }
             const ai_system::profiling::ScopedNvtxRange phase_range("kernel_only_correctness");
-            return ai_system::kernels::allclose(cpu_out, gpu_out, absolute_tolerance, relative_tolerance);
+            return compare_against_reference(gpu_out, absolute_tolerance, relative_tolerance);
         }();
         ai_system::benchmark::add_validation_row(
             report,
             "gemm_kernel_only",
             impl_name,
             "correctness",
-            matches ? "PASS" : "FAIL",
-            matches ? tolerance_label : "CPU/GPU outputs diverged beyond tolerance."
+            has_reference ? (matches ? "PASS" : "FAIL") : "SKIP",
+            has_reference ? (matches ? format_reference_detail(tolerance_label)
+                                     : "Reference/GPU outputs diverged beyond tolerance.")
+                          : "No correctness reference is available."
         );
 
         const auto gpu_result = [&]() {
@@ -490,7 +556,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             "GFLOPS"
         );
 
-        return matches ? 0 : 1;
+        return has_reference ? (matches ? 0 : 1) : 0;
     };
 
     int failures = 0;

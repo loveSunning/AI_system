@@ -36,19 +36,19 @@ ctest --preset windows-vs2022-cuda-release
 ```powershell
 ./out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 1 --iters 3
 ./out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1048576 --reduction-size 1048576 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 1 --iters 3
-./out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1048576 --reduction-size 1048576 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 1 --iters 3
+./out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1048576 --reduction-size 1048576 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 1 --iters 1
 ```
 
 Nsight Systems:
 
 ```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" profile --sample=none --cpuctxsw=none --trace=cuda,nvtx --force-overwrite=true -o docs/reports/raw/nsys_256_admin out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1024 --reduction-size 1024 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 1 --iters 1
+& "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe" profile --sample=none --cpuctxsw=none --trace=cuda,nvtx --force-overwrite=true -o docs/reports/raw/nsys_2048_admin out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 2048 --reduction-size 2048 --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 --warmup 1 --iters 1
 ```
 
 Nsight Compute:
 
 ```powershell
-& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\target\windows-desktop-win7-x64\ncu.exe" --set basic --target-processes all --launch-count 1 --kernel-name-base demangled --kernel-name regex:naive_gemm_kernel out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 1024 --reduction-size 1024 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 1 --iters 1
+& "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\target\windows-desktop-win7-x64\ncu.exe" --set basic --target-processes all --launch-count 1 --kernel-name-base demangled --kernel-name regex:naive_gemm_kernel out/build/windows-vs2022-cuda-release/labs/perf_engineering/Release/perf_engineering_lab.exe --vector-size 2048 --reduction-size 2048 --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 --warmup 1 --iters 1
 ```
 
 同样的方法还抓了:
