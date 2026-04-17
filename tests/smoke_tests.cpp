@@ -55,6 +55,26 @@ int main() {
         const std::vector<float> reference {19.0f, 22.0f, 43.0f, 50.0f};
         std::vector<float> out;
         std::string error;
+        ai_system::kernels::PreparedGemmKernelRunner runner;
+
+        success &= expect(
+            runner.prepare(ai_system::kernels::GemmBackend::CudaNaive, 2, 2, 2, lhs, rhs, error),
+            "PreparedGemmKernelRunner should prepare the CUDA naive backend."
+        );
+        success &= expect(runner.run(error), "PreparedGemmKernelRunner should launch the CUDA naive backend.");
+        success &= expect(runner.copy_output(out, error), "PreparedGemmKernelRunner should copy results back to the host.");
+        success &= expect(
+            ai_system::kernels::allclose(reference, out, 1.0e-4f, 1.0e-4f),
+            "PreparedGemmKernelRunner should match the CPU reference."
+        );
+    }
+
+    {
+        const std::vector<float> lhs {1.0f, 2.0f, 3.0f, 4.0f};
+        const std::vector<float> rhs {5.0f, 6.0f, 7.0f, 8.0f};
+        const std::vector<float> reference {19.0f, 22.0f, 43.0f, 50.0f};
+        std::vector<float> out;
+        std::string error;
 
         success &= expect(
             ai_system::kernels::cublas_sgemm_cuda(2, 2, 2, lhs, rhs, out, error),

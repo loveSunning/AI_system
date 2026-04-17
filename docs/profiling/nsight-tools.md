@@ -260,8 +260,8 @@ ctest --preset windows-vs2022-cuda-release
   -o "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\nsight\perf_lab_nvtx" `
   "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
   --vector-size 1048576 --reduction-size 1048576 `
-  --gemm-m 256 --gemm-n 256 --gemm-k 256 `
-  --warmup 2 --iters 5
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
+  --warmup 1 --iters 3
 ```
 
 说明：
@@ -281,9 +281,9 @@ ctest --preset windows-vs2022-cuda-release
   --kernel-name regex:vector_add_kernel `
   --launch-count 1 `
   "E:\learning\AI_system\out\build\windows-vs2022-cuda-release\labs\perf_engineering\Release\perf_engineering_lab.exe" `
-  --vector-size 1048576 --reduction-size 1024 `
-  --gemm-m 32 --gemm-n 32 --gemm-k 32 `
-  --warmup 1 --iters 1
+  --vector-size 1048576 --reduction-size 1048576 `
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
+  --warmup 1 --iters 3
 ```
 
 再逐步换成：
@@ -335,10 +335,10 @@ ctest --preset linux-make-cuda-release
 
 ```bash
 ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
-  --vector-size 1024 \
-  --reduction-size 1024 \
-  --gemm-m 32 --gemm-n 32 --gemm-k 32 \
-  --warmup 1 --iters 1
+  --vector-size 1048576 \
+  --reduction-size 1048576 \
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --warmup 1 --iters 3
 ```
 
 ### 3. 检查 Nsight 工具
@@ -358,8 +358,8 @@ Linux 侧最常用的最小命令是：
 nsys profile --sample=none --trace=cuda,nvtx,osrt -o /tmp/nsys-perf-lab \
   ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
   --vector-size 1048576 --reduction-size 1048576 \
-  --gemm-m 256 --gemm-n 256 --gemm-k 256 \
-  --warmup 2 --iters 5
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --warmup 1 --iters 3
 ```
 
 生成报告后再看摘要：
@@ -389,9 +389,9 @@ ncu --set basic --target-processes all \
   --kernel-name regex:vector_add_kernel \
   --launch-count 1 \
   ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
-  --vector-size 1048576 --reduction-size 1024 \
-  --gemm-m 32 --gemm-n 32 --gemm-k 32 \
-  --warmup 1 --iters 1
+  --vector-size 1048576 --reduction-size 1048576 \
+  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --warmup 1 --iters 3
 ```
 
 然后再逐步切换到：

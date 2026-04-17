@@ -97,6 +97,40 @@ bool allclose(
 
 #if !AI_SYSTEM_HAS_CUDA
 
+PreparedGemmKernelRunner::PreparedGemmKernelRunner() = default;
+PreparedGemmKernelRunner::~PreparedGemmKernelRunner() = default;
+PreparedGemmKernelRunner::PreparedGemmKernelRunner(PreparedGemmKernelRunner&& other) noexcept = default;
+PreparedGemmKernelRunner& PreparedGemmKernelRunner::operator=(PreparedGemmKernelRunner&& other) noexcept = default;
+
+bool PreparedGemmKernelRunner::prepare(
+    GemmBackend,
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::string& error
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool PreparedGemmKernelRunner::run(std::string& error) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool PreparedGemmKernelRunner::run_timed(double& elapsed_ms, std::string& error) {
+    elapsed_ms = 0.0;
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool PreparedGemmKernelRunner::copy_output(std::vector<float>&, std::string& error) const {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
 bool vector_add_cuda(
     const std::vector<float>&,
     const std::vector<float>&,

@@ -113,22 +113,20 @@ bool copy_scalar_to_host(float& dst, const float* src, std::string& error) {
     return true;
 }
 
-bool check_last_launch(std::string& error) {
-    const auto status = cudaGetLastError();
+bool check_cuda_status(cudaError_t status, const char* context, std::string& error) {
     if(status != cudaSuccess) {
-        error = cudaGetErrorString(status);
+        error = std::string(context) + ": " + cudaGetErrorString(status);
         return false;
     }
     return true;
 }
 
+bool check_last_launch(std::string& error) {
+    return check_cuda_status(cudaGetLastError(), "cudaGetLastError", error);
+}
+
 bool synchronize(std::string& error) {
-    const auto status = cudaDeviceSynchronize();
-    if(status != cudaSuccess) {
-        error = cudaGetErrorString(status);
-        return false;
-    }
-    return true;
+    return check_cuda_status(cudaDeviceSynchronize(), "cudaDeviceSynchronize", error);
 }
 
 const char* cublas_status_string(cublasStatus_t status) {
@@ -295,7 +293,407 @@ __global__ void naive_gemm_kernel(
     out[row * n + column] = accumulator;
 }
 
+bool launch_naive_gemm(
+    const float* lhs,
+    const float* rhs,
+    float* out,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    std::string& error
+) {
+    const dim3 block(16, 16);
+    const dim3 grid(
+        static_cast<unsigned int>((n + block.x - 1) / block.x),
+        static_cast<unsigned int>((m + block.y - 1) / block.y)
+    );
+
+    naive_gemm_kernel<<<grid, block>>>(lhs, rhs, out, m, n, k);
+    return check_last_launch(error);
+}
+
+bool launch_cublas_sgemm(
+    cublasHandle_t handle,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const float* lhs,
+    const float* rhs,
+    float* out,
+    std::string& error
+) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    return check_cublas_status(
+        cublasSgemm(
+            handle,
+            CUBLAS_OP_N,
+            CUBLAS_OP_N,
+            static_cast<int>(n),
+            static_cast<int>(m),
+            static_cast<int>(k),
+            &alpha,
+            rhs,
+            static_cast<int>(n),
+            lhs,
+            static_cast<int>(k),
+            &beta,
+            out,
+            static_cast<int>(n)
+        ),
+        "cublasSgemm",
+        error
+    );
+}
+
+bool launch_cublas_hgemm(
+    cublasHandle_t handle,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const __half* lhs,
+    const __half* rhs,
+    __half* out,
+    std::string& error
+) {
+    const __half alpha = __float2half_rn(1.0f);
+    const __half beta = __float2half_rn(0.0f);
+    return check_cublas_status(
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N,
+            CUBLAS_OP_N,
+            static_cast<int>(n),
+            static_cast<int>(m),
+            static_cast<int>(k),
+            &alpha,
+            rhs,
+            CUDA_R_16F,
+            static_cast<int>(n),
+            lhs,
+            CUDA_R_16F,
+            static_cast<int>(k),
+            &beta,
+            out,
+            CUDA_R_16F,
+            static_cast<int>(n),
+            CUBLAS_COMPUTE_16F,
+            CUBLAS_GEMM_DEFAULT
+        ),
+        "cublasGemmEx(hgemm)",
+        error
+    );
+}
+
+bool launch_cublas_tensor_core_gemm(
+    cublasHandle_t handle,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const __half* lhs,
+    const __half* rhs,
+    float* out,
+    std::string& error
+) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    return check_cublas_status(
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N,
+            CUBLAS_OP_N,
+            static_cast<int>(n),
+            static_cast<int>(m),
+            static_cast<int>(k),
+            &alpha,
+            rhs,
+            CUDA_R_16F,
+            static_cast<int>(n),
+            lhs,
+            CUDA_R_16F,
+            static_cast<int>(k),
+            &beta,
+            out,
+            CUDA_R_32F,
+            static_cast<int>(n),
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT_TENSOR_OP
+        ),
+        "cublasGemmEx(tensor_core)",
+        error
+    );
+}
+
 }  // namespace
+
+struct PreparedGemmKernelRunner::Impl {
+    GemmBackend backend {GemmBackend::CudaNaive};
+    std::size_t m {0};
+    std::size_t n {0};
+    std::size_t k {0};
+    bool prepared {false};
+    DeviceBuffer<float> lhs_float;
+    DeviceBuffer<float> rhs_float;
+    DeviceBuffer<float> out_float;
+    DeviceBuffer<__half> lhs_half;
+    DeviceBuffer<__half> rhs_half;
+    DeviceBuffer<__half> out_half;
+    CublasHandle handle;
+    cudaEvent_t start_event {nullptr};
+    cudaEvent_t stop_event {nullptr};
+
+    ~Impl() {
+        reset_events();
+    }
+
+    bool prepare(
+        GemmBackend requested_backend,
+        std::size_t requested_m,
+        std::size_t requested_n,
+        std::size_t requested_k,
+        const std::vector<float>& lhs,
+        const std::vector<float>& rhs,
+        std::string& error
+    ) {
+        if(!validate_gemm_inputs(requested_m, requested_n, requested_k, lhs, rhs, error)) {
+            return false;
+        }
+
+        if(!ensure_events(error)) {
+            return false;
+        }
+
+        backend = requested_backend;
+        m = requested_m;
+        n = requested_n;
+        k = requested_k;
+        prepared = false;
+        handle.reset();
+
+        lhs_float.reset();
+        rhs_float.reset();
+        out_float.reset();
+        lhs_half.reset();
+        rhs_half.reset();
+        out_half.reset();
+
+        switch(backend) {
+            case GemmBackend::CudaNaive:
+                if(!lhs_float.allocate(lhs.size(), error) ||
+                   !rhs_float.allocate(rhs.size(), error) ||
+                   !out_float.allocate(m * n, error)) {
+                    return false;
+                }
+                if(!copy_to_device(lhs_float.get(), lhs, error) || !copy_to_device(rhs_float.get(), rhs, error)) {
+                    return false;
+                }
+                break;
+            case GemmBackend::CublasSgemm:
+                if(!handle.create(error) ||
+                   !lhs_float.allocate(lhs.size(), error) ||
+                   !rhs_float.allocate(rhs.size(), error) ||
+                   !out_float.allocate(m * n, error)) {
+                    return false;
+                }
+                if(!copy_to_device(lhs_float.get(), lhs, error) || !copy_to_device(rhs_float.get(), rhs, error)) {
+                    return false;
+                }
+                if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
+                    return false;
+                }
+                break;
+            case GemmBackend::CublasHgemm: {
+                const std::vector<__half> lhs_converted = convert_to_half(lhs);
+                const std::vector<__half> rhs_converted = convert_to_half(rhs);
+                if(!handle.create(error) ||
+                   !lhs_half.allocate(lhs_converted.size(), error) ||
+                   !rhs_half.allocate(rhs_converted.size(), error) ||
+                   !out_half.allocate(m * n, error)) {
+                    return false;
+                }
+                if(!copy_to_device(lhs_half.get(), lhs_converted, error) ||
+                   !copy_to_device(rhs_half.get(), rhs_converted, error)) {
+                    return false;
+                }
+                if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
+                    return false;
+                }
+                break;
+            }
+            case GemmBackend::CublasTensorCore: {
+                const std::vector<__half> lhs_converted = convert_to_half(lhs);
+                const std::vector<__half> rhs_converted = convert_to_half(rhs);
+                if(!handle.create(error) ||
+                   !lhs_half.allocate(lhs_converted.size(), error) ||
+                   !rhs_half.allocate(rhs_converted.size(), error) ||
+                   !out_float.allocate(m * n, error)) {
+                    return false;
+                }
+                if(!copy_to_device(lhs_half.get(), lhs_converted, error) ||
+                   !copy_to_device(rhs_half.get(), rhs_converted, error)) {
+                    return false;
+                }
+                if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_TENSOR_OP_MATH), "cublasSetMathMode", error)) {
+                    return false;
+                }
+                break;
+            }
+        }
+
+        prepared = true;
+        return true;
+    }
+
+    bool run(std::string& error) {
+        if(!launch(error)) {
+            return false;
+        }
+        return synchronize(error);
+    }
+
+    bool run_timed(double& elapsed_ms, std::string& error) {
+        elapsed_ms = 0.0;
+        if(!prepared) {
+            error = "PreparedGemmKernelRunner::prepare must succeed before run_timed.";
+            return false;
+        }
+
+        if(!check_cuda_status(cudaEventRecord(start_event), "cudaEventRecord(start)", error)) {
+            return false;
+        }
+        if(!launch(error)) {
+            return false;
+        }
+        if(!check_cuda_status(cudaEventRecord(stop_event), "cudaEventRecord(stop)", error)) {
+            return false;
+        }
+        if(!check_cuda_status(cudaEventSynchronize(stop_event), "cudaEventSynchronize(stop)", error)) {
+            return false;
+        }
+
+        float event_ms = 0.0f;
+        if(!check_cuda_status(cudaEventElapsedTime(&event_ms, start_event, stop_event), "cudaEventElapsedTime", error)) {
+            return false;
+        }
+
+        elapsed_ms = static_cast<double>(event_ms);
+        return true;
+    }
+
+    bool copy_output(std::vector<float>& out, std::string& error) const {
+        if(!prepared) {
+            error = "PreparedGemmKernelRunner::prepare must succeed before copy_output.";
+            return false;
+        }
+
+        switch(backend) {
+            case GemmBackend::CudaNaive:
+            case GemmBackend::CublasSgemm:
+            case GemmBackend::CublasTensorCore:
+                out.assign(m * n, 0.0f);
+                return copy_to_host(out, out_float.get(), error);
+            case GemmBackend::CublasHgemm: {
+                std::vector<__half> out_converted(m * n);
+                if(!copy_to_host(out_converted, out_half.get(), error)) {
+                    return false;
+                }
+                convert_half_to_float(out_converted, out);
+                return true;
+            }
+        }
+
+        error = "Unsupported GEMM backend.";
+        return false;
+    }
+
+private:
+    bool ensure_events(std::string& error) {
+        if(start_event == nullptr) {
+            if(!check_cuda_status(cudaEventCreate(&start_event), "cudaEventCreate(start)", error)) {
+                start_event = nullptr;
+                return false;
+            }
+        }
+
+        if(stop_event == nullptr) {
+            if(!check_cuda_status(cudaEventCreate(&stop_event), "cudaEventCreate(stop)", error)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void reset_events() {
+        if(start_event != nullptr) {
+            cudaEventDestroy(start_event);
+            start_event = nullptr;
+        }
+        if(stop_event != nullptr) {
+            cudaEventDestroy(stop_event);
+            stop_event = nullptr;
+        }
+    }
+
+    bool launch(std::string& error) {
+        if(!prepared) {
+            error = "PreparedGemmKernelRunner::prepare must succeed before run.";
+            return false;
+        }
+
+        switch(backend) {
+            case GemmBackend::CudaNaive:
+                return launch_naive_gemm(lhs_float.get(), rhs_float.get(), out_float.get(), m, n, k, error);
+            case GemmBackend::CublasSgemm:
+                return launch_cublas_sgemm(handle.get(), m, n, k, lhs_float.get(), rhs_float.get(), out_float.get(), error);
+            case GemmBackend::CublasHgemm:
+                return launch_cublas_hgemm(handle.get(), m, n, k, lhs_half.get(), rhs_half.get(), out_half.get(), error);
+            case GemmBackend::CublasTensorCore:
+                return launch_cublas_tensor_core_gemm(
+                    handle.get(),
+                    m,
+                    n,
+                    k,
+                    lhs_half.get(),
+                    rhs_half.get(),
+                    out_float.get(),
+                    error
+                );
+        }
+
+        error = "Unsupported GEMM backend.";
+        return false;
+    }
+};
+
+PreparedGemmKernelRunner::PreparedGemmKernelRunner() : impl_(std::make_unique<Impl>()) {}
+PreparedGemmKernelRunner::~PreparedGemmKernelRunner() = default;
+PreparedGemmKernelRunner::PreparedGemmKernelRunner(PreparedGemmKernelRunner&& other) noexcept = default;
+PreparedGemmKernelRunner& PreparedGemmKernelRunner::operator=(PreparedGemmKernelRunner&& other) noexcept = default;
+
+bool PreparedGemmKernelRunner::prepare(
+    GemmBackend backend,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::string& error
+) {
+    return impl_->prepare(backend, m, n, k, lhs, rhs, error);
+}
+
+bool PreparedGemmKernelRunner::run(std::string& error) {
+    return impl_->run(error);
+}
+
+bool PreparedGemmKernelRunner::run_timed(double& elapsed_ms, std::string& error) {
+    return impl_->run_timed(elapsed_ms, error);
+}
+
+bool PreparedGemmKernelRunner::copy_output(std::vector<float>& out, std::string& error) const {
+    return impl_->copy_output(out, error);
+}
 
 bool vector_add_cuda(
     const std::vector<float>& lhs,
@@ -390,44 +788,9 @@ bool naive_gemm_cuda(
     std::vector<float>& out,
     std::string& error
 ) {
-    if(lhs.size() != m * k) {
-        error = "naive_gemm_cuda requires lhs.size() == m * k.";
-        return false;
-    }
-    if(rhs.size() != k * n) {
-        error = "naive_gemm_cuda requires rhs.size() == k * n.";
-        return false;
-    }
-
-    out.assign(m * n, 0.0f);
-
-    DeviceBuffer<float> lhs_device;
-    DeviceBuffer<float> rhs_device;
-    DeviceBuffer<float> out_device;
-
-    if(!lhs_device.allocate(lhs.size(), error) ||
-       !rhs_device.allocate(rhs.size(), error) ||
-       !out_device.allocate(out.size(), error)) {
-        return false;
-    }
-
-    if(!copy_to_device(lhs_device.get(), lhs, error) || !copy_to_device(rhs_device.get(), rhs, error)) {
-        return false;
-    }
-
-    const dim3 block(16, 16);
-    const dim3 grid(
-        static_cast<unsigned int>((n + block.x - 1) / block.x),
-        static_cast<unsigned int>((m + block.y - 1) / block.y)
-    );
-
-    naive_gemm_kernel<<<grid, block>>>(lhs_device.get(), rhs_device.get(), out_device.get(), m, n, k);
-
-    if(!check_last_launch(error) || !synchronize(error)) {
-        return false;
-    }
-
-    return copy_to_host(out, out_device.get(), error);
+    PreparedGemmKernelRunner runner;
+    return runner.prepare(GemmBackend::CudaNaive, m, n, k, lhs, rhs, error) && runner.run(error) &&
+           runner.copy_output(out, error);
 }
 
 bool cublas_sgemm_cuda(
@@ -439,56 +802,9 @@ bool cublas_sgemm_cuda(
     std::vector<float>& out,
     std::string& error
 ) {
-    if(!validate_gemm_inputs(m, n, k, lhs, rhs, error)) {
-        return false;
-    }
-
-    out.assign(m * n, 0.0f);
-
-    DeviceBuffer<float> lhs_device;
-    DeviceBuffer<float> rhs_device;
-    DeviceBuffer<float> out_device;
-    CublasHandle handle;
-
-    if(!handle.create(error) ||
-       !lhs_device.allocate(lhs.size(), error) ||
-       !rhs_device.allocate(rhs.size(), error) ||
-       !out_device.allocate(out.size(), error)) {
-        return false;
-    }
-
-    if(!copy_to_device(lhs_device.get(), lhs, error) || !copy_to_device(rhs_device.get(), rhs, error)) {
-        return false;
-    }
-
-    if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
-        return false;
-    }
-
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    const auto status = cublasSgemm(
-        handle.get(),
-        CUBLAS_OP_N,
-        CUBLAS_OP_N,
-        static_cast<int>(n),
-        static_cast<int>(m),
-        static_cast<int>(k),
-        &alpha,
-        rhs_device.get(),
-        static_cast<int>(n),
-        lhs_device.get(),
-        static_cast<int>(k),
-        &beta,
-        out_device.get(),
-        static_cast<int>(n)
-    );
-
-    if(!check_cublas_status(status, "cublasSgemm", error) || !synchronize(error)) {
-        return false;
-    }
-
-    return copy_to_host(out, out_device.get(), error);
+    PreparedGemmKernelRunner runner;
+    return runner.prepare(GemmBackend::CublasSgemm, m, n, k, lhs, rhs, error) && runner.run(error) &&
+           runner.copy_output(out, error);
 }
 
 bool cublas_hgemm_cuda(
@@ -500,68 +816,9 @@ bool cublas_hgemm_cuda(
     std::vector<float>& out,
     std::string& error
 ) {
-    if(!validate_gemm_inputs(m, n, k, lhs, rhs, error)) {
-        return false;
-    }
-
-    std::vector<__half> lhs_half = convert_to_half(lhs);
-    std::vector<__half> rhs_half = convert_to_half(rhs);
-    std::vector<__half> out_half(m * n);
-
-    DeviceBuffer<__half> lhs_device;
-    DeviceBuffer<__half> rhs_device;
-    DeviceBuffer<__half> out_device;
-    CublasHandle handle;
-
-    if(!handle.create(error) ||
-       !lhs_device.allocate(lhs_half.size(), error) ||
-       !rhs_device.allocate(rhs_half.size(), error) ||
-       !out_device.allocate(out_half.size(), error)) {
-        return false;
-    }
-
-    if(!copy_to_device(lhs_device.get(), lhs_half, error) || !copy_to_device(rhs_device.get(), rhs_half, error)) {
-        return false;
-    }
-
-    if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
-        return false;
-    }
-
-    const __half alpha = __float2half_rn(1.0f);
-    const __half beta = __float2half_rn(0.0f);
-    const auto status = cublasGemmEx(
-        handle.get(),
-        CUBLAS_OP_N,
-        CUBLAS_OP_N,
-        static_cast<int>(n),
-        static_cast<int>(m),
-        static_cast<int>(k),
-        &alpha,
-        rhs_device.get(),
-        CUDA_R_16F,
-        static_cast<int>(n),
-        lhs_device.get(),
-        CUDA_R_16F,
-        static_cast<int>(k),
-        &beta,
-        out_device.get(),
-        CUDA_R_16F,
-        static_cast<int>(n),
-        CUBLAS_COMPUTE_16F,
-        CUBLAS_GEMM_DEFAULT
-    );
-
-    if(!check_cublas_status(status, "cublasGemmEx(hgemm)", error) || !synchronize(error)) {
-        return false;
-    }
-
-    if(!copy_to_host(out_half, out_device.get(), error)) {
-        return false;
-    }
-
-    convert_half_to_float(out_half, out);
-    return true;
+    PreparedGemmKernelRunner runner;
+    return runner.prepare(GemmBackend::CublasHgemm, m, n, k, lhs, rhs, error) && runner.run(error) &&
+           runner.copy_output(out, error);
 }
 
 bool cublas_tensor_core_gemm_cuda(
@@ -573,63 +830,9 @@ bool cublas_tensor_core_gemm_cuda(
     std::vector<float>& out,
     std::string& error
 ) {
-    if(!validate_gemm_inputs(m, n, k, lhs, rhs, error)) {
-        return false;
-    }
-
-    std::vector<__half> lhs_half = convert_to_half(lhs);
-    std::vector<__half> rhs_half = convert_to_half(rhs);
-    out.assign(m * n, 0.0f);
-
-    DeviceBuffer<__half> lhs_device;
-    DeviceBuffer<__half> rhs_device;
-    DeviceBuffer<float> out_device;
-    CublasHandle handle;
-
-    if(!handle.create(error) ||
-       !lhs_device.allocate(lhs_half.size(), error) ||
-       !rhs_device.allocate(rhs_half.size(), error) ||
-       !out_device.allocate(out.size(), error)) {
-        return false;
-    }
-
-    if(!copy_to_device(lhs_device.get(), lhs_half, error) || !copy_to_device(rhs_device.get(), rhs_half, error)) {
-        return false;
-    }
-
-    if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_TENSOR_OP_MATH), "cublasSetMathMode", error)) {
-        return false;
-    }
-
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    const auto status = cublasGemmEx(
-        handle.get(),
-        CUBLAS_OP_N,
-        CUBLAS_OP_N,
-        static_cast<int>(n),
-        static_cast<int>(m),
-        static_cast<int>(k),
-        &alpha,
-        rhs_device.get(),
-        CUDA_R_16F,
-        static_cast<int>(n),
-        lhs_device.get(),
-        CUDA_R_16F,
-        static_cast<int>(k),
-        &beta,
-        out_device.get(),
-        CUDA_R_32F,
-        static_cast<int>(n),
-        CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP
-    );
-
-    if(!check_cublas_status(status, "cublasGemmEx(tensor_core)", error) || !synchronize(error)) {
-        return false;
-    }
-
-    return copy_to_host(out, out_device.get(), error);
+    PreparedGemmKernelRunner runner;
+    return runner.prepare(GemmBackend::CublasTensorCore, m, n, k, lhs, rhs, error) && runner.run(error) &&
+           runner.copy_output(out, error);
 }
 
 }  // namespace ai_system::kernels

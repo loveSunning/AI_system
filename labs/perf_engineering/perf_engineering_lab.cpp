@@ -347,7 +347,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     }();
     ai_system::benchmark::add_benchmark_row(
         report,
-        "gemm",
+        "gemm_e2e",
         "cpu_naive",
         shape,
         cpu_result,
@@ -355,7 +355,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         "GFLOPS"
     );
 
-    auto run_gpu_gemm_variant = [&](const std::string& impl_name,
+    auto run_e2e_gemm_variant = [&](const std::string& impl_name,
                                     const std::string& benchmark_name,
                                     auto&& gemm_fn,
                                     float absolute_tolerance,
@@ -371,7 +371,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
             ai_system::benchmark::add_validation_row(
                 report,
-                "gemm",
+                "gemm_e2e",
                 impl_name,
                 "correctness",
                 matches ? "PASS" : "FAIL",
@@ -390,7 +390,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
             ai_system::benchmark::add_benchmark_row(
                 report,
-                "gemm",
+                "gemm_e2e",
                 impl_name,
                 shape,
                 gpu_result,
@@ -403,7 +403,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
         ai_system::benchmark::add_validation_row(
             report,
-            "gemm",
+            "gemm_e2e",
             impl_name,
             "runtime",
             AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
@@ -412,35 +412,148 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         return AI_SYSTEM_HAS_CUDA ? 1 : 0;
     };
 
+    auto run_kernel_only_gemm_variant = [&](const std::string& impl_name,
+                                            const std::string& benchmark_name,
+                                            ai_system::kernels::GemmBackend backend,
+                                            float absolute_tolerance,
+                                            float relative_tolerance,
+                                            const std::string& tolerance_label) {
+        ai_system::kernels::PreparedGemmKernelRunner runner;
+        std::string error;
+        if(!runner.prepare(backend, m, n, k, lhs, rhs, error)) {
+            ai_system::benchmark::add_validation_row(
+                report,
+                "gemm_kernel_only",
+                impl_name,
+                "prepare",
+                AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+                error
+            );
+            return AI_SYSTEM_HAS_CUDA ? 1 : 0;
+        }
+
+        std::vector<float> gpu_out;
+        if(!runner.run(error) || !runner.copy_output(gpu_out, error)) {
+            ai_system::benchmark::add_validation_row(
+                report,
+                "gemm_kernel_only",
+                impl_name,
+                "runtime",
+                AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+                error
+            );
+            return AI_SYSTEM_HAS_CUDA ? 1 : 0;
+        }
+
+        const bool matches = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("kernel_only_correctness");
+            return ai_system::kernels::allclose(cpu_out, gpu_out, absolute_tolerance, relative_tolerance);
+        }();
+        ai_system::benchmark::add_validation_row(
+            report,
+            "gemm_kernel_only",
+            impl_name,
+            "correctness",
+            matches ? "PASS" : "FAIL",
+            matches ? tolerance_label : "CPU/GPU outputs diverged beyond tolerance."
+        );
+
+        const auto gpu_result = [&]() {
+            const ai_system::profiling::ScopedNvtxRange phase_range("kernel_only_benchmark");
+            return ai_system::benchmark::run_timed_benchmark(
+                benchmark_name,
+                config,
+                [&]() {
+                    std::string local_error;
+                    if(!runner.run(local_error)) {
+                        throw std::runtime_error(local_error);
+                    }
+                },
+                [&]() -> double {
+                    double elapsed_ms = 0.0;
+                    std::string local_error;
+                    if(!runner.run_timed(elapsed_ms, local_error)) {
+                        throw std::runtime_error(local_error);
+                    }
+                    return elapsed_ms;
+                }
+            );
+        }();
+
+        ai_system::benchmark::add_benchmark_row(
+            report,
+            "gemm_kernel_only",
+            impl_name,
+            shape,
+            gpu_result,
+            compute_gemm_gflops(m, n, k, gpu_result.average_ms),
+            "GFLOPS"
+        );
+
+        return matches ? 0 : 1;
+    };
+
     int failures = 0;
-    failures += run_gpu_gemm_variant(
+    failures += run_e2e_gemm_variant(
         "cuda_naive",
-        "gemm/cuda_naive",
+        "gemm/e2e/cuda_naive",
         ai_system::kernels::naive_gemm_cuda,
         1.0e-3f,
         1.0e-3f,
         "allclose(abs=1e-3, rel=1e-3)."
     );
-    failures += run_gpu_gemm_variant(
+    failures += run_e2e_gemm_variant(
         "cublas_sgemm",
-        "gemm/cublas_sgemm",
+        "gemm/e2e/cublas_sgemm",
         ai_system::kernels::cublas_sgemm_cuda,
         1.0e-4f,
         1.0e-4f,
         "allclose(abs=1e-4, rel=1e-4)."
     );
-    failures += run_gpu_gemm_variant(
+    failures += run_e2e_gemm_variant(
         "cublas_hgemm",
-        "gemm/cublas_hgemm",
+        "gemm/e2e/cublas_hgemm",
         ai_system::kernels::cublas_hgemm_cuda,
         5.0e-1f,
         5.0e-1f,
         "allclose(abs=5e-1, rel=5e-1)."
     );
-    failures += run_gpu_gemm_variant(
+    failures += run_e2e_gemm_variant(
         "cublas_tensor_core",
-        "gemm/cublas_tensor_core",
+        "gemm/e2e/cublas_tensor_core",
         ai_system::kernels::cublas_tensor_core_gemm_cuda,
+        5.0e-2f,
+        5.0e-2f,
+        "allclose(abs=5e-2, rel=5e-2)."
+    );
+    failures += run_kernel_only_gemm_variant(
+        "cuda_naive",
+        "gemm/kernel_only/cuda_naive",
+        ai_system::kernels::GemmBackend::CudaNaive,
+        1.0e-3f,
+        1.0e-3f,
+        "allclose(abs=1e-3, rel=1e-3)."
+    );
+    failures += run_kernel_only_gemm_variant(
+        "cublas_sgemm",
+        "gemm/kernel_only/cublas_sgemm",
+        ai_system::kernels::GemmBackend::CublasSgemm,
+        1.0e-4f,
+        1.0e-4f,
+        "allclose(abs=1e-4, rel=1e-4)."
+    );
+    failures += run_kernel_only_gemm_variant(
+        "cublas_hgemm",
+        "gemm/kernel_only/cublas_hgemm",
+        ai_system::kernels::GemmBackend::CublasHgemm,
+        5.0e-1f,
+        5.0e-1f,
+        "allclose(abs=5e-1, rel=5e-1)."
+    );
+    failures += run_kernel_only_gemm_variant(
+        "cublas_tensor_core",
+        "gemm/kernel_only/cublas_tensor_core",
+        ai_system::kernels::GemmBackend::CublasTensorCore,
         5.0e-2f,
         5.0e-2f,
         "allclose(abs=5e-2, rel=5e-2)."

@@ -26,4 +26,11 @@ BenchmarkResult run_benchmark(
     const std::function<void()>& fn
 );
 
+BenchmarkResult run_timed_benchmark(
+    const std::string& name,
+    const BenchmarkConfig& config,
+    const std::function<void()>& warmup_fn,
+    const std::function<double()>& timed_fn
+);
+
 }  // namespace ai_system::benchmark
