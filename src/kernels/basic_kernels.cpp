@@ -97,6 +97,8 @@ bool allclose(
 
 #if !AI_SYSTEM_HAS_CUDA
 
+struct PreparedGemmKernelRunner::Impl {};
+
 PreparedGemmKernelRunner::PreparedGemmKernelRunner() = default;
 PreparedGemmKernelRunner::~PreparedGemmKernelRunner() = default;
 PreparedGemmKernelRunner::PreparedGemmKernelRunner(PreparedGemmKernelRunner&& other) noexcept = default;

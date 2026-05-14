@@ -1,8 +1,8 @@
 #include "ai_system/kernels/basic_kernels.hpp"
+#include "ai_system/cuda/runtime.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
-#include <cuda_runtime.h>
 
 #include <limits>
 #include <string>
@@ -12,122 +12,6 @@
 namespace ai_system::kernels {
 
 namespace {
-
-template <typename T>
-class DeviceBuffer {
-public:
-    DeviceBuffer() = default;
-
-    ~DeviceBuffer() {
-        reset();
-    }
-
-    DeviceBuffer(const DeviceBuffer&) = delete;
-    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
-
-    DeviceBuffer(DeviceBuffer&& other) noexcept : ptr_(other.ptr_) {
-        other.ptr_ = nullptr;
-    }
-
-    DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
-        if(this != &other) {
-            reset();
-            ptr_ = other.ptr_;
-            other.ptr_ = nullptr;
-        }
-        return *this;
-    }
-
-    bool allocate(std::size_t count, std::string& error) {
-        reset();
-        const auto status = cudaMalloc(&ptr_, sizeof(T) * count);
-        if(status != cudaSuccess) {
-            error = cudaGetErrorString(status);
-            ptr_ = nullptr;
-            return false;
-        }
-        return true;
-    }
-
-    void reset() {
-        if(ptr_ != nullptr) {
-            cudaFree(ptr_);
-            ptr_ = nullptr;
-        }
-    }
-
-    T* get() {
-        return ptr_;
-    }
-
-    const T* get() const {
-        return ptr_;
-    }
-
-private:
-    T* ptr_ {nullptr};
-};
-
-template <typename T>
-bool copy_buffer_to_device(T* dst, const T* src, std::size_t count, std::string& error) {
-    const auto status = cudaMemcpy(dst, src, sizeof(T) * count, cudaMemcpyHostToDevice);
-    if(status != cudaSuccess) {
-        error = cudaGetErrorString(status);
-        return false;
-    }
-    return true;
-}
-
-template <typename T>
-bool copy_buffer_to_host(T* dst, const T* src, std::size_t count, std::string& error) {
-    const auto status = cudaMemcpy(dst, src, sizeof(T) * count, cudaMemcpyDeviceToHost);
-    if(status != cudaSuccess) {
-        error = cudaGetErrorString(status);
-        return false;
-    }
-    return true;
-}
-
-bool copy_to_device(float* dst, const std::vector<float>& src, std::string& error) {
-    return copy_buffer_to_device(dst, src.data(), src.size(), error);
-}
-
-bool copy_to_device(__half* dst, const std::vector<__half>& src, std::string& error) {
-    return copy_buffer_to_device(dst, src.data(), src.size(), error);
-}
-
-bool copy_to_host(std::vector<float>& dst, const float* src, std::string& error) {
-    return copy_buffer_to_host(dst.data(), src, dst.size(), error);
-}
-
-bool copy_to_host(std::vector<__half>& dst, const __half* src, std::string& error) {
-    return copy_buffer_to_host(dst.data(), src, dst.size(), error);
-}
-
-bool copy_scalar_to_host(float& dst, const float* src, std::string& error) {
-    const auto status = cudaMemcpy(&dst, src, sizeof(float), cudaMemcpyDeviceToHost);
-    if(status != cudaSuccess) {
-        error = cudaGetErrorString(status);
-        return false;
-    }
-    return true;
-}
-
-bool check_cuda_status(cudaError_t status, const char* context, std::string& error) {
-    if(status != cudaSuccess) {
-        error = std::string(context) + ": " + cudaGetErrorString(status);
-        return false;
-    }
-    return true;
-}
-
-bool check_last_launch(std::string& error) {
-    return check_cuda_status(cudaGetLastError(), "cudaGetLastError", error);
-}
-
-bool synchronize(std::string& error) {
-    return check_cuda_status(cudaDeviceSynchronize(), "cudaDeviceSynchronize", error);
-}
 
 const char* cublas_status_string(cublasStatus_t status) {
     switch(status) {
@@ -309,7 +193,7 @@ bool launch_naive_gemm(
     );
 
     naive_gemm_kernel<<<grid, block>>>(lhs, rhs, out, m, n, k);
-    return check_last_launch(error);
+    return ai_system::cuda_utils::check_last_launch(error);
 }
 
 bool launch_cublas_sgemm(
@@ -432,19 +316,14 @@ struct PreparedGemmKernelRunner::Impl {
     std::size_t n {0};
     std::size_t k {0};
     bool prepared {false};
-    DeviceBuffer<float> lhs_float;
-    DeviceBuffer<float> rhs_float;
-    DeviceBuffer<float> out_float;
-    DeviceBuffer<__half> lhs_half;
-    DeviceBuffer<__half> rhs_half;
-    DeviceBuffer<__half> out_half;
+    ai_system::cuda_utils::DeviceBuffer<float> lhs_float;
+    ai_system::cuda_utils::DeviceBuffer<float> rhs_float;
+    ai_system::cuda_utils::DeviceBuffer<float> out_float;
+    ai_system::cuda_utils::DeviceBuffer<__half> lhs_half;
+    ai_system::cuda_utils::DeviceBuffer<__half> rhs_half;
+    ai_system::cuda_utils::DeviceBuffer<__half> out_half;
     CublasHandle handle;
-    cudaEvent_t start_event {nullptr};
-    cudaEvent_t stop_event {nullptr};
-
-    ~Impl() {
-        reset_events();
-    }
+    ai_system::cuda_utils::EventPair events;
 
     bool prepare(
         GemmBackend requested_backend,
@@ -459,7 +338,7 @@ struct PreparedGemmKernelRunner::Impl {
             return false;
         }
 
-        if(!ensure_events(error)) {
+        if(!events.ensure(error)) {
             return false;
         }
 
@@ -484,7 +363,8 @@ struct PreparedGemmKernelRunner::Impl {
                    !out_float.allocate(m * n, error)) {
                     return false;
                 }
-                if(!copy_to_device(lhs_float.get(), lhs, error) || !copy_to_device(rhs_float.get(), rhs, error)) {
+                if(!ai_system::cuda_utils::copy_to_device(lhs_float.get(), lhs, error) ||
+                   !ai_system::cuda_utils::copy_to_device(rhs_float.get(), rhs, error)) {
                     return false;
                 }
                 break;
@@ -495,7 +375,8 @@ struct PreparedGemmKernelRunner::Impl {
                    !out_float.allocate(m * n, error)) {
                     return false;
                 }
-                if(!copy_to_device(lhs_float.get(), lhs, error) || !copy_to_device(rhs_float.get(), rhs, error)) {
+                if(!ai_system::cuda_utils::copy_to_device(lhs_float.get(), lhs, error) ||
+                   !ai_system::cuda_utils::copy_to_device(rhs_float.get(), rhs, error)) {
                     return false;
                 }
                 if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
@@ -511,8 +392,8 @@ struct PreparedGemmKernelRunner::Impl {
                    !out_half.allocate(m * n, error)) {
                     return false;
                 }
-                if(!copy_to_device(lhs_half.get(), lhs_converted, error) ||
-                   !copy_to_device(rhs_half.get(), rhs_converted, error)) {
+                if(!ai_system::cuda_utils::copy_to_device(lhs_half.get(), lhs_converted, error) ||
+                   !ai_system::cuda_utils::copy_to_device(rhs_half.get(), rhs_converted, error)) {
                     return false;
                 }
                 if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_DEFAULT_MATH), "cublasSetMathMode", error)) {
@@ -529,8 +410,8 @@ struct PreparedGemmKernelRunner::Impl {
                    !out_float.allocate(m * n, error)) {
                     return false;
                 }
-                if(!copy_to_device(lhs_half.get(), lhs_converted, error) ||
-                   !copy_to_device(rhs_half.get(), rhs_converted, error)) {
+                if(!ai_system::cuda_utils::copy_to_device(lhs_half.get(), lhs_converted, error) ||
+                   !ai_system::cuda_utils::copy_to_device(rhs_half.get(), rhs_converted, error)) {
                     return false;
                 }
                 if(!check_cublas_status(cublasSetMathMode(handle.get(), CUBLAS_TENSOR_OP_MATH), "cublasSetMathMode", error)) {
@@ -548,7 +429,7 @@ struct PreparedGemmKernelRunner::Impl {
         if(!launch(error)) {
             return false;
         }
-        return synchronize(error);
+        return ai_system::cuda_utils::synchronize(error);
     }
 
     bool run_timed(double& elapsed_ms, std::string& error) {
@@ -558,21 +439,21 @@ struct PreparedGemmKernelRunner::Impl {
             return false;
         }
 
-        if(!check_cuda_status(cudaEventRecord(start_event), "cudaEventRecord(start)", error)) {
+        if(!events.record_start(error)) {
             return false;
         }
         if(!launch(error)) {
             return false;
         }
-        if(!check_cuda_status(cudaEventRecord(stop_event), "cudaEventRecord(stop)", error)) {
+        if(!events.record_stop(error)) {
             return false;
         }
-        if(!check_cuda_status(cudaEventSynchronize(stop_event), "cudaEventSynchronize(stop)", error)) {
+        if(!events.synchronize_stop(error)) {
             return false;
         }
 
         float event_ms = 0.0f;
-        if(!check_cuda_status(cudaEventElapsedTime(&event_ms, start_event, stop_event), "cudaEventElapsedTime", error)) {
+        if(!events.elapsed_ms(event_ms, error)) {
             return false;
         }
 
@@ -591,10 +472,10 @@ struct PreparedGemmKernelRunner::Impl {
             case GemmBackend::CublasSgemm:
             case GemmBackend::CublasTensorCore:
                 out.assign(m * n, 0.0f);
-                return copy_to_host(out, out_float.get(), error);
+                return ai_system::cuda_utils::copy_to_host(out, out_float.get(), error);
             case GemmBackend::CublasHgemm: {
                 std::vector<__half> out_converted(m * n);
-                if(!copy_to_host(out_converted, out_half.get(), error)) {
+                if(!ai_system::cuda_utils::copy_to_host(out_converted, out_half.get(), error)) {
                     return false;
                 }
                 convert_half_to_float(out_converted, out);
@@ -607,34 +488,6 @@ struct PreparedGemmKernelRunner::Impl {
     }
 
 private:
-    bool ensure_events(std::string& error) {
-        if(start_event == nullptr) {
-            if(!check_cuda_status(cudaEventCreate(&start_event), "cudaEventCreate(start)", error)) {
-                start_event = nullptr;
-                return false;
-            }
-        }
-
-        if(stop_event == nullptr) {
-            if(!check_cuda_status(cudaEventCreate(&stop_event), "cudaEventCreate(stop)", error)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    void reset_events() {
-        if(start_event != nullptr) {
-            cudaEventDestroy(start_event);
-            start_event = nullptr;
-        }
-        if(stop_event != nullptr) {
-            cudaEventDestroy(stop_event);
-            stop_event = nullptr;
-        }
-    }
-
     bool launch(std::string& error) {
         if(!prepared) {
             error = "PreparedGemmKernelRunner::prepare must succeed before run.";
@@ -708,9 +561,9 @@ bool vector_add_cuda(
 
     out.resize(lhs.size());
 
-    DeviceBuffer<float> lhs_device;
-    DeviceBuffer<float> rhs_device;
-    DeviceBuffer<float> out_device;
+    ai_system::cuda_utils::DeviceBuffer<float> lhs_device;
+    ai_system::cuda_utils::DeviceBuffer<float> rhs_device;
+    ai_system::cuda_utils::DeviceBuffer<float> out_device;
 
     if(!lhs_device.allocate(lhs.size(), error) ||
        !rhs_device.allocate(rhs.size(), error) ||
@@ -718,7 +571,8 @@ bool vector_add_cuda(
         return false;
     }
 
-    if(!copy_to_device(lhs_device.get(), lhs, error) || !copy_to_device(rhs_device.get(), rhs, error)) {
+    if(!ai_system::cuda_utils::copy_to_device(lhs_device.get(), lhs, error) ||
+       !ai_system::cuda_utils::copy_to_device(rhs_device.get(), rhs, error)) {
         return false;
     }
 
@@ -726,11 +580,11 @@ bool vector_add_cuda(
     const int blocks = static_cast<int>((lhs.size() + threads_per_block - 1) / threads_per_block);
     vector_add_kernel<<<blocks, threads_per_block>>>(lhs_device.get(), rhs_device.get(), out_device.get(), lhs.size());
 
-    if(!check_last_launch(error) || !synchronize(error)) {
+    if(!ai_system::cuda_utils::check_last_launch(error) || !ai_system::cuda_utils::synchronize(error)) {
         return false;
     }
 
-    return copy_to_host(out, out_device.get(), error);
+    return ai_system::cuda_utils::copy_to_host(out, out_device.get(), error);
 }
 
 bool reduction_sum_cuda(
@@ -745,19 +599,19 @@ bool reduction_sum_cuda(
 
     constexpr int threads_per_block = 256;
 
-    DeviceBuffer<float> current_input;
+    ai_system::cuda_utils::DeviceBuffer<float> current_input;
     if(!current_input.allocate(values.size(), error)) {
         return false;
     }
 
-    if(!copy_to_device(current_input.get(), values, error)) {
+    if(!ai_system::cuda_utils::copy_to_device(current_input.get(), values, error)) {
         return false;
     }
 
     std::size_t current_count = values.size();
     while(current_count > 1) {
         const std::size_t blocks = (current_count + threads_per_block * 2 - 1) / (threads_per_block * 2);
-        DeviceBuffer<float> next_output;
+        ai_system::cuda_utils::DeviceBuffer<float> next_output;
         if(!next_output.allocate(blocks, error)) {
             return false;
         }
@@ -768,7 +622,7 @@ bool reduction_sum_cuda(
             current_count
         );
 
-        if(!check_last_launch(error) || !synchronize(error)) {
+        if(!ai_system::cuda_utils::check_last_launch(error) || !ai_system::cuda_utils::synchronize(error)) {
             return false;
         }
 
@@ -776,7 +630,7 @@ bool reduction_sum_cuda(
         current_count = blocks;
     }
 
-    return copy_scalar_to_host(result, current_input.get(), error);
+    return ai_system::cuda_utils::copy_scalar_to_host(result, current_input.get(), error);
 }
 
 bool naive_gemm_cuda(

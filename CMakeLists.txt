@@ -98,6 +98,7 @@ target_compile_features(ai_system_cli PRIVATE cxx_std_20)
 ai_system_enable_warnings(ai_system_cli)
 
 if(AI_SYSTEM_BUILD_LABS)
+    add_subdirectory(labs/gemm)
     add_subdirectory(labs/perf_engineering)
 endif()
 

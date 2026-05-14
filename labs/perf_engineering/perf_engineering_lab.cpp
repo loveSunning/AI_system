@@ -4,6 +4,7 @@
 #include "ai_system/kernels/basic_kernels.hpp"
 #include "ai_system/profiling/nvtx.hpp"
 #include "ai_system/runtime/gpu_info.hpp"
+#include "gemm_lab.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -27,6 +28,18 @@ struct LabOptions {
     std::size_t warmup_iterations {2};
     std::size_t measured_iterations {6};
 };
+
+struct GemmTolerance {
+    float absolute {0.0f};
+    float relative {0.0f};
+    std::string_view label;
+};
+
+// Tolerances follow the arithmetic path, not the benchmark mode.
+constexpr GemmTolerance kFp32GemmTolerance {1.0e-3f, 1.0e-3f, "allclose(abs=1e-3, rel=1e-3)."};
+constexpr GemmTolerance kCublasSgemmTolerance {1.0e-4f, 1.0e-4f, "allclose(abs=1e-4, rel=1e-4)."};
+constexpr GemmTolerance kFp16GemmTolerance {5.0e-1f, 5.0e-1f, "allclose(abs=5e-1, rel=5e-1)."};
+constexpr GemmTolerance kTensorCoreGemmTolerance {5.0e-2f, 5.0e-2f, "allclose(abs=5e-2, rel=5e-2)."};
 
 void print_usage() {
     std::cout << "AI_system perf engineering lab\n"
@@ -159,6 +172,10 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
 
     const double flops = 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k);
     return flops / 1.0e9 / (average_ms / 1000.0);
+}
+
+bool should_skip_unimplemented_tiled_gemm(bool allow_skip, const std::string& error) {
+    return allow_skip && error.find("not implemented") != std::string::npos;
 }
 
 int run_vector_add_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
@@ -397,11 +414,11 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         }
     }
 
-    auto format_reference_detail = [&](const std::string& tolerance_label) {
+    auto format_reference_detail = [&](std::string_view tolerance_label) -> std::string {
         if(reference_impl_name.empty()) {
-            return tolerance_label;
+            return std::string(tolerance_label);
         }
-        return tolerance_label + " reference=" + reference_impl_name + ".";
+        return std::string(tolerance_label) + " reference=" + reference_impl_name + ".";
     };
 
     auto compare_against_reference = [&](const std::vector<float>& gpu_out, float absolute_tolerance, float relative_tolerance) {
@@ -414,9 +431,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     auto run_e2e_gemm_variant = [&](const std::string& impl_name,
                                     const std::string& benchmark_name,
                                     auto&& gemm_fn,
-                                    float absolute_tolerance,
-                                    float relative_tolerance,
-                                    const std::string& tolerance_label) {
+                                    const GemmTolerance& tolerance,
+                                    bool allow_unimplemented_skip = false) {
         std::vector<float> gpu_out;
         std::string error;
         if(gemm_fn(m, n, k, lhs, rhs, gpu_out, error)) {
@@ -425,7 +441,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                     return false;
                 }
                 const ai_system::profiling::ScopedNvtxRange phase_range("cuda_correctness");
-                return compare_against_reference(gpu_out, absolute_tolerance, relative_tolerance);
+                return compare_against_reference(gpu_out, tolerance.absolute, tolerance.relative);
             }();
 
             ai_system::benchmark::add_validation_row(
@@ -434,7 +450,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 impl_name,
                 "correctness",
                 has_reference ? (matches ? "PASS" : "FAIL") : "SKIP",
-                has_reference ? (matches ? format_reference_detail(tolerance_label)
+                has_reference ? (matches ? format_reference_detail(tolerance.label)
                                          : "Reference/GPU outputs diverged beyond tolerance.")
                               : "No correctness reference is available."
             );
@@ -462,48 +478,51 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             return has_reference ? (matches ? 0 : 1) : 0;
         }
 
+        const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
         ai_system::benchmark::add_validation_row(
             report,
             "gemm_e2e",
             impl_name,
             "runtime",
-            AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+            skip_unimplemented || !AI_SYSTEM_HAS_CUDA ? "SKIP" : "FAIL",
             error
         );
-        return AI_SYSTEM_HAS_CUDA ? 1 : 0;
+        return AI_SYSTEM_HAS_CUDA && !skip_unimplemented ? 1 : 0;
     };
 
     auto run_kernel_only_gemm_variant = [&](const std::string& impl_name,
                                             const std::string& benchmark_name,
-                                            ai_system::kernels::GemmBackend backend,
-                                            float absolute_tolerance,
-                                            float relative_tolerance,
-                                            const std::string& tolerance_label) {
-        ai_system::kernels::PreparedGemmKernelRunner runner;
+                                            auto&& make_runner,
+                                            auto&& prepare_runner,
+                                            const GemmTolerance& tolerance,
+                                            bool allow_unimplemented_skip = false) {
+        auto runner = make_runner();
         std::string error;
-        if(!runner.prepare(backend, m, n, k, lhs, rhs, error)) {
+        if(!prepare_runner(runner, error)) {
+            const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
                 impl_name,
                 "prepare",
-                AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+                skip_unimplemented || !AI_SYSTEM_HAS_CUDA ? "SKIP" : "FAIL",
                 error
             );
-            return AI_SYSTEM_HAS_CUDA ? 1 : 0;
+            return AI_SYSTEM_HAS_CUDA && !skip_unimplemented ? 1 : 0;
         }
 
         std::vector<float> gpu_out;
         if(!runner.run(error) || !runner.copy_output(gpu_out, error)) {
+            const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
                 impl_name,
                 "runtime",
-                AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+                skip_unimplemented || !AI_SYSTEM_HAS_CUDA ? "SKIP" : "FAIL",
                 error
             );
-            return AI_SYSTEM_HAS_CUDA ? 1 : 0;
+            return AI_SYSTEM_HAS_CUDA && !skip_unimplemented ? 1 : 0;
         }
 
         const bool matches = [&]() -> bool {
@@ -511,7 +530,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 return false;
             }
             const ai_system::profiling::ScopedNvtxRange phase_range("kernel_only_correctness");
-            return compare_against_reference(gpu_out, absolute_tolerance, relative_tolerance);
+            return compare_against_reference(gpu_out, tolerance.absolute, tolerance.relative);
         }();
         ai_system::benchmark::add_validation_row(
             report,
@@ -519,7 +538,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             impl_name,
             "correctness",
             has_reference ? (matches ? "PASS" : "FAIL") : "SKIP",
-            has_reference ? (matches ? format_reference_detail(tolerance_label)
+            has_reference ? (matches ? format_reference_detail(tolerance.label)
                                      : "Reference/GPU outputs diverged beyond tolerance.")
                           : "No correctness reference is available."
         );
@@ -559,70 +578,88 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         return has_reference ? (matches ? 0 : 1) : 0;
     };
 
+    auto make_core_gemm_runner = []() {
+        return ai_system::kernels::PreparedGemmKernelRunner {};
+    };
+    auto make_tiled_gemm_v1_runner = []() {
+        return ai_system::labs::gemm::PreparedGemmLabRunner {};
+    };
+    auto prepare_core_backend = [&](ai_system::kernels::GemmBackend backend) {
+        return [&, backend](auto& runner, std::string& error) {
+            return runner.prepare(backend, m, n, k, lhs, rhs, error);
+        };
+    };
+    auto prepare_tiled_gemm_v1 = [&](auto& runner, std::string& error) {
+        return runner.prepare(ai_system::labs::gemm::GemmLabBackend::TiledGemmV1, m, n, k, lhs, rhs, error);
+    };
+
     int failures = 0;
     failures += run_e2e_gemm_variant(
         "cuda_naive",
         "gemm/e2e/cuda_naive",
         ai_system::kernels::naive_gemm_cuda,
-        1.0e-3f,
-        1.0e-3f,
-        "allclose(abs=1e-3, rel=1e-3)."
+        kFp32GemmTolerance
+    );
+    failures += run_e2e_gemm_variant(
+        "tiled_gemm_v1",
+        "gemm/e2e/tiled_gemm_v1",
+        ai_system::labs::gemm::tiled_gemm_v1_cuda,
+        kFp32GemmTolerance,
+        true
     );
     failures += run_e2e_gemm_variant(
         "cublas_sgemm",
         "gemm/e2e/cublas_sgemm",
         ai_system::kernels::cublas_sgemm_cuda,
-        1.0e-4f,
-        1.0e-4f,
-        "allclose(abs=1e-4, rel=1e-4)."
+        kCublasSgemmTolerance
     );
     failures += run_e2e_gemm_variant(
         "cublas_hgemm",
         "gemm/e2e/cublas_hgemm",
         ai_system::kernels::cublas_hgemm_cuda,
-        5.0e-1f,
-        5.0e-1f,
-        "allclose(abs=5e-1, rel=5e-1)."
+        kFp16GemmTolerance
     );
     failures += run_e2e_gemm_variant(
         "cublas_tensor_core",
         "gemm/e2e/cublas_tensor_core",
         ai_system::kernels::cublas_tensor_core_gemm_cuda,
-        5.0e-2f,
-        5.0e-2f,
-        "allclose(abs=5e-2, rel=5e-2)."
+        kTensorCoreGemmTolerance
     );
     failures += run_kernel_only_gemm_variant(
         "cuda_naive",
         "gemm/kernel_only/cuda_naive",
-        ai_system::kernels::GemmBackend::CudaNaive,
-        1.0e-3f,
-        1.0e-3f,
-        "allclose(abs=1e-3, rel=1e-3)."
+        make_core_gemm_runner,
+        prepare_core_backend(ai_system::kernels::GemmBackend::CudaNaive),
+        kFp32GemmTolerance
+    );
+    failures += run_kernel_only_gemm_variant(
+        "tiled_gemm_v1",
+        "gemm/kernel_only/tiled_gemm_v1",
+        make_tiled_gemm_v1_runner,
+        prepare_tiled_gemm_v1,
+        kFp32GemmTolerance,
+        true
     );
     failures += run_kernel_only_gemm_variant(
         "cublas_sgemm",
         "gemm/kernel_only/cublas_sgemm",
-        ai_system::kernels::GemmBackend::CublasSgemm,
-        1.0e-4f,
-        1.0e-4f,
-        "allclose(abs=1e-4, rel=1e-4)."
+        make_core_gemm_runner,
+        prepare_core_backend(ai_system::kernels::GemmBackend::CublasSgemm),
+        kCublasSgemmTolerance
     );
     failures += run_kernel_only_gemm_variant(
         "cublas_hgemm",
         "gemm/kernel_only/cublas_hgemm",
-        ai_system::kernels::GemmBackend::CublasHgemm,
-        5.0e-1f,
-        5.0e-1f,
-        "allclose(abs=5e-1, rel=5e-1)."
+        make_core_gemm_runner,
+        prepare_core_backend(ai_system::kernels::GemmBackend::CublasHgemm),
+        kFp16GemmTolerance
     );
     failures += run_kernel_only_gemm_variant(
         "cublas_tensor_core",
         "gemm/kernel_only/cublas_tensor_core",
-        ai_system::kernels::GemmBackend::CublasTensorCore,
-        5.0e-2f,
-        5.0e-2f,
-        "allclose(abs=5e-2, rel=5e-2)."
+        make_core_gemm_runner,
+        prepare_core_backend(ai_system::kernels::GemmBackend::CublasTensorCore),
+        kTensorCoreGemmTolerance
     );
 
     return failures;
