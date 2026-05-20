@@ -8,7 +8,15 @@
 namespace ai_system::labs::gemm {
 
 enum class GemmLabBackend {
-    TiledGemmV1
+    TiledGemmV1,
+    TiledGemmV2,
+    ManualTensorCoreV1
+};
+
+struct GemmLabTileConfig {
+    int block_m {16};
+    int block_n {16};
+    int block_k {16};
 };
 
 class PreparedGemmLabRunner {
@@ -28,7 +36,8 @@ public:
         std::size_t k,
         const std::vector<float>& lhs,
         const std::vector<float>& rhs,
-        std::string& error
+        std::string& error,
+        GemmLabTileConfig tile_config = {}
     );
 
     bool run(std::string& error);
@@ -49,9 +58,8 @@ bool tiled_gemm_v1_cuda(
     const std::vector<float>& lhs,
     const std::vector<float>& rhs,
     std::vector<float>& out,
-    std::string& error
+    std::string& error,
+    GemmLabTileConfig tile_config = {}
 );
-
-bool tiled_gemm_v1_kernel_available();
 
 }  // namespace ai_system::labs::gemm

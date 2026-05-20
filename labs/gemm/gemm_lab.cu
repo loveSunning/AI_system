@@ -42,6 +42,52 @@ bool validate_gemm_inputs(
     return true;
 }
 
+bool is_supported_tiled_gemm_v1_tile_dimension(int value) {
+    return value == 8 || value == 16 || value == 32;
+}
+
+bool validate_tiled_gemm_v1_tile_config(GemmLabTileConfig tile_config, std::string& error) {
+    if(!is_supported_tiled_gemm_v1_tile_dimension(tile_config.block_m) ||
+       !is_supported_tiled_gemm_v1_tile_dimension(tile_config.block_n) ||
+       !is_supported_tiled_gemm_v1_tile_dimension(tile_config.block_k)) {
+        error = "tiled_gemm_v1 tile dimensions must each be one of 8, 16, or 32.";
+        return false;
+    }
+
+    if(tile_config.block_m * tile_config.block_n > 1024) {
+        error = "tiled_gemm_v1 requires block_m * block_n <= 1024.";
+        return false;
+    }
+
+    return true;
+}
+
+bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_config, std::string& error) {
+    switch(backend) {
+        case GemmLabBackend::TiledGemmV1:
+            return validate_tiled_gemm_v1_tile_config(tile_config, error);
+        case GemmLabBackend::TiledGemmV2:
+        case GemmLabBackend::ManualTensorCoreV1:
+            return true;
+    }
+
+    error = "Unsupported GEMM lab backend.";
+    return false;
+}
+
+const char* backend_name(GemmLabBackend backend) {
+    switch(backend) {
+        case GemmLabBackend::TiledGemmV1:
+            return "tiled_gemm_v1";
+        case GemmLabBackend::TiledGemmV2:
+            return "tiled_gemm_v2";
+        case GemmLabBackend::ManualTensorCoreV1:
+            return "manual_tensor_core_v1";
+    }
+
+    return "unknown_gemm_lab_backend";
+}
+
 }  // namespace
 
 struct PreparedGemmLabRunner::Impl {
@@ -49,6 +95,7 @@ struct PreparedGemmLabRunner::Impl {
     std::size_t m {0};
     std::size_t n {0};
     std::size_t k {0};
+    GemmLabTileConfig tile_config;
     bool prepared {false};
     ai_system::cuda_utils::DeviceBuffer<float> lhs_device;
     ai_system::cuda_utils::DeviceBuffer<float> rhs_device;
@@ -62,11 +109,15 @@ struct PreparedGemmLabRunner::Impl {
         std::size_t requested_k,
         const std::vector<float>& lhs,
         const std::vector<float>& rhs,
-        std::string& error
+        std::string& error,
+        GemmLabTileConfig requested_tile_config
     ) {
         const ai_system::profiling::ScopedNvtxRange phase_range("gemm_lab_prepare_h2d");
 
         if(!validate_gemm_inputs(requested_m, requested_n, requested_k, lhs, rhs, error)) {
+            return false;
+        }
+        if(!validate_backend_config(requested_backend, requested_tile_config, error)) {
             return false;
         }
         if(!events.ensure(error)) {
@@ -77,6 +128,7 @@ struct PreparedGemmLabRunner::Impl {
         m = requested_m;
         n = requested_n;
         k = requested_k;
+        tile_config = requested_tile_config;
         prepared = false;
 
         lhs_device.reset();
@@ -153,7 +205,20 @@ private:
 
         switch(backend) {
             case GemmLabBackend::TiledGemmV1:
-                return detail::launch_tiled_gemm_v1(lhs_device.get(), rhs_device.get(), out_device.get(), m, n, k, error);
+                return detail::launch_tiled_gemm_v1(
+                    lhs_device.get(),
+                    rhs_device.get(),
+                    out_device.get(),
+                    m,
+                    n,
+                    k,
+                    tile_config,
+                    error
+                );
+            case GemmLabBackend::TiledGemmV2:
+            case GemmLabBackend::ManualTensorCoreV1:
+                error = std::string(backend_name(backend)) + " launcher is not wired yet.";
+                return false;
         }
 
         error = "Unsupported GEMM lab backend.";
@@ -173,9 +238,10 @@ bool PreparedGemmLabRunner::prepare(
     std::size_t k,
     const std::vector<float>& lhs,
     const std::vector<float>& rhs,
-    std::string& error
+    std::string& error,
+    GemmLabTileConfig tile_config
 ) {
-    return impl_->prepare(backend, m, n, k, lhs, rhs, error);
+    return impl_->prepare(backend, m, n, k, lhs, rhs, error, tile_config);
 }
 
 bool PreparedGemmLabRunner::run(std::string& error) {
@@ -193,7 +259,10 @@ bool PreparedGemmLabRunner::copy_output(std::vector<float>& out, std::string& er
 bool gemm_lab_backend_available(GemmLabBackend backend) {
     switch(backend) {
         case GemmLabBackend::TiledGemmV1:
-            return detail::tiled_gemm_v1_kernel_available();
+            return detail::is_tiled_gemm_v1_kernel_implemented();
+        case GemmLabBackend::TiledGemmV2:
+        case GemmLabBackend::ManualTensorCoreV1:
+            return false;
     }
 
     return false;
@@ -206,14 +275,15 @@ bool tiled_gemm_v1_cuda(
     const std::vector<float>& lhs,
     const std::vector<float>& rhs,
     std::vector<float>& out,
-    std::string& error
+    std::string& error,
+    GemmLabTileConfig tile_config
 ) {
     const ai_system::profiling::ScopedNvtxRange e2e_range("tiled_gemm_v1_e2e");
 
     PreparedGemmLabRunner runner;
     {
         const ai_system::profiling::ScopedNvtxRange phase_range("tiled_gemm_v1_prepare");
-        if(!runner.prepare(GemmLabBackend::TiledGemmV1, m, n, k, lhs, rhs, error)) {
+        if(!runner.prepare(GemmLabBackend::TiledGemmV1, m, n, k, lhs, rhs, error, tile_config)) {
             return false;
         }
     }
@@ -227,10 +297,6 @@ bool tiled_gemm_v1_cuda(
         const ai_system::profiling::ScopedNvtxRange phase_range("tiled_gemm_v1_d2h");
         return runner.copy_output(out, error);
     }
-}
-
-bool tiled_gemm_v1_kernel_available() {
-    return gemm_lab_backend_available(GemmLabBackend::TiledGemmV1);
 }
 
 }  // namespace ai_system::labs::gemm

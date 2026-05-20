@@ -118,6 +118,8 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
   --reduction-size 16777216 \
   --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
   --warmup 3 --iters 10
+
+.\perf_engineering_lab.exe --vector-size 16777216 --reduction-size 16777216 --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --warmup 2 --iters 5
 ```
 
 输出会分成两张表：

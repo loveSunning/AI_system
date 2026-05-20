@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gemm_lab.hpp"
+
 #include <cstddef>
 #include <string>
 
@@ -12,9 +14,10 @@ bool launch_tiled_gemm_v1(
     std::size_t m,
     std::size_t n,
     std::size_t k,
+    GemmLabTileConfig tile_config,
     std::string& error
 );
 
-bool tiled_gemm_v1_kernel_available();
+bool is_tiled_gemm_v1_kernel_implemented();
 
 }  // namespace ai_system::labs::gemm::detail

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -25,6 +26,7 @@ struct LabOptions {
     std::size_t gemm_m {1024};
     std::size_t gemm_n {1024};
     std::size_t gemm_k {1024};
+    ai_system::labs::gemm::GemmLabTileConfig gemm_tile;
     std::size_t warmup_iterations {2};
     std::size_t measured_iterations {6};
 };
@@ -48,6 +50,9 @@ void print_usage() {
               << "  --gemm-m M           GEMM rows of lhs/out\n"
               << "  --gemm-n N           GEMM columns of rhs/out\n"
               << "  --gemm-k K           GEMM shared dimension\n"
+              << "  --gemm-tile-m M     GEMM lab output tile rows; supported: 8, 16, 32\n"
+              << "  --gemm-tile-n N     GEMM lab output tile columns; supported: 8, 16, 32\n"
+              << "  --gemm-tile-k K     GEMM lab reduction tile; supported: 8, 16, 32\n"
               << "  --warmup I           Warmup iterations for each benchmark\n"
               << "  --iters I            Measured iterations for each benchmark\n"
               << "  --help               Show this help message\n";
@@ -65,6 +70,20 @@ bool parse_size_argument(const char* raw_value, const char* option_name, std::si
     return true;
 }
 
+bool parse_int_argument(const char* raw_value, const char* option_name, int& output) {
+    std::size_t parsed = 0;
+    if(!parse_size_argument(raw_value, option_name, parsed)) {
+        return false;
+    }
+    if(parsed > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+        std::cerr << "Value for " << option_name << " exceeds int range: " << raw_value << "\n";
+        return false;
+    }
+
+    output = static_cast<int>(parsed);
+    return true;
+}
+
 bool parse_options(int argc, char** argv, LabOptions& options) {
     for(int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -75,6 +94,14 @@ bool parse_options(int argc, char** argv, LabOptions& options) {
             }
             ++index;
             return parse_size_argument(argv[index], argv[index - 1], destination);
+        };
+        auto require_int_value = [&](int& destination) -> bool {
+            if(index + 1 >= argc) {
+                std::cerr << "Missing value for " << argument << "\n";
+                return false;
+            }
+            ++index;
+            return parse_int_argument(argv[index], argv[index - 1], destination);
         };
 
         if(argument == "--help") {
@@ -107,6 +134,24 @@ bool parse_options(int argc, char** argv, LabOptions& options) {
         }
         if(argument == "--gemm-k") {
             if(!require_value(options.gemm_k)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-tile-m") {
+            if(!require_int_value(options.gemm_tile.block_m)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-tile-n") {
+            if(!require_int_value(options.gemm_tile.block_n)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-tile-k") {
+            if(!require_int_value(options.gemm_tile.block_k)) {
                 return false;
             }
             continue;
@@ -590,7 +635,16 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         };
     };
     auto prepare_tiled_gemm_v1 = [&](auto& runner, std::string& error) {
-        return runner.prepare(ai_system::labs::gemm::GemmLabBackend::TiledGemmV1, m, n, k, lhs, rhs, error);
+        return runner.prepare(
+            ai_system::labs::gemm::GemmLabBackend::TiledGemmV1,
+            m,
+            n,
+            k,
+            lhs,
+            rhs,
+            error,
+            options.gemm_tile
+        );
     };
 
     int failures = 0;
@@ -603,7 +657,24 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     failures += run_e2e_gemm_variant(
         "tiled_gemm_v1",
         "gemm/e2e/tiled_gemm_v1",
-        ai_system::labs::gemm::tiled_gemm_v1_cuda,
+        [&](std::size_t requested_m,
+            std::size_t requested_n,
+            std::size_t requested_k,
+            const std::vector<float>& requested_lhs,
+            const std::vector<float>& requested_rhs,
+            std::vector<float>& requested_out,
+            std::string& error) {
+            return ai_system::labs::gemm::tiled_gemm_v1_cuda(
+                requested_m,
+                requested_n,
+                requested_k,
+                requested_lhs,
+                requested_rhs,
+                requested_out,
+                error,
+                options.gemm_tile
+            );
+        },
         kFp32GemmTolerance,
         true
     );
@@ -677,6 +748,8 @@ int main(int argc, char** argv) {
     std::cout << "Configured architectures: " << AI_SYSTEM_CUDA_ARCHITECTURES << "\n";
     std::cout << "Warmup iterations: " << options.warmup_iterations << "\n";
     std::cout << "Measured iterations: " << options.measured_iterations << "\n";
+    std::cout << "GEMM lab tile: " << options.gemm_tile.block_m << "x" << options.gemm_tile.block_n << "x"
+              << options.gemm_tile.block_k << "\n";
     std::cout << ai_system::runtime::summarize_gpus(ai_system::runtime::query_gpus());
 
     ai_system::benchmark::BenchmarkReport report;
