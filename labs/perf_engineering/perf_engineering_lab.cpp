@@ -189,6 +189,11 @@ std::string format_gemm_shape(std::size_t m, std::size_t n, std::size_t k) {
     return std::to_string(m) + "x" + std::to_string(n) + "x" + std::to_string(k);
 }
 
+std::string format_gemm_tile_shape(ai_system::labs::gemm::GemmLabTileConfig tile_config) {
+    return std::to_string(tile_config.block_m) + "x" + std::to_string(tile_config.block_n) + "x" +
+        std::to_string(tile_config.block_k);
+}
+
 bool should_include_cpu_naive_gemm(std::size_t m, std::size_t n, std::size_t k) {
     return m <= kMaxCpuGemmDimension && n <= kMaxCpuGemmDimension && k <= kMaxCpuGemmDimension;
 }
@@ -477,7 +482,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                                     const std::string& benchmark_name,
                                     auto&& gemm_fn,
                                     const GemmTolerance& tolerance,
-                                    bool allow_unimplemented_skip = false) {
+                                    bool allow_unimplemented_skip = false,
+                                    std::string tile_shape = "none") {
         std::vector<float> gpu_out;
         std::string error;
         if(gemm_fn(m, n, k, lhs, rhs, gpu_out, error)) {
@@ -517,7 +523,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 shape,
                 gpu_result,
                 compute_gemm_gflops(m, n, k, gpu_result.average_ms),
-                "GFLOPS"
+                "GFLOPS",
+                tile_shape
             );
 
             return has_reference ? (matches ? 0 : 1) : 0;
@@ -540,7 +547,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                                             auto&& make_runner,
                                             auto&& prepare_runner,
                                             const GemmTolerance& tolerance,
-                                            bool allow_unimplemented_skip = false) {
+                                            bool allow_unimplemented_skip = false,
+                                            std::string tile_shape = "none") {
         auto runner = make_runner();
         std::string error;
         if(!prepare_runner(runner, error)) {
@@ -617,7 +625,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             shape,
             gpu_result,
             compute_gemm_gflops(m, n, k, gpu_result.average_ms),
-            "GFLOPS"
+            "GFLOPS",
+            tile_shape
         );
 
         return has_reference ? (matches ? 0 : 1) : 0;
@@ -646,6 +655,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             options.gemm_tile
         );
     };
+    const std::string gemm_tile_shape = format_gemm_tile_shape(options.gemm_tile);
 
     int failures = 0;
     failures += run_e2e_gemm_variant(
@@ -676,7 +686,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             );
         },
         kFp32GemmTolerance,
-        true
+        true,
+        gemm_tile_shape
     );
     failures += run_e2e_gemm_variant(
         "cublas_sgemm",
@@ -709,7 +720,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         make_tiled_gemm_v1_runner,
         prepare_tiled_gemm_v1,
         kFp32GemmTolerance,
-        true
+        true,
+        gemm_tile_shape
     );
     failures += run_kernel_only_gemm_variant(
         "cublas_sgemm",

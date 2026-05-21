@@ -1,6 +1,6 @@
 工作任务：
+    1. sgemm 对比工具sgemm_baenchmark_lab可执行文件，主要对比cuda_naive， tiled_gemm_v1 ， cublas_sgemm等的性能，后面还会拓展tiled_semm_v2等。支持的输入参数有MNK和 MNKtile。该部分看是添加到lab/gemm还是lab/perf_engineering文件夹下
+    2. Benchmark Results优化，中添加一个tileshape，展示 MNK的tile，如果没有，就是展示none。perf_engineering_lab和sgemm_baenchmark_lab都要优化。
 
 
-    tiled GEMM v1（shared memory）实现tiled_gemm_v1_kernel  tiled_gemm_v1_cuda 是不是写在这个 D:\workspace\learing\AI_system\labs\gemm 里面最好。而不是代码实现都写在src/kernels里，labs/gemm只写了一个main函数。 原来的设计架构是这样吗，核心代码只写在src，labs里只写 main。正常逻辑是不是实验代码写在labs里，等这个实验成熟了，再集成到src中。现在这个逻辑比较换乱。基于最优实践看看项目的目录结构是不是要重构。如果需要，就重构，并给出理由和设计思想。
 
-    如果按照现在的写法，labs/perf_engineering 和和labs/gemm是冗余的。

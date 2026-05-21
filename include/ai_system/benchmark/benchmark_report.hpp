@@ -14,6 +14,7 @@ struct BenchmarkRow {
     std::string op;
     std::string impl;
     std::string shape;
+    std::string tile_shape;
     BenchmarkResult result;
     std::optional<double> perf_value;
     std::string perf_unit;
@@ -41,7 +42,8 @@ void add_benchmark_row(
     std::string shape,
     const BenchmarkResult& result,
     std::optional<double> perf_value,
-    std::string perf_unit
+    std::string perf_unit,
+    std::string tile_shape = "none"
 );
 
 void add_validation_row(
