@@ -124,66 +124,100 @@ If a regex does not match, list all CUDA kernels from an `nsys` report first:
   "$Out\nsys_sgemm_kernel_only_4096_t16x16x16.nsys-rep"
 ```
 
-### Profile `tiled_gemm_v1`
+### Windows Nsight Compute Set Commands
 
-This is the most important command when investigating why tiled v1 is slower than `cuda_naive`.
+Nsight Compute supports multiple metric sets. The actual CLI identifier for "detail" is `detailed`, so use `--set detailed` while keeping `detail` in the output filename.
 
-```powershell
-& $Ncu `
-  --set full `
-  --target-processes all `
-  --kernel-name-base demangled `
-  --kernel-name "regex:tiled_gemm_v1_kernel" `
-  --launch-skip 2 `
-  --launch-count 1 `
-  --force-overwrite `
-  -o "$Out\ncu_tiled_gemm_v1_4096_t16x16x16" `
-  $Exe `
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
-  --warmup 2 --iters 5
-```
+| Goal | Command option | Output suffix |
+| --- | --- | --- |
+| Fast first look | `--set basic` | `_set_basic` |
+| More workload detail | `--set detailed` | `_set_detail` |
+| Everything, slowest and most fragile | `--set full` | `_set_full` |
 
-For a lighter first pass, use a smaller matrix. The benchmark requires positive `--warmup` and `--iters` values, so use `--warmup 1 --iters 1` and skip the first two matching launches: correctness and warmup.
+The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 1 --iters 1`, use `-s 2 -c 1` to skip the correctness launch and warmup launch, then collect the measured launch.
+
+#### `tiled_gemm_v1` With `--set basic`
 
 ```powershell
 & $Ncu `
   --set basic `
   --target-processes all `
   --kernel-name-base demangled `
-  --kernel-name "regex:tiled_gemm_v1_kernel" `
-  --launch-skip 2 `
-  --launch-count 1 `
-  --force-overwrite `
-  -o "$Out\ncu_tiled_gemm_v1_1024_analysis" `
+  -k regex:tiled_gemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_basic" `
   $Exe `
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
   --warmup 1 --iters 1
 ```
 
-`--set basic` only collects a small default group. It usually shows `SpeedOfLight`, `LaunchStats`, `Occupancy`, and `WorkloadDistribution`, but it does not necessarily collect `WarpStateStats` or detailed shared-memory metrics. To inspect barrier stalls and shared-memory bank behavior, run a focused pass:
+#### `tiled_gemm_v1` With `--set detailed`
 
 ```powershell
 & $Ncu `
-  --section LaunchStats `
-  --section Occupancy `
-  --section SchedulerStats `
-  --section WarpStateStats `
-  --section MemoryWorkloadAnalysis `
-  --section MemoryWorkloadAnalysis_Tables `
+  --set detailed `
   --target-processes all `
   --kernel-name-base demangled `
-  --kernel-name "regex:tiled_gemm_v1_kernel" `
-  --launch-skip 2 `
-  --launch-count 1 `
-  --force-overwrite `
-  -o "$Out\ncu_tiled_gemm_v1_1024_t16x16x16_detail" `
+  -k regex:tiled_gemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_detail" `
   $Exe `
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
   --warmup 1 --iters 1
 ```
+
+#### `tiled_gemm_v1` With `--set full`
+
+```powershell
+& $Ncu `
+  --set full `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:tiled_gemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_full" `
+  $Exe `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --warmup 1 --iters 1
+```
+
+### Windows Nsight Compute Section Command
+
+Use this when you want a stable, focused report for GEMM bottleneck analysis without collecting the entire `full` set.
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:tiled_gemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_sections" `
+  $Exe `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --warmup 1 --iters 1
+```
+
+If `-k "regex:.*gemm.*" -s 10` captures the wrong kernel or no kernel, first list kernel names with `nsys stats --report cuda_gpu_kern_sum`, then narrow the regex or adjust `-s`.
 
 In the GUI, look for:
 
@@ -196,18 +230,18 @@ Use this as the comparison point for launch configuration, occupancy, warp stall
 
 ```powershell
 & $Ncu `
-  --set full `
+  --set detailed `
   --target-processes all `
   --kernel-name-base demangled `
-  --kernel-name "regex:naive_gemm_kernel" `
-  --launch-skip 2 `
-  --launch-count 1 `
-  --force-overwrite `
-  -o "$Out\ncu_cuda_naive_gemm_4096" `
+  -k regex:naive_gemm_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_cuda_naive_gemm_2048_set_detail" `
   $Exe `
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
-  --warmup 2 --iters 5
+  --warmup 1 --iters 1
 ```
 
 ### Profile cuBLAS SGEMM
@@ -219,15 +253,15 @@ cuBLAS kernel names vary by GPU, CUDA, and cuBLAS version. Start with a broad SG
   --set basic `
   --target-processes all `
   --kernel-name-base demangled `
-  --kernel-name "regex:sgemm|gemm|ampere|sass|cutlass" `
-  --launch-skip 2 `
-  --launch-count 1 `
-  --force-overwrite `
-  -o "$Out\ncu_cublas_sgemm_4096" `
+  -k "regex:sgemm|gemm|ampere|sass|cutlass" `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_cublas_sgemm_2048_set_basic" `
   $Exe `
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
-  --warmup 2 --iters 5
+  --warmup 1 --iters 1
 ```
 
 If this captures the wrong kernel, use the `nsys stats --report cuda_gpu_kern_sum` output to replace the regex with the exact demangled kernel name.
@@ -364,64 +398,98 @@ nsys-ui "$Out/nsys_sgemm_kernel_only_4096_t16x16x16.nsys-rep"
 
 ### Linux Nsight Compute
 
-Profile `tiled_gemm_v1`:
+Nsight Compute supports multiple metric sets. The actual CLI identifier for "detail" is `detailed`, so use `--set detailed` while keeping `detail` in the output filename.
 
-```bash
-"$Ncu" \
-  --set full \
-  --target-processes all \
-  --kernel-name-base demangled \
-  --kernel-name "regex:tiled_gemm_v1_kernel" \
-  --launch-skip 2 \
-  --launch-count 1 \
-  --force-overwrite \
-  -o "$Out/ncu_tiled_gemm_v1_4096_t16x16x16" \
-  "$Exe" \
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
-  --warmup 2 --iters 5
-```
+| Goal | Command option | Output suffix |
+| --- | --- | --- |
+| Fast first look | `--set basic` | `_set_basic` |
+| More workload detail | `--set detailed` | `_set_detail` |
+| Everything, slowest and most fragile | `--set full` | `_set_full` |
 
-For a lighter first pass, use a smaller matrix. The benchmark requires positive `--warmup` and `--iters` values, so use `--warmup 1 --iters 1` and skip the first two matching launches: correctness and warmup.
+The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 1 --iters 1`, use `-s 2 -c 1` to skip the correctness launch and warmup launch, then collect the measured launch.
+
+#### `tiled_gemm_v1` With `--set basic`
 
 ```bash
 "$Ncu" \
   --set basic \
   --target-processes all \
   --kernel-name-base demangled \
-  --kernel-name "regex:tiled_gemm_v1_kernel" \
-  --launch-skip 2 \
-  --launch-count 1 \
-  --force-overwrite \
-  -o "$Out/ncu_tiled_gemm_v1_1024_t16x16x16_basic" \
+  -k regex:tiled_gemm_v1_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_basic" \
   "$Exe" \
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
   --warmup 1 --iters 1
 ```
 
-`--set basic` only collects a small default group. It usually shows `SpeedOfLight`, `LaunchStats`, `Occupancy`, and `WorkloadDistribution`, but it does not necessarily collect `WarpStateStats` or detailed shared-memory metrics. To inspect barrier stalls and shared-memory bank behavior, run a focused pass:
+#### `tiled_gemm_v1` With `--set detailed`
 
 ```bash
 "$Ncu" \
-  --section LaunchStats \
-  --section Occupancy \
-  --section SchedulerStats \
-  --section WarpStateStats \
-  --section MemoryWorkloadAnalysis \
-  --section MemoryWorkloadAnalysis_Tables \
+  --set detailed \
   --target-processes all \
   --kernel-name-base demangled \
-  --kernel-name "regex:tiled_gemm_v1_kernel" \
-  --launch-skip 2 \
-  --launch-count 1 \
-  --force-overwrite \
-  -o "$Out/ncu_tiled_gemm_v1_1024_t16x16x16_detail" \
+  -k regex:tiled_gemm_v1_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail" \
   "$Exe" \
-  --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
   --warmup 1 --iters 1
 ```
+
+#### `tiled_gemm_v1` With `--set full`
+
+```bash
+"$Ncu" \
+  --set full \
+  --target-processes all \
+  --kernel-name-base demangled \
+  -k regex:tiled_gemm_v1_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_full" \
+  "$Exe" \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --warmup 1 --iters 1
+```
+
+#### Linux Nsight Compute Section Command
+
+Use this when you want a stable, focused report for GEMM bottleneck analysis without collecting the entire `full` set.
+
+```bash
+"$Ncu" \
+  --section SpeedOfLight \
+  --section LaunchStats \
+  --section Occupancy \
+  --section WarpStateStats \
+  --section SchedulerStats \
+  --section MemoryWorkloadAnalysis \
+  --section ComputeWorkloadAnalysis \
+  --section InstructionStats \
+  --target-processes all \
+  --kernel-name-base demangled \
+  -k "regex:.*gemm.*" \
+  -s 10 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_gemm_2048_t16x16x16_sections" \
+  "$Exe" \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --warmup 1 --iters 1
+```
+
+If `-k "regex:.*gemm.*" -s 10` captures the wrong kernel or no kernel, first list kernel names with `nsys stats --report cuda_gpu_kern_sum`, then narrow the regex or adjust `-s`.
 
 In the GUI, look for:
 
@@ -432,18 +500,18 @@ Profile `cuda_naive`:
 
 ```bash
 "$Ncu" \
-  --set full \
+  --set detailed \
   --target-processes all \
   --kernel-name-base demangled \
-  --kernel-name "regex:naive_gemm_kernel" \
-  --launch-skip 2 \
-  --launch-count 1 \
-  --force-overwrite \
-  -o "$Out/ncu_cuda_naive_gemm_4096" \
+  -k regex:naive_gemm_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_cuda_naive_gemm_2048_set_detail" \
   "$Exe" \
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
-  --warmup 2 --iters 5
+  --warmup 1 --iters 1
 ```
 
 Profile cuBLAS SGEMM with a broad kernel regex:
@@ -453,27 +521,27 @@ Profile cuBLAS SGEMM with a broad kernel regex:
   --set basic \
   --target-processes all \
   --kernel-name-base demangled \
-  --kernel-name "regex:sgemm|gemm|ampere|sass|cutlass" \
-  --launch-skip 2 \
-  --launch-count 1 \
-  --force-overwrite \
-  -o "$Out/ncu_cublas_sgemm_4096" \
+  -k "regex:sgemm|gemm|ampere|sass|cutlass" \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_cublas_sgemm_2048_set_basic" \
   "$Exe" \
-  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
-  --warmup 2 --iters 5
+  --warmup 1 --iters 1
 ```
 
 View an Nsight Compute report in terminal:
 
 ```bash
-"$Ncu" --import "$Out/ncu_tiled_gemm_v1_4096_t16x16x16.ncu-rep" --page details
+"$Ncu" --import "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail.ncu-rep" --page details
 ```
 
 Open the Nsight Compute GUI if the GUI tool is installed:
 
 ```bash
-ncu-ui "$Out/ncu_tiled_gemm_v1_4096_t16x16x16.ncu-rep"
+ncu-ui "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail.ncu-rep"
 ```
 
 On some Linux systems, hardware performance counters are restricted. If `ncu` reports a permission error, run the profiling command with `sudo` or configure NVIDIA performance counter access for the machine.
