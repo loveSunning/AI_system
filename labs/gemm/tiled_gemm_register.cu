@@ -10,8 +10,8 @@ namespace ai_system::labs::gemm {
 namespace {
 
 constexpr bool kTiledGemmRegisterKernelImplemented = true;
-constexpr int kThreadTileM = 2;
-constexpr int kThreadTileN = 2;
+constexpr int kThreadTileM = 4;
+constexpr int kThreadTileN = 4;
 
 template <int BlockK>
 __device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {

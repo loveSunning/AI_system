@@ -237,7 +237,7 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_register_2048_t32x32x32_sections" `
+  -o "$Out\ncu_tiled_gemm_register_2048_t32x32x32_4x4_sections" `
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
