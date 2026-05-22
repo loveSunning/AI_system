@@ -8,7 +8,8 @@
 namespace ai_system::labs::gemm {
 
 enum class GemmLabBackend {
-    TiledGemmV1,
+    TiledGemmBlock,
+    TiledGemmRegister,
     TiledGemmV2,
     ManualTensorCoreV1
 };
@@ -51,7 +52,18 @@ private:
 
 bool gemm_lab_backend_available(GemmLabBackend backend);
 
-bool tiled_gemm_v1_cuda(
+bool tiled_gemm_block_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config = {}
+);
+
+bool tiled_gemm_register_cuda(
     std::size_t m,
     std::size_t n,
     std::size_t k,

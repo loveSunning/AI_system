@@ -2,7 +2,7 @@ add_library(ai_system_gemm_lab)
 target_sources(ai_system_gemm_lab PRIVATE gemm_lab.cpp)
 
 if(AI_SYSTEM_ENABLE_CUDA)
-    target_sources(ai_system_gemm_lab PRIVATE gemm_lab.cu tiled_gemm_v1.cu)
+    target_sources(ai_system_gemm_lab PRIVATE gemm_lab.cu tiled_gemm_block.cu tiled_gemm_register.cu)
     ai_system_configure_cuda_target(ai_system_gemm_lab)
 endif()
 

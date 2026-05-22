@@ -32,7 +32,7 @@ Use this before profiling to make sure the workload is correct and stable.
 ```powershell
 & $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
   --warmup 2 --iters 5
 ```
 
@@ -106,7 +106,7 @@ This is useful for checking:
 
 Use `ncu` after `nsys` to answer: why is one kernel slow?
 
-For `tiled_gemm_v1`, focus on:
+For `tiled_gemm_block`, focus on:
 
 - `Launch Statistics`: threads/block, registers/thread, shared memory/block
 - `Occupancy`: theoretical occupancy, achieved occupancy, active warps per SM
@@ -136,54 +136,54 @@ Nsight Compute supports multiple metric sets. The actual CLI identifier for "det
 
 The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 1 --iters 1`, use `-s 2 -c 1` to skip the correctness launch and warmup launch, then collect the measured launch.
 
-#### `tiled_gemm_v1` With `--set basic`
+#### `tiled_gemm_block` With `--set basic`
 
 ```powershell
 & $Ncu `
   --set basic `
   --target-processes all `
   --kernel-name-base demangled `
-  -k regex:tiled_gemm_v1_kernel `
+  -k regex:tiled_gemm_block_kernel `
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_basic" `
+  -o "$Out\ncu_tiled_gemm_block_2048_t16x16x16_set_basic" `
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
   --warmup 1 --iters 1
 ```
 
-#### `tiled_gemm_v1` With `--set detailed`
+#### `tiled_gemm_block` With `--set detailed`
 
 ```powershell
 & $Ncu `
   --set detailed `
   --target-processes all `
   --kernel-name-base demangled `
-  -k regex:tiled_gemm_v1_kernel `
+  -k regex:tiled_gemm_block_kernel `
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_detail" `
+  -o "$Out\ncu_tiled_gemm_block_2048_t16x16x16_set_detail" `
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
   --warmup 1 --iters 1
 ```
 
-#### `tiled_gemm_v1` With `--set full`
+#### `tiled_gemm_block` With `--set full`
 
 ```powershell
 & $Ncu `
   --set full `
   --target-processes all `
   --kernel-name-base demangled `
-  -k regex:tiled_gemm_v1_kernel `
+  -k regex:tiled_gemm_block_kernel `
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_set_full" `
+  -o "$Out\ncu_tiled_gemm_block_2048_t16x16x16_set_full" `
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
@@ -202,18 +202,45 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   --section WarpStateStats `
   --section SchedulerStats `
   --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
   --section ComputeWorkloadAnalysis `
   --section InstructionStats `
   --target-processes all `
   --kernel-name-base demangled `
-  -k regex:tiled_gemm_v1_kernel `
+  -k regex:tiled_gemm_block_kernel `
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_v1_2048_t16x16x16_sections" `
+  -o "$Out\ncu_tiled_gemm_block_2048_t32x32x32_sections" `
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
+  --warmup 1 --iters 1
+```
+
+#### `tiled_gemm_register` Section Command
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:tiled_gemm_register_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_tiled_gemm_register_2048_t32x32x32_sections" `
+  $Exe `
+  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
   --warmup 1 --iters 1
 ```
 
@@ -408,54 +435,54 @@ Nsight Compute supports multiple metric sets. The actual CLI identifier for "det
 
 The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 1 --iters 1`, use `-s 2 -c 1` to skip the correctness launch and warmup launch, then collect the measured launch.
 
-#### `tiled_gemm_v1` With `--set basic`
+#### `tiled_gemm_block` With `--set basic`
 
 ```bash
 "$Ncu" \
   --set basic \
   --target-processes all \
   --kernel-name-base demangled \
-  -k regex:tiled_gemm_v1_kernel \
+  -k regex:tiled_gemm_block_kernel \
   -s 2 \
   -c 1 \
   -f \
-  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_basic" \
+  -o "$Out/ncu_tiled_gemm_block_2048_t16x16x16_set_basic" \
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
   --warmup 1 --iters 1
 ```
 
-#### `tiled_gemm_v1` With `--set detailed`
+#### `tiled_gemm_block` With `--set detailed`
 
 ```bash
 "$Ncu" \
   --set detailed \
   --target-processes all \
   --kernel-name-base demangled \
-  -k regex:tiled_gemm_v1_kernel \
+  -k regex:tiled_gemm_block_kernel \
   -s 2 \
   -c 1 \
   -f \
-  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail" \
+  -o "$Out/ncu_tiled_gemm_block_2048_t16x16x16_set_detail" \
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
   --warmup 1 --iters 1
 ```
 
-#### `tiled_gemm_v1` With `--set full`
+#### `tiled_gemm_block` With `--set full`
 
 ```bash
 "$Ncu" \
   --set full \
   --target-processes all \
   --kernel-name-base demangled \
-  -k regex:tiled_gemm_v1_kernel \
+  -k regex:tiled_gemm_block_kernel \
   -s 2 \
   -c 1 \
   -f \
-  -o "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_full" \
+  -o "$Out/ncu_tiled_gemm_block_2048_t16x16x16_set_full" \
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
@@ -535,13 +562,13 @@ Profile cuBLAS SGEMM with a broad kernel regex:
 View an Nsight Compute report in terminal:
 
 ```bash
-"$Ncu" --import "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail.ncu-rep" --page details
+"$Ncu" --import "$Out/ncu_tiled_gemm_block_2048_t16x16x16_set_detail.ncu-rep" --page details
 ```
 
 Open the Nsight Compute GUI if the GUI tool is installed:
 
 ```bash
-ncu-ui "$Out/ncu_tiled_gemm_v1_2048_t16x16x16_set_detail.ncu-rep"
+ncu-ui "$Out/ncu_tiled_gemm_block_2048_t16x16x16_set_detail.ncu-rep"
 ```
 
 On some Linux systems, hardware performance counters are restricted. If `ncu` reports a permission error, run the profiling command with `sudo` or configure NVIDIA performance counter access for the machine.
@@ -565,7 +592,7 @@ Use this order when analyzing reports:
 1. `nsys`: confirm kernel-only vs e2e cost and identify hot kernels.
 2. `ncu` launch statistics: compare threads/block, registers/thread, shared memory/block.
 3. `ncu` occupancy: check whether active warps are too low.
-4. `ncu` warp state: look for high `barrier` stalls in `tiled_gemm_v1`.
+4. `ncu` warp state: look for high `barrier` stalls in `tiled_gemm_block`.
 5. `ncu` memory workload: look for shared memory bank conflicts and inefficient global loads.
 
-For the current `tiled_gemm_v1`, a common slow pattern is high barrier cost plus low scheduler utilization. That means shared-memory tiling is adding synchronization and shared-memory traffic, but the kernel is not yet reusing data enough in registers.
+For the current `tiled_gemm_block`, a common slow pattern is high barrier cost plus low scheduler utilization. That means shared-memory tiling is adding synchronization and shared-memory traffic, but the kernel is not yet reusing data enough in registers.

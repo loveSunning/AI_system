@@ -7,7 +7,7 @@
 
 namespace ai_system::labs::gemm::detail {
 
-bool launch_tiled_gemm_v1(
+bool launch_tiled_gemm_block(
     const float* lhs,
     const float* rhs,
     float* out,
@@ -18,6 +18,19 @@ bool launch_tiled_gemm_v1(
     std::string& error
 );
 
-bool is_tiled_gemm_v1_kernel_implemented();
+bool is_tiled_gemm_block_kernel_implemented();
+
+bool launch_tiled_gemm_register(
+    const float* lhs,
+    const float* rhs,
+    float* out,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    GemmLabTileConfig tile_config,
+    std::string& error
+);
+
+bool is_tiled_gemm_register_kernel_implemented();
 
 }  // namespace ai_system::labs::gemm::detail

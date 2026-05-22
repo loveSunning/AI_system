@@ -224,7 +224,7 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
     return flops / 1.0e9 / (average_ms / 1000.0);
 }
 
-bool should_skip_unimplemented_tiled_gemm(bool allow_skip, const std::string& error) {
+bool should_skip_unimplemented_gemm_lab(bool allow_skip, const std::string& error) {
     return allow_skip && error.find("not implemented") != std::string::npos;
 }
 
@@ -530,7 +530,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             return has_reference ? (matches ? 0 : 1) : 0;
         }
 
-        const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
+        const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
         ai_system::benchmark::add_validation_row(
             report,
             "gemm_e2e",
@@ -552,7 +552,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         auto runner = make_runner();
         std::string error;
         if(!prepare_runner(runner, error)) {
-            const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
+            const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
@@ -566,7 +566,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
         std::vector<float> gpu_out;
         if(!runner.run(error) || !runner.copy_output(gpu_out, error)) {
-            const bool skip_unimplemented = should_skip_unimplemented_tiled_gemm(allow_unimplemented_skip, error);
+            const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
@@ -635,7 +635,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
     auto make_core_gemm_runner = []() {
         return ai_system::kernels::PreparedGemmKernelRunner {};
     };
-    auto make_tiled_gemm_v1_runner = []() {
+    auto make_gemm_lab_runner = []() {
         return ai_system::labs::gemm::PreparedGemmLabRunner {};
     };
     auto prepare_core_backend = [&](ai_system::kernels::GemmBackend backend) {
@@ -643,9 +643,21 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             return runner.prepare(backend, m, n, k, lhs, rhs, error);
         };
     };
-    auto prepare_tiled_gemm_v1 = [&](auto& runner, std::string& error) {
+    auto prepare_tiled_gemm_block = [&](auto& runner, std::string& error) {
         return runner.prepare(
-            ai_system::labs::gemm::GemmLabBackend::TiledGemmV1,
+            ai_system::labs::gemm::GemmLabBackend::TiledGemmBlock,
+            m,
+            n,
+            k,
+            lhs,
+            rhs,
+            error,
+            options.gemm_tile
+        );
+    };
+    auto prepare_tiled_gemm_register = [&](auto& runner, std::string& error) {
+        return runner.prepare(
+            ai_system::labs::gemm::GemmLabBackend::TiledGemmRegister,
             m,
             n,
             k,
@@ -665,8 +677,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         kFp32GemmTolerance
     );
     failures += run_e2e_gemm_variant(
-        "tiled_gemm_v1",
-        "gemm/e2e/tiled_gemm_v1",
+        "tiled_gemm_block",
+        "gemm/e2e/tiled_gemm_block",
         [&](std::size_t requested_m,
             std::size_t requested_n,
             std::size_t requested_k,
@@ -674,7 +686,32 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             const std::vector<float>& requested_rhs,
             std::vector<float>& requested_out,
             std::string& error) {
-            return ai_system::labs::gemm::tiled_gemm_v1_cuda(
+            return ai_system::labs::gemm::tiled_gemm_block_cuda(
+                requested_m,
+                requested_n,
+                requested_k,
+                requested_lhs,
+                requested_rhs,
+                requested_out,
+                error,
+                options.gemm_tile
+            );
+        },
+        kFp32GemmTolerance,
+        true,
+        gemm_tile_shape
+    );
+    failures += run_e2e_gemm_variant(
+        "tiled_gemm_register",
+        "gemm/e2e/tiled_gemm_register",
+        [&](std::size_t requested_m,
+            std::size_t requested_n,
+            std::size_t requested_k,
+            const std::vector<float>& requested_lhs,
+            const std::vector<float>& requested_rhs,
+            std::vector<float>& requested_out,
+            std::string& error) {
+            return ai_system::labs::gemm::tiled_gemm_register_cuda(
                 requested_m,
                 requested_n,
                 requested_k,
@@ -715,10 +752,19 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         kFp32GemmTolerance
     );
     failures += run_kernel_only_gemm_variant(
-        "tiled_gemm_v1",
-        "gemm/kernel_only/tiled_gemm_v1",
-        make_tiled_gemm_v1_runner,
-        prepare_tiled_gemm_v1,
+        "tiled_gemm_block",
+        "gemm/kernel_only/tiled_gemm_block",
+        make_gemm_lab_runner,
+        prepare_tiled_gemm_block,
+        kFp32GemmTolerance,
+        true,
+        gemm_tile_shape
+    );
+    failures += run_kernel_only_gemm_variant(
+        "tiled_gemm_register",
+        "gemm/kernel_only/tiled_gemm_register",
+        make_gemm_lab_runner,
+        prepare_tiled_gemm_register,
         kFp32GemmTolerance,
         true,
         gemm_tile_shape

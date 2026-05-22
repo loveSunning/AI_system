@@ -47,7 +47,21 @@ bool gemm_lab_backend_available(GemmLabBackend) {
     return false;
 }
 
-bool tiled_gemm_v1_cuda(
+bool tiled_gemm_block_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error,
+    GemmLabTileConfig
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
+bool tiled_gemm_register_cuda(
     std::size_t,
     std::size_t,
     std::size_t,

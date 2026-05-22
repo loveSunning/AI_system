@@ -452,9 +452,21 @@ int main(int argc, char** argv) {
             return runner.prepare(backend, m, n, k, lhs, rhs, error);
         };
     };
-    auto prepare_tiled_gemm_v1 = [&](auto& runner, std::string& error) {
+    auto prepare_tiled_gemm_block = [&](auto& runner, std::string& error) {
         return runner.prepare(
-            ai_system::labs::gemm::GemmLabBackend::TiledGemmV1,
+            ai_system::labs::gemm::GemmLabBackend::TiledGemmBlock,
+            m,
+            n,
+            k,
+            lhs,
+            rhs,
+            error,
+            options.gemm_tile
+        );
+    };
+    auto prepare_tiled_gemm_register = [&](auto& runner, std::string& error) {
+        return runner.prepare(
+            ai_system::labs::gemm::GemmLabBackend::TiledGemmRegister,
             m,
             n,
             k,
@@ -473,8 +485,8 @@ int main(int argc, char** argv) {
             kFp32GemmTolerance
         );
         failures += run_e2e_variant(
-            "tiled_gemm_v1",
-            "sgemm/e2e/tiled_gemm_v1",
+            "tiled_gemm_block",
+            "sgemm/e2e/tiled_gemm_block",
             [&](std::size_t requested_m,
                 std::size_t requested_n,
                 std::size_t requested_k,
@@ -482,7 +494,32 @@ int main(int argc, char** argv) {
                 const std::vector<float>& requested_rhs,
                 std::vector<float>& requested_out,
                 std::string& error) {
-                return ai_system::labs::gemm::tiled_gemm_v1_cuda(
+                return ai_system::labs::gemm::tiled_gemm_block_cuda(
+                    requested_m,
+                    requested_n,
+                    requested_k,
+                    requested_lhs,
+                    requested_rhs,
+                    requested_out,
+                    error,
+                    options.gemm_tile
+                );
+            },
+            kFp32GemmTolerance,
+            gemm_tile_shape,
+            true
+        );
+        failures += run_e2e_variant(
+            "tiled_gemm_register",
+            "sgemm/e2e/tiled_gemm_register",
+            [&](std::size_t requested_m,
+                std::size_t requested_n,
+                std::size_t requested_k,
+                const std::vector<float>& requested_lhs,
+                const std::vector<float>& requested_rhs,
+                std::vector<float>& requested_out,
+                std::string& error) {
+                return ai_system::labs::gemm::tiled_gemm_register_cuda(
                     requested_m,
                     requested_n,
                     requested_k,
@@ -513,10 +550,19 @@ int main(int argc, char** argv) {
         kFp32GemmTolerance
     );
     failures += run_kernel_only_variant(
-        "tiled_gemm_v1",
-        "sgemm/kernel_only/tiled_gemm_v1",
+        "tiled_gemm_block",
+        "sgemm/kernel_only/tiled_gemm_block",
         make_lab_runner,
-        prepare_tiled_gemm_v1,
+        prepare_tiled_gemm_block,
+        kFp32GemmTolerance,
+        gemm_tile_shape,
+        true
+    );
+    failures += run_kernel_only_variant(
+        "tiled_gemm_register",
+        "sgemm/kernel_only/tiled_gemm_register",
+        make_lab_runner,
+        prepare_tiled_gemm_register,
         kFp32GemmTolerance,
         gemm_tile_shape,
         true
