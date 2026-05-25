@@ -15,10 +15,13 @@ constexpr bool kTiledGemmBlockKernelImplemented = true;
 template <int BlockN, int BlockK>
 constexpr bool lhs_tile_needs_bank_conflict_swizzle() {
     constexpr int kWarpSize = 32;
-    static_assert(kWarpSize % BlockN == 0, "tiled_gemm_block block_n must evenly divide the warp size.");
     static_assert(kWarpSize % BlockK == 0, "tiled_gemm_block block_k must evenly divide the warp size.");
 
-    return (kWarpSize / BlockN) > (kWarpSize / BlockK);
+    if constexpr (BlockN <= kWarpSize && kWarpSize % BlockN == 0) {
+        return (kWarpSize / BlockN) > (kWarpSize / BlockK);
+    }
+
+    return false;
 }
 
 template <int BlockN, int BlockK>
@@ -156,14 +159,33 @@ bool dispatch_tiled_gemm_block_n(
 ) {
     switch(block_n) {
         case 8:
-            return dispatch_tiled_gemm_block_k<BlockM, 8>(lhs, rhs, out, m, n, k, block_k, error);
+            if constexpr (BlockM * 8 <= 1024) {
+                return dispatch_tiled_gemm_block_k<BlockM, 8>(lhs, rhs, out, m, n, k, block_k, error);
+            }
+            break;
         case 16:
-            return dispatch_tiled_gemm_block_k<BlockM, 16>(lhs, rhs, out, m, n, k, block_k, error);
+            if constexpr (BlockM * 16 <= 1024) {
+                return dispatch_tiled_gemm_block_k<BlockM, 16>(lhs, rhs, out, m, n, k, block_k, error);
+            }
+            break;
         case 32:
-            return dispatch_tiled_gemm_block_k<BlockM, 32>(lhs, rhs, out, m, n, k, block_k, error);
+            if constexpr (BlockM * 32 <= 1024) {
+                return dispatch_tiled_gemm_block_k<BlockM, 32>(lhs, rhs, out, m, n, k, block_k, error);
+            }
+            break;
+        case 64:
+            if constexpr (BlockM * 64 <= 1024) {
+                return dispatch_tiled_gemm_block_k<BlockM, 64>(lhs, rhs, out, m, n, k, block_k, error);
+            }
+            break;
+        case 128:
+            if constexpr (BlockM * 128 <= 1024) {
+                return dispatch_tiled_gemm_block_k<BlockM, 128>(lhs, rhs, out, m, n, k, block_k, error);
+            }
+            break;
     }
 
-    error = "tiled_gemm_block block_n must be one of 8, 16, or 32.";
+    error = "tiled_gemm_block block_n must be one of 8, 16, 32, 64, or 128 with block_m * block_n <= 1024.";
     return false;
 }
 
@@ -214,9 +236,33 @@ bool dispatch_tiled_gemm_block(
                 tile_config.block_k,
                 error
             );
+        case 64:
+            return dispatch_tiled_gemm_block_n<64>(
+                lhs,
+                rhs,
+                out,
+                m,
+                n,
+                k,
+                tile_config.block_n,
+                tile_config.block_k,
+                error
+            );
+        case 128:
+            return dispatch_tiled_gemm_block_n<128>(
+                lhs,
+                rhs,
+                out,
+                m,
+                n,
+                k,
+                tile_config.block_n,
+                tile_config.block_k,
+                error
+            );
     }
 
-    error = "tiled_gemm_block block_m must be one of 8, 16, or 32.";
+    error = "tiled_gemm_block block_m must be one of 8, 16, 32, 64, or 128.";
     return false;
 }
 

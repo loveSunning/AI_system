@@ -17,7 +17,7 @@ __device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {
 }
 
 template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN>
-__global__ void tiled_gemm_register_kernel(
+__global__ void __launch_bounds__(1024, 1) tiled_gemm_register_kernel(
     const float* __restrict__ lhs,
     const float* __restrict__ rhs,
     float* __restrict__ out,
@@ -124,7 +124,7 @@ __global__ void tiled_gemm_register_kernel(
 }
 
 template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN>
-bool launch_tiled_gemm_register_kernel(
+bool launch_tiled_gemm_register_instance(
     const float* lhs,
     const float* rhs,
     float* out,
@@ -143,221 +143,132 @@ bool launch_tiled_gemm_register_kernel(
     return ai_system::cuda_utils::check_last_launch(error);
 }
 
-template <int BlockM, int BlockN, int RegisterM, int RegisterN>
-bool dispatch_tiled_gemm_register_k(
+using TiledGemmRegisterLaunchFn = bool (*)(
     const float* lhs,
     const float* rhs,
     float* out,
     std::size_t m,
     std::size_t n,
     std::size_t k,
-    int block_k,
     std::string& error
-) {
-    switch(block_k) {
-        case 8:
-            return launch_tiled_gemm_register_kernel<BlockM, BlockN, 8, RegisterM, RegisterN>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                error
-            );
-        case 16:
-            return launch_tiled_gemm_register_kernel<BlockM, BlockN, 16, RegisterM, RegisterN>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                error
-            );
-        case 32:
-            return launch_tiled_gemm_register_kernel<BlockM, BlockN, 32, RegisterM, RegisterN>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                error
-            );
+);
+
+struct TiledGemmRegisterSpec {
+    int block_m;
+    int block_n;
+    int block_k;
+    int register_m;
+    int register_n;
+    TiledGemmRegisterLaunchFn launch;
+};
+
+#define AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, REGISTER_M, REGISTER_N) \
+    { \
+        BLOCK_M, \
+        BLOCK_N, \
+        BLOCK_K, \
+        REGISTER_M, \
+        REGISTER_N, \
+        &launch_tiled_gemm_register_instance<BLOCK_M, BLOCK_N, BLOCK_K, REGISTER_M, REGISTER_N> \
     }
 
-    error = "tiled_gemm_register block_k must be one of 8, 16, or 32.";
-    return false;
-}
+#define AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS_FOR_K(BLOCK_M, BLOCK_N, BLOCK_K) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 4)
 
-template <int BlockM, int BlockN, int RegisterM>
-bool dispatch_tiled_gemm_register_register_n(
-    const float* lhs,
-    const float* rhs,
-    float* out,
-    std::size_t m,
-    std::size_t n,
-    std::size_t k,
-    int register_n,
-    int block_k,
-    std::string& error
-) {
-    switch(register_n) {
-        case 1:
-            return dispatch_tiled_gemm_register_k<BlockM, BlockN, RegisterM, 1>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                block_k,
-                error
-            );
-        case 2:
-            return dispatch_tiled_gemm_register_k<BlockM, BlockN, RegisterM, 2>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                block_k,
-                error
-            );
-        case 4:
-            return dispatch_tiled_gemm_register_k<BlockM, BlockN, RegisterM, 4>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                block_k,
-                error
-            );
-    }
+#define AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(BLOCK_M, BLOCK_N) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS_FOR_K(BLOCK_M, BLOCK_N, 8), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS_FOR_K(BLOCK_M, BLOCK_N, 16), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS_FOR_K(BLOCK_M, BLOCK_N, 32)
 
-    error = "tiled_gemm_register register_n must be one of 1, 2, or 4.";
-    return false;
-}
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2_FOR_K(BLOCK_M, BLOCK_N, BLOCK_K) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 4)
 
-template <int BlockM, int BlockN>
-bool dispatch_tiled_gemm_register_register_m(
-    const float* lhs,
-    const float* rhs,
-    float* out,
-    std::size_t m,
-    std::size_t n,
-    std::size_t k,
-    int register_m,
-    int register_n,
-    int block_k,
-    std::string& error
-) {
-    switch(register_m) {
-        case 1:
-            return dispatch_tiled_gemm_register_register_n<BlockM, BlockN, 1>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_n,
-                block_k,
-                error
-            );
-        case 2:
-            return dispatch_tiled_gemm_register_register_n<BlockM, BlockN, 2>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_n,
-                block_k,
-                error
-            );
-        case 4:
-            return dispatch_tiled_gemm_register_register_n<BlockM, BlockN, 4>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_n,
-                block_k,
-                error
-            );
-    }
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2(BLOCK_M, BLOCK_N) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2_FOR_K(BLOCK_M, BLOCK_N, 8), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2_FOR_K(BLOCK_M, BLOCK_N, 16), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2_FOR_K(BLOCK_M, BLOCK_N, 32)
 
-    error = "tiled_gemm_register register_m must be one of 1, 2, or 4.";
-    return false;
-}
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4_FOR_K(BLOCK_M, BLOCK_N, BLOCK_K) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 1, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 1), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 4)
 
-template <int BlockM>
-bool dispatch_tiled_gemm_register_n(
-    const float* lhs,
-    const float* rhs,
-    float* out,
-    std::size_t m,
-    std::size_t n,
-    std::size_t k,
-    int block_n,
-    int register_m,
-    int register_n,
-    int block_k,
-    std::string& error
-) {
-    switch(block_n) {
-        case 8:
-            return dispatch_tiled_gemm_register_register_m<BlockM, 8>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_m,
-                register_n,
-                block_k,
-                error
-            );
-        case 16:
-            return dispatch_tiled_gemm_register_register_m<BlockM, 16>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_m,
-                register_n,
-                block_k,
-                error
-            );
-        case 32:
-            return dispatch_tiled_gemm_register_register_m<BlockM, 32>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                register_m,
-                register_n,
-                block_k,
-                error
-            );
-    }
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4(BLOCK_M, BLOCK_N) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4_FOR_K(BLOCK_M, BLOCK_N, 8), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4_FOR_K(BLOCK_M, BLOCK_N, 16), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4_FOR_K(BLOCK_M, BLOCK_N, 32)
 
-    error = "tiled_gemm_register block_n must be one of 8, 16, or 32.";
-    return false;
-}
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8_FOR_K(BLOCK_M, BLOCK_N, BLOCK_K) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 2, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 2), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, BLOCK_K, 4, 4)
+
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8(BLOCK_M, BLOCK_N) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8_FOR_K(BLOCK_M, BLOCK_N, 8), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8_FOR_K(BLOCK_M, BLOCK_N, 16), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8_FOR_K(BLOCK_M, BLOCK_N, 32)
+
+#define AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN16(BLOCK_M, BLOCK_N) \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, 8, 4, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, 16, 4, 4), \
+    AI_SYSTEM_TILED_GEMM_REGISTER_SPEC(BLOCK_M, BLOCK_N, 32, 4, 4)
+
+constexpr TiledGemmRegisterSpec kTiledGemmRegisterSpecs[] = {
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(8, 8),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(8, 16),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(8, 32),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(16, 8),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(16, 16),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(16, 32),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(32, 8),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(32, 16),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(32, 32),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(8, 64),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(8, 128),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(16, 64),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(64, 8),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(64, 16),
+    AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS(128, 8),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2(16, 128),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2(32, 64),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2(64, 32),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2(128, 16),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4(32, 128),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4(64, 64),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4(128, 32),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8(64, 128),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8(128, 64),
+    AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN16(128, 128)
+};
+
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN16
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN8_FOR_K
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN4_FOR_K
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_REGS_MIN2_FOR_K
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_ALL_REGS_FOR_K
+#undef AI_SYSTEM_TILED_GEMM_REGISTER_SPEC
 
 bool dispatch_tiled_gemm_register(
     const float* lhs,
@@ -369,52 +280,19 @@ bool dispatch_tiled_gemm_register(
     GemmLabTileConfig tile_config,
     std::string& error
 ) {
-    switch(tile_config.block_m) {
-        case 8:
-            return dispatch_tiled_gemm_register_n<8>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                tile_config.block_n,
-                tile_config.register_m,
-                tile_config.register_n,
-                tile_config.block_k,
-                error
-            );
-        case 16:
-            return dispatch_tiled_gemm_register_n<16>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                tile_config.block_n,
-                tile_config.register_m,
-                tile_config.register_n,
-                tile_config.block_k,
-                error
-            );
-        case 32:
-            return dispatch_tiled_gemm_register_n<32>(
-                lhs,
-                rhs,
-                out,
-                m,
-                n,
-                k,
-                tile_config.block_n,
-                tile_config.register_m,
-                tile_config.register_n,
-                tile_config.block_k,
-                error
-            );
+    for(const auto& spec : kTiledGemmRegisterSpecs) {
+        if(spec.block_m == tile_config.block_m && spec.block_n == tile_config.block_n &&
+           spec.block_k == tile_config.block_k && spec.register_m == tile_config.register_m &&
+           spec.register_n == tile_config.register_n) {
+            return spec.launch(lhs, rhs, out, m, n, k, error);
+        }
     }
 
-    error = "tiled_gemm_register block_m must be one of 8, 16, or 32.";
+    error = "tiled_gemm_register shape is not compiled into the launcher table: block=" +
+        std::to_string(tile_config.block_m) + "x" + std::to_string(tile_config.block_n) + "x" +
+        std::to_string(tile_config.block_k) + ", register=" + std::to_string(tile_config.register_m) + "x" +
+        std::to_string(tile_config.register_n) +
+        ". Compiled output tiles use block_m/block_n in 8, 16, 32, 64, or 128 and obey the 1024-thread limit.";
     return false;
 }
 

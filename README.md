@@ -95,8 +95,8 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `--gemm-m M`：设置 GEMM 输出矩阵行数。
 - `--gemm-n N`：设置 GEMM 输出矩阵列数。
 - `--gemm-k K`：设置 GEMM 的共享维度。
-- `--gemm-tile-m M`: GEMM lab output tile rows; default `16`.
-- `--gemm-tile-n N`: GEMM lab output tile columns; default `16`.
+- `--gemm-tile-m M`: GEMM lab output tile rows; supported `8/16/32/64/128`, default `16`.
+- `--gemm-tile-n N`: GEMM lab output tile columns; supported `8/16/32/64/128`, default `16`.
 - `--gemm-tile-k K`: GEMM lab reduction tile; default `16`.
 - `--gemm-reg-m M`: register-tiled GEMM per-thread rows; default `4`.
 - `--gemm-reg-n N`: register-tiled GEMM per-thread columns; default `4`.

@@ -42,7 +42,11 @@ bool validate_gemm_inputs(
     return true;
 }
 
-bool is_supported_gemm_lab_tile_dimension(int value) {
+bool is_supported_gemm_output_tile_dimension(int value) {
+    return value == 8 || value == 16 || value == 32 || value == 64 || value == 128;
+}
+
+bool is_supported_gemm_reduction_tile_dimension(int value) {
     return value == 8 || value == 16 || value == 32;
 }
 
@@ -50,16 +54,28 @@ bool is_supported_gemm_register_tile_dimension(int value) {
     return value == 1 || value == 2 || value == 4;
 }
 
-bool validate_gemm_lab_tile_config(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
-    if(!is_supported_gemm_lab_tile_dimension(tile_config.block_m) ||
-       !is_supported_gemm_lab_tile_dimension(tile_config.block_n) ||
-       !is_supported_gemm_lab_tile_dimension(tile_config.block_k)) {
-        error = std::string(backend_label) + " tile dimensions must each be one of 8, 16, or 32.";
+bool validate_gemm_output_tile_dimensions(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
+    if(!is_supported_gemm_output_tile_dimension(tile_config.block_m) ||
+       !is_supported_gemm_output_tile_dimension(tile_config.block_n)) {
+        error = std::string(backend_label) + " output tile dimensions must each be one of 8, 16, 32, 64, or 128.";
+        return false;
+    }
+
+    if(!is_supported_gemm_reduction_tile_dimension(tile_config.block_k)) {
+        error = std::string(backend_label) + " reduction tile dimension must be one of 8, 16, or 32.";
+        return false;
+    }
+
+    return true;
+}
+
+bool validate_tiled_gemm_block_tile_config(GemmLabTileConfig tile_config, std::string& error) {
+    if(!validate_gemm_output_tile_dimensions(tile_config, "tiled_gemm_block", error)) {
         return false;
     }
 
     if(tile_config.block_m * tile_config.block_n > 1024) {
-        error = std::string(backend_label) + " requires block_m * block_n <= 1024.";
+        error = "tiled_gemm_block requires block_m * block_n <= 1024.";
         return false;
     }
 
@@ -67,7 +83,7 @@ bool validate_gemm_lab_tile_config(GemmLabTileConfig tile_config, const char* ba
 }
 
 bool validate_tiled_gemm_register_tile_config(GemmLabTileConfig tile_config, std::string& error) {
-    if(!validate_gemm_lab_tile_config(tile_config, "tiled_gemm_register", error)) {
+    if(!validate_gemm_output_tile_dimensions(tile_config, "tiled_gemm_register", error)) {
         return false;
     }
 
@@ -95,7 +111,7 @@ bool validate_tiled_gemm_register_tile_config(GemmLabTileConfig tile_config, std
 bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_config, std::string& error) {
     switch(backend) {
         case GemmLabBackend::TiledGemmBlock:
-            return validate_gemm_lab_tile_config(tile_config, "tiled_gemm_block", error);
+            return validate_tiled_gemm_block_tile_config(tile_config, error);
         case GemmLabBackend::TiledGemmRegister:
             return validate_tiled_gemm_register_tile_config(tile_config, error);
         case GemmLabBackend::TiledGemmV2:

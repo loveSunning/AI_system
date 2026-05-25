@@ -50,7 +50,7 @@ SGEMM benchmark 和 perf engineering lab 共用一套 GEMM lab tile 参数：
 --gemm-reg-m 4 --gemm-reg-n 4
 ```
 
-默认是 `16x16x16`。当前每个维度支持 `8`、`16`、`32`。这些值会传给 `GemmLabTileConfig`，`tiled_gemm_block` 再 dispatch 到对应的模板 kernel 实例，所以 `BLOCK_M`、`BLOCK_N`、`BLOCK_K` 仍然是编译期常量，shared memory 数组尺寸和 `#pragma unroll` 都能保持编译期展开。
+默认是 `16x16x16`。当前 `block_m/block_n` 支持 `8`、`16`、`32`、`64`、`128`，`block_k` 支持 `8`、`16`、`32`。`tiled_gemm_block` 按 `block_m * block_n <= 1024` 控制线程数；`tiled_gemm_register` 按 `(block_m / reg_m) * (block_n / reg_n) <= 1024` 控制线程数。这些值会传给 `GemmLabTileConfig`，再 dispatch 到对应的模板 kernel 实例，所以 `BLOCK_M`、`BLOCK_N`、`BLOCK_K` 和 register tile 仍然是编译期常量，shared memory 数组尺寸和 `#pragma unroll` 都能保持编译期展开。
 
 非方形 tile 示例：
 

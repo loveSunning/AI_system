@@ -50,8 +50,8 @@ void print_usage() {
               << "  --gemm-m M           GEMM rows of lhs/out\n"
               << "  --gemm-n N           GEMM columns of rhs/out\n"
               << "  --gemm-k K           GEMM shared dimension\n"
-              << "  --gemm-tile-m M     GEMM lab output tile rows; supported: 8, 16, 32\n"
-              << "  --gemm-tile-n N     GEMM lab output tile columns; supported: 8, 16, 32\n"
+              << "  --gemm-tile-m M     GEMM lab output tile rows; supported: 8, 16, 32, 64, 128\n"
+              << "  --gemm-tile-n N     GEMM lab output tile columns; supported: 8, 16, 32, 64, 128\n"
               << "  --gemm-tile-k K     GEMM lab reduction tile; supported: 8, 16, 32\n"
               << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported: 1, 2, 4\n"
               << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported: 1, 2, 4\n"
@@ -242,8 +242,14 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
     return flops / 1.0e9 / (average_ms / 1000.0);
 }
 
-bool should_skip_unimplemented_gemm_lab(bool allow_skip, const std::string& error) {
-    return allow_skip && error.find("not implemented") != std::string::npos;
+bool should_skip_gemm_lab_variant(bool allow_skip, const std::string& impl_name, const std::string& error) {
+    if(!allow_skip) {
+        return false;
+    }
+    if(error.find("not implemented") != std::string::npos) {
+        return true;
+    }
+    return impl_name == "tiled_gemm_block" && error.find("requires block_m * block_n <= 1024") != std::string::npos;
 }
 
 int run_vector_add_case(const LabOptions& options, ai_system::benchmark::BenchmarkReport& report) {
@@ -550,7 +556,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             return has_reference ? (matches ? 0 : 1) : 0;
         }
 
-        const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
+        const bool skip_unimplemented = should_skip_gemm_lab_variant(allow_unimplemented_skip, impl_name, error);
         ai_system::benchmark::add_validation_row(
             report,
             "gemm_e2e",
@@ -573,7 +579,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         auto runner = make_runner();
         std::string error;
         if(!prepare_runner(runner, error)) {
-            const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
+            const bool skip_unimplemented = should_skip_gemm_lab_variant(allow_unimplemented_skip, impl_name, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
@@ -587,7 +593,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
 
         std::vector<float> gpu_out;
         if(!runner.run(error) || !runner.copy_output(gpu_out, error)) {
-            const bool skip_unimplemented = should_skip_unimplemented_gemm_lab(allow_unimplemented_skip, error);
+            const bool skip_unimplemented = should_skip_gemm_lab_variant(allow_unimplemented_skip, impl_name, error);
             ai_system::benchmark::add_validation_row(
                 report,
                 "gemm_kernel_only",
