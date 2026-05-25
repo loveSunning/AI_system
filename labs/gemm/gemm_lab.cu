@@ -46,6 +46,10 @@ bool is_supported_gemm_lab_tile_dimension(int value) {
     return value == 8 || value == 16 || value == 32;
 }
 
+bool is_supported_gemm_register_tile_dimension(int value) {
+    return value == 1 || value == 2 || value == 4;
+}
+
 bool validate_gemm_lab_tile_config(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
     if(!is_supported_gemm_lab_tile_dimension(tile_config.block_m) ||
        !is_supported_gemm_lab_tile_dimension(tile_config.block_n) ||
@@ -62,12 +66,38 @@ bool validate_gemm_lab_tile_config(GemmLabTileConfig tile_config, const char* ba
     return true;
 }
 
+bool validate_tiled_gemm_register_tile_config(GemmLabTileConfig tile_config, std::string& error) {
+    if(!validate_gemm_lab_tile_config(tile_config, "tiled_gemm_register", error)) {
+        return false;
+    }
+
+    if(!is_supported_gemm_register_tile_dimension(tile_config.register_m) ||
+       !is_supported_gemm_register_tile_dimension(tile_config.register_n)) {
+        error = "tiled_gemm_register register tile dimensions must each be one of 1, 2, or 4.";
+        return false;
+    }
+
+    if(tile_config.block_m % tile_config.register_m != 0 || tile_config.block_n % tile_config.register_n != 0) {
+        error = "tiled_gemm_register requires block_m/block_n to be divisible by register_m/register_n.";
+        return false;
+    }
+
+    const int threads_per_block = (tile_config.block_m / tile_config.register_m) *
+        (tile_config.block_n / tile_config.register_n);
+    if(threads_per_block <= 0 || threads_per_block > 1024) {
+        error = "tiled_gemm_register derived thread block size must be between 1 and 1024.";
+        return false;
+    }
+
+    return true;
+}
+
 bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_config, std::string& error) {
     switch(backend) {
         case GemmLabBackend::TiledGemmBlock:
             return validate_gemm_lab_tile_config(tile_config, "tiled_gemm_block", error);
         case GemmLabBackend::TiledGemmRegister:
-            return validate_gemm_lab_tile_config(tile_config, "tiled_gemm_register", error);
+            return validate_tiled_gemm_register_tile_config(tile_config, error);
         case GemmLabBackend::TiledGemmV2:
         case GemmLabBackend::ManualTensorCoreV1:
             return true;

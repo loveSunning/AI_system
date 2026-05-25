@@ -95,6 +95,11 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `--gemm-m M`：设置 GEMM 输出矩阵行数。
 - `--gemm-n N`：设置 GEMM 输出矩阵列数。
 - `--gemm-k K`：设置 GEMM 的共享维度。
+- `--gemm-tile-m M`: GEMM lab output tile rows; default `16`.
+- `--gemm-tile-n N`: GEMM lab output tile columns; default `16`.
+- `--gemm-tile-k K`: GEMM lab reduction tile; default `16`.
+- `--gemm-reg-m M`: register-tiled GEMM per-thread rows; default `4`.
+- `--gemm-reg-n N`: register-tiled GEMM per-thread columns; default `4`.
 - `--warmup I`：设置每个 case 的预热轮数。
 - `--iters I`：设置每个 case 的正式测量轮数。
 
@@ -103,6 +108,8 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `vector-size=1048576`
 - `reduction-size=1048576`
 - `gemm-m=n=k=1024`
+- `gemm-tile=16x16x16`
+- `gemm-reg=4x4`
 
 示例：
 
@@ -111,20 +118,25 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
   --vector-size 1048576 \
   --reduction-size 1048576 \
   --gemm-m 128 --gemm-n 128 --gemm-k 128 \
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 2 --iters 6
 
 ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab \
   --vector-size 16777216 \
   --reduction-size 16777216 \
   --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
+  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 3 --iters 10
 
-.\perf_engineering_lab.exe --vector-size 16777216 --reduction-size 16777216 --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --warmup 2 --iters 5
+.\perf_engineering_lab.exe --vector-size 16777216 --reduction-size 16777216 --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --warmup 2 --iters 5 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
 ```
 
 输出会分成两张表：
 
-- `Benchmark Results`：包含 `op`、`impl`、`shape`、`avg_ms`、`min_ms`、`max_ms`、`perf`、`unit`、`warmup`、`iters`，便于横向对比 CPU / CUDA 的性能。
+- `Benchmark Results`：包含 `op`、`impl`、`shape`、`tileshape`、`registershape`、`avg_ms`、`min_ms`、`max_ms`、`perf`、`unit`、`warmup`、`iters`，便于横向对比 CPU / CUDA 的性能。
+- `registershape`: register-tiled GEMM per-thread tile shape, for example `4x4`; non-register implementations show `none`.
 - `Validation`：包含 correctness 或 runtime 检查结果，避免把错误样本误当成性能结论。
 
 ### 如何测试不同尺寸输入的性能
@@ -139,9 +151,9 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 例如：
 
 ```bash
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 2 --iters 8
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 4194304 --reduction-size 4194304 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 2 --iters 8
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 16777216 --reduction-size 16777216 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 2 --iters 8
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 4194304 --reduction-size 4194304 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 16777216 --reduction-size 16777216 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
 ```
 
 ### 如何判断结果是否准确

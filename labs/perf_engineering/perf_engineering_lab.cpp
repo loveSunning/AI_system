@@ -53,6 +53,8 @@ void print_usage() {
               << "  --gemm-tile-m M     GEMM lab output tile rows; supported: 8, 16, 32\n"
               << "  --gemm-tile-n N     GEMM lab output tile columns; supported: 8, 16, 32\n"
               << "  --gemm-tile-k K     GEMM lab reduction tile; supported: 8, 16, 32\n"
+              << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported: 1, 2, 4\n"
+              << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported: 1, 2, 4\n"
               << "  --warmup I           Warmup iterations for each benchmark\n"
               << "  --iters I            Measured iterations for each benchmark\n"
               << "  --help               Show this help message\n";
@@ -156,6 +158,18 @@ bool parse_options(int argc, char** argv, LabOptions& options) {
             }
             continue;
         }
+        if(argument == "--gemm-reg-m") {
+            if(!require_int_value(options.gemm_tile.register_m)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-reg-n") {
+            if(!require_int_value(options.gemm_tile.register_n)) {
+                return false;
+            }
+            continue;
+        }
         if(argument == "--warmup") {
             if(!require_value(options.warmup_iterations)) {
                 return false;
@@ -192,6 +206,10 @@ std::string format_gemm_shape(std::size_t m, std::size_t n, std::size_t k) {
 std::string format_gemm_tile_shape(ai_system::labs::gemm::GemmLabTileConfig tile_config) {
     return std::to_string(tile_config.block_m) + "x" + std::to_string(tile_config.block_n) + "x" +
         std::to_string(tile_config.block_k);
+}
+
+std::string format_gemm_register_shape(ai_system::labs::gemm::GemmLabTileConfig tile_config) {
+    return std::to_string(tile_config.register_m) + "x" + std::to_string(tile_config.register_n);
 }
 
 bool should_include_cpu_naive_gemm(std::size_t m, std::size_t n, std::size_t k) {
@@ -483,7 +501,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                                     auto&& gemm_fn,
                                     const GemmTolerance& tolerance,
                                     bool allow_unimplemented_skip = false,
-                                    std::string tile_shape = "none") {
+                                    std::string tile_shape = "none",
+                                    std::string register_shape = "none") {
         std::vector<float> gpu_out;
         std::string error;
         if(gemm_fn(m, n, k, lhs, rhs, gpu_out, error)) {
@@ -524,7 +543,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                 gpu_result,
                 compute_gemm_gflops(m, n, k, gpu_result.average_ms),
                 "GFLOPS",
-                tile_shape
+                tile_shape,
+                register_shape
             );
 
             return has_reference ? (matches ? 0 : 1) : 0;
@@ -548,7 +568,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
                                             auto&& prepare_runner,
                                             const GemmTolerance& tolerance,
                                             bool allow_unimplemented_skip = false,
-                                            std::string tile_shape = "none") {
+                                            std::string tile_shape = "none",
+                                            std::string register_shape = "none") {
         auto runner = make_runner();
         std::string error;
         if(!prepare_runner(runner, error)) {
@@ -626,7 +647,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
             gpu_result,
             compute_gemm_gflops(m, n, k, gpu_result.average_ms),
             "GFLOPS",
-            tile_shape
+            tile_shape,
+            register_shape
         );
 
         return has_reference ? (matches ? 0 : 1) : 0;
@@ -668,6 +690,7 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         );
     };
     const std::string gemm_tile_shape = format_gemm_tile_shape(options.gemm_tile);
+    const std::string gemm_register_shape = format_gemm_register_shape(options.gemm_tile);
 
     int failures = 0;
     failures += run_e2e_gemm_variant(
@@ -724,7 +747,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         },
         kFp32GemmTolerance,
         true,
-        gemm_tile_shape
+        gemm_tile_shape,
+        gemm_register_shape
     );
     failures += run_e2e_gemm_variant(
         "cublas_sgemm",
@@ -767,7 +791,8 @@ int run_gemm_case(const LabOptions& options, ai_system::benchmark::BenchmarkRepo
         prepare_tiled_gemm_register,
         kFp32GemmTolerance,
         true,
-        gemm_tile_shape
+        gemm_tile_shape,
+        gemm_register_shape
     );
     failures += run_kernel_only_gemm_variant(
         "cublas_sgemm",
@@ -808,6 +833,7 @@ int main(int argc, char** argv) {
     std::cout << "Measured iterations: " << options.measured_iterations << "\n";
     std::cout << "GEMM lab tile: " << options.gemm_tile.block_m << "x" << options.gemm_tile.block_n << "x"
               << options.gemm_tile.block_k << "\n";
+    std::cout << "GEMM register tile: " << options.gemm_tile.register_m << "x" << options.gemm_tile.register_n << "\n";
     std::cout << ai_system::runtime::summarize_gpus(ai_system::runtime::query_gpus());
 
     ai_system::benchmark::BenchmarkReport report;

@@ -33,6 +33,7 @@ Use this before profiling to make sure the workload is correct and stable.
 & $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 2 --iters 5
 ```
 
@@ -42,6 +43,7 @@ Run end-to-end only when you want to include allocation, H2D, D2H, and host-side
 & $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --include-e2e `
   --warmup 2 --iters 5
 ```
@@ -69,6 +71,7 @@ This is useful for checking:
   $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 2 --iters 5
 ```
 
@@ -84,6 +87,7 @@ This is useful for checking:
   $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --include-e2e `
   --warmup 2 --iters 5
 ```
@@ -151,6 +155,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -169,6 +174,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -187,6 +193,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -215,6 +222,7 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -241,6 +249,7 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -268,6 +277,7 @@ Use this as the comparison point for launch configuration, occupancy, warp stall
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -288,6 +298,7 @@ cuBLAS kernel names vary by GPU, CUDA, and cuBLAS version. Start with a broad SG
   $Exe `
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
 
@@ -310,6 +321,7 @@ foreach($Tile in $Tiles) {
   & $Exe `
     --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
     --gemm-tile-m $Tile[0] --gemm-tile-n $Tile[1] --gemm-tile-k $Tile[2] `
+    --gemm-reg-m 4 --gemm-reg-n 4 `
     --warmup 2 --iters 5
 }
 ```
@@ -349,6 +361,7 @@ Ncu="/opt/nvidia/nsight-compute/ncu"
 "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 2 --iters 5
 ```
 
@@ -358,6 +371,7 @@ End-to-end benchmark:
 "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --include-e2e \
   --warmup 2 --iters 5
 ```
@@ -376,6 +390,7 @@ Kernel-only timeline:
   "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 2 --iters 5
 ```
 
@@ -391,6 +406,7 @@ End-to-end timeline:
   "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --include-e2e \
   --warmup 2 --iters 5
 ```
@@ -450,6 +466,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -468,6 +485,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -486,6 +504,7 @@ The benchmark requires positive `--warmup` and `--iters` values. With `--warmup 
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -513,6 +532,7 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -538,6 +558,7 @@ Profile `cuda_naive`:
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -556,6 +577,7 @@ Profile cuBLAS SGEMM with a broad kernel regex:
   "$Exe" \
   --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 1 --iters 1
 ```
 
@@ -581,6 +603,7 @@ for Tile in 16,16,16 16,16,32 16,32,32 32,16,32 32,32,32; do
   "$Exe" \
     --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
     --gemm-tile-m "$TileM" --gemm-tile-n "$TileN" --gemm-tile-k "$TileK" \
+    --gemm-reg-m 4 --gemm-reg-n 4 \
     --warmup 2 --iters 5
 done
 ```

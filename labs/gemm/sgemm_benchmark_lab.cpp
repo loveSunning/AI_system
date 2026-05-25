@@ -46,6 +46,8 @@ void print_usage() {
               << "  --gemm-tile-m M  GEMM lab output tile rows; supported: 8, 16, 32\n"
               << "  --gemm-tile-n N  GEMM lab output tile columns; supported: 8, 16, 32\n"
               << "  --gemm-tile-k K  GEMM lab reduction tile; supported: 8, 16, 32\n"
+              << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported: 1, 2, 4\n"
+              << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported: 1, 2, 4\n"
               << "  --warmup I       Warmup iterations for each benchmark\n"
               << "  --iters I        Measured iterations for each benchmark\n"
               << "  --include-e2e    Also run end-to-end SGEMM benchmarks\n"
@@ -142,6 +144,18 @@ bool parse_options(int argc, char** argv, Options& options) {
             }
             continue;
         }
+        if(argument == "--gemm-reg-m") {
+            if(!require_int_value(options.gemm_tile.register_m)) {
+                return false;
+            }
+            continue;
+        }
+        if(argument == "--gemm-reg-n") {
+            if(!require_int_value(options.gemm_tile.register_n)) {
+                return false;
+            }
+            continue;
+        }
         if(argument == "--warmup") {
             if(!require_size_value(options.warmup_iterations)) {
                 return false;
@@ -176,6 +190,10 @@ std::string format_gemm_tile_shape(ai_system::labs::gemm::GemmLabTileConfig tile
         std::to_string(tile_config.block_k);
 }
 
+std::string format_gemm_register_shape(ai_system::labs::gemm::GemmLabTileConfig tile_config) {
+    return std::to_string(tile_config.register_m) + "x" + std::to_string(tile_config.register_n);
+}
+
 double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double average_ms) {
     if(average_ms <= 0.0) {
         return 0.0;
@@ -208,12 +226,14 @@ int main(int argc, char** argv) {
     const std::size_t k = options.k;
     const std::string shape = format_gemm_shape(m, n, k);
     const std::string gemm_tile_shape = format_gemm_tile_shape(options.gemm_tile);
+    const std::string gemm_register_shape = format_gemm_register_shape(options.gemm_tile);
     const auto config = make_benchmark_config(options);
 
     std::cout << "AI_system SGEMM benchmark lab\n";
     std::cout << "Configured architectures: " << AI_SYSTEM_CUDA_ARCHITECTURES << "\n";
     std::cout << "GEMM shape: " << shape << "\n";
     std::cout << "GEMM lab tile: " << gemm_tile_shape << "\n";
+    std::cout << "GEMM register tile: " << gemm_register_shape << "\n";
     std::cout << "SGEMM e2e benchmarks: " << (options.include_e2e ? "enabled" : "disabled") << "\n";
     std::cout << "Warmup iterations: " << options.warmup_iterations << "\n";
     std::cout << "Measured iterations: " << options.measured_iterations << "\n";
@@ -292,7 +312,8 @@ int main(int argc, char** argv) {
                                auto&& gemm_fn,
                                const GemmTolerance& tolerance,
                                std::string tile_shape = "none",
-                               bool allow_unimplemented_skip = false) {
+                               bool allow_unimplemented_skip = false,
+                               std::string register_shape = "none") {
         std::vector<float> gpu_out;
         std::string error;
         if(gemm_fn(m, n, k, lhs, rhs, gpu_out, error)) {
@@ -333,7 +354,8 @@ int main(int argc, char** argv) {
                 result,
                 compute_gemm_gflops(m, n, k, result.average_ms),
                 "GFLOPS",
-                tile_shape
+                tile_shape,
+                register_shape
             );
 
             return has_reference ? (matches ? 0 : 1) : 0;
@@ -357,7 +379,8 @@ int main(int argc, char** argv) {
                                        auto&& prepare_runner,
                                        const GemmTolerance& tolerance,
                                        std::string tile_shape = "none",
-                                       bool allow_unimplemented_skip = false) {
+                                       bool allow_unimplemented_skip = false,
+                                       std::string register_shape = "none") {
         auto runner = make_runner();
         std::string error;
         if(!prepare_runner(runner, error)) {
@@ -435,7 +458,8 @@ int main(int argc, char** argv) {
             result,
             compute_gemm_gflops(m, n, k, result.average_ms),
             "GFLOPS",
-            tile_shape
+            tile_shape,
+            register_shape
         );
 
         return has_reference ? (matches ? 0 : 1) : 0;
@@ -532,7 +556,8 @@ int main(int argc, char** argv) {
             },
             kFp32GemmTolerance,
             gemm_tile_shape,
-            true
+            true,
+            gemm_register_shape
         );
         failures += run_e2e_variant(
             "cublas_sgemm",
@@ -565,7 +590,8 @@ int main(int argc, char** argv) {
         prepare_tiled_gemm_register,
         kFp32GemmTolerance,
         gemm_tile_shape,
-        true
+        true,
+        gemm_register_shape
     );
     failures += run_kernel_only_variant(
         "cublas_sgemm",

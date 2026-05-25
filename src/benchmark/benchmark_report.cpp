@@ -101,13 +101,15 @@ void add_benchmark_row(
     const BenchmarkResult& result,
     std::optional<double> perf_value,
     std::string perf_unit,
-    std::string tile_shape
+    std::string tile_shape,
+    std::string register_shape
 ) {
     report.benchmark_rows.push_back(BenchmarkRow {
         std::move(op),
         std::move(impl),
         std::move(shape),
         std::move(tile_shape),
+        std::move(register_shape),
         result,
         perf_value,
         std::move(perf_unit)
@@ -141,6 +143,7 @@ void print_benchmark_table(const BenchmarkReport& report, std::ostream& output) 
             row.impl,
             row.shape,
             row.tile_shape.empty() ? std::string("none") : row.tile_shape,
+            row.register_shape.empty() ? std::string("none") : row.register_shape,
             format_decimal(row.result.average_ms),
             format_decimal(row.result.min_ms),
             format_decimal(row.result.max_ms),
@@ -159,6 +162,7 @@ void print_benchmark_table(const BenchmarkReport& report, std::ostream& output) 
             {"impl"},
             {"shape"},
             {"tileshape"},
+            {"registershape"},
             {"avg_ms", true},
             {"min_ms", true},
             {"max_ms", true},

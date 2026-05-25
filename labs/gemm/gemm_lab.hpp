@@ -18,6 +18,8 @@ struct GemmLabTileConfig {
     int block_m {16};
     int block_n {16};
     int block_k {16};
+    int register_m {4};
+    int register_n {4};
 };
 
 class PreparedGemmLabRunner {
