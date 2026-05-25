@@ -19,13 +19,15 @@ void print_usage() {
               << "  --summary                 Print project and build summary (default)\n"
               << "  --list-plan               Print the month-by-month learning phases\n"
               << "  --print-gpus              Print detected local GPUs\n"
-              << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported: 1, 2, 4\n"
-              << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported: 1, 2, 4\n"
+              << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported pairs: 2x2, 4x4, 4x8, 8x4, 8x8\n"
+              << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported pairs: 2x2, 4x4, 4x8, 8x4, 8x8\n"
               << "  --help                    Show this help message\n";
 }
 
-bool is_supported_register_tile_dimension(int value) {
-    return value == 1 || value == 2 || value == 4;
+bool is_supported_register_tile_shape(int register_m, int register_n) {
+    return (register_m == 2 && register_n == 2) || (register_m == 4 && register_n == 4) ||
+        (register_m == 4 && register_n == 8) || (register_m == 8 && register_n == 4) ||
+        (register_m == 8 && register_n == 8);
 }
 
 bool parse_int_argument(const char* raw_value, const char* option_name, int& output) {
@@ -45,13 +47,7 @@ bool parse_int_argument(const char* raw_value, const char* option_name, int& out
         return false;
     }
 
-    const int parsed_value = static_cast<int>(parsed);
-    if(!is_supported_register_tile_dimension(parsed_value)) {
-        std::cerr << "Value for " << option_name << " must be one of 1, 2, or 4: " << raw_value << "\n";
-        return false;
-    }
-
-    output = parsed_value;
+    output = static_cast<int>(parsed);
     return true;
 }
 
@@ -88,6 +84,11 @@ bool parse_options(int argc, char** argv, std::string_view& command, CliOptions&
 
         std::cerr << "Unknown argument: " << argument << "\n";
         print_usage();
+        return false;
+    }
+
+    if(!is_supported_register_tile_shape(options.gemm_register_tile_m, options.gemm_register_tile_n)) {
+        std::cerr << "GEMM register tile must be one of 2x2, 4x4, 4x8, 8x4, or 8x8.\n";
         return false;
     }
 

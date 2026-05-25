@@ -50,8 +50,10 @@ bool is_supported_gemm_reduction_tile_dimension(int value) {
     return value == 8 || value == 16 || value == 32;
 }
 
-bool is_supported_gemm_register_tile_dimension(int value) {
-    return value == 1 || value == 2 || value == 4;
+bool is_supported_gemm_register_tile_shape(int register_m, int register_n) {
+    return (register_m == 2 && register_n == 2) || (register_m == 4 && register_n == 4) ||
+        (register_m == 4 && register_n == 8) || (register_m == 8 && register_n == 4) ||
+        (register_m == 8 && register_n == 8);
 }
 
 bool validate_gemm_output_tile_dimensions(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
@@ -87,9 +89,8 @@ bool validate_tiled_gemm_register_tile_config(GemmLabTileConfig tile_config, std
         return false;
     }
 
-    if(!is_supported_gemm_register_tile_dimension(tile_config.register_m) ||
-       !is_supported_gemm_register_tile_dimension(tile_config.register_n)) {
-        error = "tiled_gemm_register register tile dimensions must each be one of 1, 2, or 4.";
+    if(!is_supported_gemm_register_tile_shape(tile_config.register_m, tile_config.register_n)) {
+        error = "tiled_gemm_register register tile must be one of 2x2, 4x4, 4x8, 8x4, or 8x8.";
         return false;
     }
 

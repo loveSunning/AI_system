@@ -28,6 +28,7 @@ New-Item -ItemType Directory -Force $Out
 ## Baseline Benchmark
 
 Use this before profiling to make sure the workload is correct and stable.
+The `tiled_gemm_register` commands use the default 4x4 register tile. Supported register-tile pairs are 2x2, 4x4, 4x8, 8x4, and 8x8.
 
 ```powershell
 & $Exe `
@@ -218,9 +219,9 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_block_2048_t32x32x32_sections" `
+  -o "$Out\ncu_tiled_gemm_block_4096_t32x32x32_sections" `
   $Exe `
-  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
   --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
@@ -245,10 +246,10 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_tiled_gemm_register_2048_t32x32x32_4x4_sections" `
+  -o "$Out\ncu_tiled_gemm_register_4096_t64x64x32_4x4_sections" `
   $Exe `
-  --gemm-m 2048 --gemm-n 2048 --gemm-k 2048 `
-  --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
   --gemm-reg-m 4 --gemm-reg-n 4 `
   --warmup 1 --iters 1
 ```
