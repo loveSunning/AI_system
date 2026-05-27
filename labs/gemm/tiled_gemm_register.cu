@@ -10,6 +10,7 @@ namespace ai_system::labs::gemm {
 namespace {
 
 constexpr bool kTiledGemmRegisterKernelImplemented = true;
+constexpr int kMaxTiledGemmRegisterThreadsPerBlock = 32 * 32;
 
 template <int BlockK>
 __device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {
@@ -17,7 +18,7 @@ __device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {
 }
 
 template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN>
-__global__ void __launch_bounds__(1024, 1) tiled_gemm_register_kernel(
+__global__ void __launch_bounds__(kMaxTiledGemmRegisterThreadsPerBlock, 1) tiled_gemm_register_kernel(
     const float* __restrict__ lhs,
     const float* __restrict__ rhs,
     float* __restrict__ out,
@@ -30,6 +31,10 @@ __global__ void __launch_bounds__(1024, 1) tiled_gemm_register_kernel(
     static_assert(BlockM % RegisterM == 0, "tiled_gemm_register block_m must be divisible by the row register tile.");
     static_assert(BlockN % RegisterN == 0, "tiled_gemm_register block_n must be divisible by the column register tile.");
     static_assert((BlockK & (BlockK - 1)) == 0, "tiled_gemm_register block_k must be a power of two for lhs swizzling.");
+    static_assert(
+        (BlockM / RegisterM) * (BlockN / RegisterN) <= kMaxTiledGemmRegisterThreadsPerBlock,
+        "tiled_gemm_register derived thread block size must fit within 32 * 32 threads."
+    );
 
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;

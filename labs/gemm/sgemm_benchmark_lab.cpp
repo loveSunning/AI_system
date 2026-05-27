@@ -48,6 +48,7 @@ void print_usage() {
               << "  --gemm-tile-k K  GEMM lab reduction tile; supported: 8, 16, 32\n"
               << "  --gemm-reg-m M  Register-tiled GEMM per-thread rows; supported pairs: 2x2, 4x4, 4x8, 8x4, 8x8\n"
               << "  --gemm-reg-n N  Register-tiled GEMM per-thread columns; supported pairs: 2x2, 4x4, 4x8, 8x4, 8x8\n"
+              << "                  gemm_dbuffer_vload supports block_m/block_n 32,64,128 and register 4x4 or 8x8\n"
               << "  --warmup I       Warmup iterations for each benchmark\n"
               << "  --iters I        Measured iterations for each benchmark\n"
               << "  --include-e2e    Also run end-to-end SGEMM benchmarks\n"
@@ -214,7 +215,15 @@ bool should_skip_gemm_lab_variant(bool allow_skip, const std::string& impl_name,
     if(error.find("not implemented") != std::string::npos) {
         return true;
     }
-    return impl_name == "tiled_gemm_block" && error.find("requires block_m * block_n <= 1024") != std::string::npos;
+    if(impl_name == "tiled_gemm_block" && error.find("requires block_m * block_n <= 1024") != std::string::npos) {
+        return true;
+    }
+    if(impl_name == "gemm_dbuffer_vload") {
+        return error.find("gemm_dbuffer_vload output tile dimensions") != std::string::npos ||
+            error.find("gemm_dbuffer_vload register tile") != std::string::npos ||
+            error.find("gemm_dbuffer_vload shape is not compiled") != std::string::npos;
+    }
+    return false;
 }
 
 }  // namespace
@@ -506,6 +515,18 @@ int main(int argc, char** argv) {
             options.gemm_tile
         );
     };
+    auto prepare_gemm_dbuffer_vload = [&](auto& runner, std::string& error) {
+        return runner.prepare(
+            ai_system::labs::gemm::GemmLabBackend::GemmDbufferVload,
+            m,
+            n,
+            k,
+            lhs,
+            rhs,
+            error,
+            options.gemm_tile
+        );
+    };
 
     if(options.include_e2e) {
         failures += run_e2e_variant(
@@ -566,6 +587,32 @@ int main(int argc, char** argv) {
             gemm_register_shape
         );
         failures += run_e2e_variant(
+            "gemm_dbuffer_vload",
+            "sgemm/e2e/gemm_dbuffer_vload",
+            [&](std::size_t requested_m,
+                std::size_t requested_n,
+                std::size_t requested_k,
+                const std::vector<float>& requested_lhs,
+                const std::vector<float>& requested_rhs,
+                std::vector<float>& requested_out,
+                std::string& error) {
+                return ai_system::labs::gemm::gemm_dbuffer_vload_cuda(
+                    requested_m,
+                    requested_n,
+                    requested_k,
+                    requested_lhs,
+                    requested_rhs,
+                    requested_out,
+                    error,
+                    options.gemm_tile
+                );
+            },
+            kFp32GemmTolerance,
+            gemm_tile_shape,
+            true,
+            gemm_register_shape
+        );
+        failures += run_e2e_variant(
             "cublas_sgemm",
             "sgemm/e2e/cublas_sgemm",
             ai_system::kernels::cublas_sgemm_cuda,
@@ -594,6 +641,16 @@ int main(int argc, char** argv) {
         "sgemm/kernel_only/tiled_gemm_register",
         make_lab_runner,
         prepare_tiled_gemm_register,
+        kFp32GemmTolerance,
+        gemm_tile_shape,
+        true,
+        gemm_register_shape
+    );
+    failures += run_kernel_only_variant(
+        "gemm_dbuffer_vload",
+        "sgemm/kernel_only/gemm_dbuffer_vload",
+        make_lab_runner,
+        prepare_gemm_dbuffer_vload,
         kFp32GemmTolerance,
         gemm_tile_shape,
         true,

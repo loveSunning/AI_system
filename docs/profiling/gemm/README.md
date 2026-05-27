@@ -29,12 +29,33 @@ New-Item -ItemType Directory -Force $Out
 
 Use this before profiling to make sure the workload is correct and stable.
 The `tiled_gemm_register` commands use the default 4x4 register tile. Supported register-tile pairs are 2x2, 4x4, 4x8, 8x4, and 8x8.
+The `gemm_dbuffer_vload` kernel is included in the same benchmark binary when the tile is one of 32/64/128 for M/N, 8/16/32 for K, and the register tile is 4x4 or 8x8.
 
 ```powershell
 & $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 32 `
   --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 2 --iters 5
+```
+
+Recommended third-version run with `16x16` threads/block and `float4` vector loads:
+
+```powershell
+& $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 2 --iters 5
+```
+
+Larger output tile with 8x8 register tiles:
+
+```powershell
+& $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 32 `
+  --gemm-reg-m 8 --gemm-reg-n 8 `
   --warmup 2 --iters 5
 ```
 
@@ -254,6 +275,54 @@ Use this when you want a stable, focused report for GEMM bottleneck analysis wit
   --warmup 1 --iters 1
 ```
 
+#### `gemm_dbuffer_vload` Section Command
+
+This captures the third-version kernel with shared-memory double buffering, register-fragment double buffering, and aligned `float4` global loads.
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:gemm_dbuffer_vload_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_gemm_dbuffer_vload_4096_t64x64x32_4x4_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 1 --iters 1
+```
+
+For the larger 128x128 CTA tile:
+
+```powershell
+& $Ncu `
+  --set detailed `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:gemm_dbuffer_vload_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_gemm_dbuffer_vload_4096_t128x128x32_8x8_set_detail" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 32 `
+  --gemm-reg-m 8 --gemm-reg-n 8 `
+  --warmup 1 --iters 1
+```
+
 If `-k "regex:.*gemm.*" -s 10` captures the wrong kernel or no kernel, first list kernel names with `nsys stats --report cuda_gpu_kern_sum`, then narrow the regex or adjust `-s`.
 
 In the GUI, look for:
@@ -362,6 +431,16 @@ Ncu="/opt/nvidia/nsight-compute/ncu"
 "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
+  --warmup 2 --iters 5
+```
+
+Third-version `gemm_dbuffer_vload` run:
+
+```bash
+"$Exe" \
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \
   --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 2 --iters 5
 ```
@@ -543,6 +622,32 @@ In the GUI, look for:
 
 - `Warp State Statistics`: barrier stalls are shown in the warp stall breakdown.
 - `Memory Workload Analysis` / `Memory Workload Analysis Tables`: shared-memory bank conflict metrics are under the L1/TEX or shared-memory tables. If the table is still missing, open the `Raw` tab and search for `bank_conflict` or `shared`.
+
+Profile `gemm_dbuffer_vload`:
+
+```bash
+"$Ncu" \
+  --section SpeedOfLight \
+  --section LaunchStats \
+  --section Occupancy \
+  --section WarpStateStats \
+  --section SchedulerStats \
+  --section MemoryWorkloadAnalysis \
+  --section ComputeWorkloadAnalysis \
+  --section InstructionStats \
+  --target-processes all \
+  --kernel-name-base demangled \
+  -k regex:gemm_dbuffer_vload_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_gemm_dbuffer_vload_4096_t64x64x32_4x4_sections" \
+  "$Exe" \
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
+  --warmup 1 --iters 1
+```
 
 Profile `cuda_naive`:
 

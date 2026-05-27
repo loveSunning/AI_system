@@ -79,6 +79,9 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 
 - `cpu_naive`
 - `cuda_naive`
+- `tiled_gemm_block`
+- `tiled_gemm_register`
+- `gemm_dbuffer_vload`
 - `cublas_sgemm`
 - `cublas_hgemm`
 - `cublas_tensor_core`
@@ -95,11 +98,12 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `--gemm-m M`：设置 GEMM 输出矩阵行数。
 - `--gemm-n N`：设置 GEMM 输出矩阵列数。
 - `--gemm-k K`：设置 GEMM 的共享维度。
-- `--gemm-tile-m M`: GEMM lab output tile rows; supported `8/16/32/64/128`, default `16`.
-- `--gemm-tile-n N`: GEMM lab output tile columns; supported `8/16/32/64/128`, default `16`.
+- `--gemm-tile-m M`: GEMM lab output tile rows; supported `8/16/32/64/128`, default `32`.
+- `--gemm-tile-n N`: GEMM lab output tile columns; supported `8/16/32/64/128`, default `32`.
 - `--gemm-tile-k K`: GEMM lab reduction tile; default `16`.
 - `--gemm-reg-m M`: register-tiled GEMM per-thread rows; supported pairs `2x2/4x4/4x8/8x4/8x8`, default `4x4`.
 - `--gemm-reg-n N`: register-tiled GEMM per-thread columns; supported pairs `2x2/4x4/4x8/8x4/8x8`, default `4x4`.
+- `gemm_dbuffer_vload` 支持 `block_m/block_n=32/64/128`、`block_k=8/16/32`、register tile `4x4/8x8`，固定 `16x16` threads/block。
 - `--warmup I`：设置每个 case 的预热轮数。
 - `--iters I`：设置每个 case 的正式测量轮数。
 
@@ -108,7 +112,7 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `vector-size=1048576`
 - `reduction-size=1048576`
 - `gemm-m=n=k=1024`
-- `gemm-tile=16x16x16`
+- `gemm-tile=32x32x16`
 - `gemm-reg=4x4`
 
 示例：
@@ -118,7 +122,7 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
   --vector-size 1048576 \
   --reduction-size 1048576 \
   --gemm-m 128 --gemm-n 128 --gemm-k 128 \
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 16 \
   --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 2 --iters 6
 
@@ -126,11 +130,11 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
   --vector-size 16777216 \
   --reduction-size 16777216 \
   --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 \
-  --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 \
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \
   --gemm-reg-m 4 --gemm-reg-n 4 \
   --warmup 3 --iters 10
 
-.\perf_engineering_lab.exe --vector-size 16777216 --reduction-size 16777216 --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --warmup 2 --iters 5 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
+.\perf_engineering_lab.exe --vector-size 16777216 --reduction-size 16777216 --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --warmup 2 --iters 5 --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 --gemm-reg-m 4 --gemm-reg-n 4
 ```
 
 输出会分成两张表：
@@ -151,9 +155,9 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 例如：
 
 ```bash
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 4194304 --reduction-size 4194304 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
-./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 16777216 --reduction-size 16777216 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 2 --iters 8 --gemm-tile-m 16 --gemm-tile-n 16 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 1048576 --reduction-size 1048576 --gemm-m 256 --gemm-n 256 --gemm-k 256 --warmup 2 --iters 8 --gemm-tile-m 32 --gemm-tile-n 32 --gemm-tile-k 16 --gemm-reg-m 4 --gemm-reg-n 4
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 4194304 --reduction-size 4194304 --gemm-m 512 --gemm-n 512 --gemm-k 512 --warmup 2 --iters 8 --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 --gemm-reg-m 4 --gemm-reg-n 4
+./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --vector-size 16777216 --reduction-size 16777216 --gemm-m 1024 --gemm-n 1024 --gemm-k 1024 --warmup 2 --iters 8 --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 32 --gemm-reg-m 8 --gemm-reg-n 8
 ```
 
 ### 如何判断结果是否准确

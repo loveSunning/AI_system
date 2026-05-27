@@ -46,6 +46,10 @@ bool is_supported_gemm_output_tile_dimension(int value) {
     return value == 8 || value == 16 || value == 32 || value == 64 || value == 128;
 }
 
+bool is_supported_gemm_dbuffer_vload_output_tile_dimension(int value) {
+    return value == 32 || value == 64 || value == 128;
+}
+
 bool is_supported_gemm_reduction_tile_dimension(int value) {
     return value == 8 || value == 16 || value == 32;
 }
@@ -54,6 +58,10 @@ bool is_supported_gemm_register_tile_shape(int register_m, int register_n) {
     return (register_m == 2 && register_n == 2) || (register_m == 4 && register_n == 4) ||
         (register_m == 4 && register_n == 8) || (register_m == 8 && register_n == 4) ||
         (register_m == 8 && register_n == 8);
+}
+
+bool is_supported_gemm_dbuffer_vload_register_tile_shape(int register_m, int register_n) {
+    return (register_m == 4 && register_n == 4) || (register_m == 8 && register_n == 8);
 }
 
 bool validate_gemm_output_tile_dimensions(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
@@ -109,12 +117,39 @@ bool validate_tiled_gemm_register_tile_config(GemmLabTileConfig tile_config, std
     return true;
 }
 
+bool validate_gemm_dbuffer_vload_tile_config(GemmLabTileConfig tile_config, std::string& error) {
+    if(!is_supported_gemm_dbuffer_vload_output_tile_dimension(tile_config.block_m) ||
+       !is_supported_gemm_dbuffer_vload_output_tile_dimension(tile_config.block_n)) {
+        error = "gemm_dbuffer_vload output tile dimensions must each be one of 32, 64, or 128.";
+        return false;
+    }
+
+    if(!is_supported_gemm_reduction_tile_dimension(tile_config.block_k)) {
+        error = "gemm_dbuffer_vload reduction tile dimension must be one of 8, 16, or 32.";
+        return false;
+    }
+
+    if(!is_supported_gemm_dbuffer_vload_register_tile_shape(tile_config.register_m, tile_config.register_n)) {
+        error = "gemm_dbuffer_vload register tile must be 4x4 or 8x8.";
+        return false;
+    }
+
+    if(tile_config.block_m % tile_config.register_m != 0 || tile_config.block_n % tile_config.register_n != 0) {
+        error = "gemm_dbuffer_vload requires block_m/block_n to be divisible by register_m/register_n.";
+        return false;
+    }
+
+    return true;
+}
+
 bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_config, std::string& error) {
     switch(backend) {
         case GemmLabBackend::TiledGemmBlock:
             return validate_tiled_gemm_block_tile_config(tile_config, error);
         case GemmLabBackend::TiledGemmRegister:
             return validate_tiled_gemm_register_tile_config(tile_config, error);
+        case GemmLabBackend::GemmDbufferVload:
+            return validate_gemm_dbuffer_vload_tile_config(tile_config, error);
         case GemmLabBackend::TiledGemmV2:
         case GemmLabBackend::ManualTensorCoreV1:
             return true;
@@ -130,6 +165,8 @@ const char* backend_name(GemmLabBackend backend) {
             return "tiled_gemm_block";
         case GemmLabBackend::TiledGemmRegister:
             return "tiled_gemm_register";
+        case GemmLabBackend::GemmDbufferVload:
+            return "gemm_dbuffer_vload";
         case GemmLabBackend::TiledGemmV2:
             return "tiled_gemm_v2";
         case GemmLabBackend::ManualTensorCoreV1:
@@ -277,6 +314,17 @@ private:
                     tile_config,
                     error
                 );
+            case GemmLabBackend::GemmDbufferVload:
+                return detail::launch_gemm_dbuffer_vload(
+                    lhs_device.get(),
+                    rhs_device.get(),
+                    out_device.get(),
+                    m,
+                    n,
+                    k,
+                    tile_config,
+                    error
+                );
             case GemmLabBackend::TiledGemmV2:
             case GemmLabBackend::ManualTensorCoreV1:
                 error = std::string(backend_name(backend)) + " launcher is not wired yet.";
@@ -324,6 +372,8 @@ bool gemm_lab_backend_available(GemmLabBackend backend) {
             return detail::is_tiled_gemm_block_kernel_implemented();
         case GemmLabBackend::TiledGemmRegister:
             return detail::is_tiled_gemm_register_kernel_implemented();
+        case GemmLabBackend::GemmDbufferVload:
+            return detail::is_gemm_dbuffer_vload_kernel_implemented();
         case GemmLabBackend::TiledGemmV2:
         case GemmLabBackend::ManualTensorCoreV1:
             return false;
@@ -390,6 +440,37 @@ bool tiled_gemm_register_cuda(
     }
     {
         const ai_system::profiling::ScopedNvtxRange phase_range("tiled_gemm_register_d2h");
+        return runner.copy_output(out, error);
+    }
+}
+
+bool gemm_dbuffer_vload_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config
+) {
+    const ai_system::profiling::ScopedNvtxRange e2e_range("gemm_dbuffer_vload_e2e");
+
+    PreparedGemmLabRunner runner;
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("gemm_dbuffer_vload_prepare");
+        if(!runner.prepare(GemmLabBackend::GemmDbufferVload, m, n, k, lhs, rhs, error, tile_config)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("gemm_dbuffer_vload_run");
+        if(!runner.run(error)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("gemm_dbuffer_vload_d2h");
         return runner.copy_output(out, error);
     }
 }

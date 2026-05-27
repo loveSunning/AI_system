@@ -75,6 +75,20 @@ bool tiled_gemm_register_cuda(
     return false;
 }
 
+bool gemm_dbuffer_vload_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error,
+    GemmLabTileConfig
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
 }  // namespace ai_system::labs::gemm
 
 #endif

@@ -10,13 +10,14 @@ namespace ai_system::labs::gemm {
 enum class GemmLabBackend {
     TiledGemmBlock,
     TiledGemmRegister,
+    GemmDbufferVload,
     TiledGemmV2,
     ManualTensorCoreV1
 };
 
 struct GemmLabTileConfig {
-    int block_m {16};
-    int block_n {16};
+    int block_m {32};
+    int block_n {32};
     int block_k {16};
     int register_m {4};
     int register_n {4};
@@ -66,6 +67,17 @@ bool tiled_gemm_block_cuda(
 );
 
 bool tiled_gemm_register_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config = {}
+);
+
+bool gemm_dbuffer_vload_cuda(
     std::size_t m,
     std::size_t n,
     std::size_t k,
