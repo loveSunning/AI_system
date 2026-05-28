@@ -11,6 +11,8 @@ enum class GemmLabBackend {
     TiledGemmBlock,
     TiledGemmRegister,
     GemmDbufferVload,
+    SgemmV1,
+    SgemmV3,
     TiledGemmV2,
     ManualTensorCoreV1
 };
@@ -78,6 +80,28 @@ bool tiled_gemm_register_cuda(
 );
 
 bool gemm_dbuffer_vload_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config = {}
+);
+
+bool sgemm_v1_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config = {}
+);
+
+bool sgemm_v3_cuda(
     std::size_t m,
     std::size_t n,
     std::size_t k,

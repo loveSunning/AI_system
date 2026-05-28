@@ -29,7 +29,7 @@ New-Item -ItemType Directory -Force $Out
 
 Use this before profiling to make sure the workload is correct and stable.
 The `tiled_gemm_register` commands use the default 4x4 register tile. Supported register-tile pairs are 2x2, 4x4, 4x8, 8x4, and 8x8.
-The `gemm_dbuffer_vload` kernel is included in the same benchmark binary when the tile is one of 32/64/128 for M/N, 8/16/32 for K, and the register tile is 4x4 or 8x8.
+The `sgemm_v1`, `sgemm_v3`, and `gemm_dbuffer_vload` kernels are included in the same benchmark binary when the tile is one of 32/64/128 for M/N, 8/16/32 for K, and the register tile is 4x4 or 8x8.
 
 ```powershell
 & $Exe `
@@ -54,7 +54,7 @@ Larger output tile with 8x8 register tiles:
 ```powershell
 & $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
-  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 32 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 8 `
   --gemm-reg-m 8 --gemm-reg-n 8 `
   --warmup 2 --iters 5
 ```
@@ -304,7 +304,119 @@ This captures the third-version kernel with shared-memory double buffering, regi
   --warmup 1 --iters 1
 ```
 
-For the larger 128x128 CTA tile:
+#### `sgemm_v1` Section Command
+
+This captures the reference-style v1 kernel adapted from `How_to_optimize_in_GPU/sgemm/sgemm_v1.cu`, using `As[stage][k][m]`, `Bs[stage][k][n]`, shared-memory double buffering, register-fragment double buffering, and `float4` global loads.
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:sgemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_sgemm_v1_4096_t128x128x8_8x8_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 8 `
+  --gemm-reg-m 8 --gemm-reg-n 8 `
+  --warmup 1 --iters 1
+```
+
+Alternative v1 run using the same 64x64x32/4x4 shape as the earlier tiled-register experiments:
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:sgemm_v1_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_sgemm_v1_4096_t64x64x32_4x4_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 1 --iters 1
+```
+
+#### `sgemm_v3` Section Command
+
+This captures the reference-style v3 kernel adapted from `How_to_optimize_in_GPU/sgemm/sgemm_v3.cu`. For 8x8 register tiles and 32/64/128 by 64/128 CTA tiles it uses the warp/lane quadrant layout from the reference implementation; other compiled 4x4/8x8 shapes keep the regular one-thread-one-tile mapping for correctness and size coverage.
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:sgemm_v3_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_sgemm_v3_4096_t128x128x8_8x8_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 8 `
+  --gemm-reg-m 8 --gemm-reg-n 8 `
+  --warmup 1 --iters 1
+```
+
+Alternative v3 run using 64x64x32/4x4:
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:sgemm_v3_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_sgemm_v3_4096_t64x64x32_4x4_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 1 --iters 1
+```
+
+For the larger `gemm_dbuffer_vload` 128x128 CTA tile:
 
 ```powershell
 & $Ncu `

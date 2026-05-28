@@ -86,6 +86,8 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `cublas_hgemm`
 - `cublas_tensor_core`
 
+The dedicated `labs/gemm/sgemm_benchmark_lab` binary additionally includes `sgemm_v1` and `sgemm_v3`.
+
 ```bash
 ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab
 ./out/build/linux-make-cuda-release/labs/perf_engineering/perf_engineering_lab --help

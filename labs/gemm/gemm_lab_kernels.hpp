@@ -46,4 +46,30 @@ bool launch_gemm_dbuffer_vload(
 
 bool is_gemm_dbuffer_vload_kernel_implemented();
 
+bool launch_sgemm_v1(
+    const float* lhs,
+    const float* rhs,
+    float* out,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    GemmLabTileConfig tile_config,
+    std::string& error
+);
+
+bool is_sgemm_v1_kernel_implemented();
+
+bool launch_sgemm_v3(
+    const float* lhs,
+    const float* rhs,
+    float* out,
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    GemmLabTileConfig tile_config,
+    std::string& error
+);
+
+bool is_sgemm_v3_kernel_implemented();
+
 }  // namespace ai_system::labs::gemm::detail

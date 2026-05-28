@@ -64,6 +64,10 @@ bool is_supported_gemm_dbuffer_vload_register_tile_shape(int register_m, int reg
     return (register_m == 4 && register_n == 4) || (register_m == 8 && register_n == 8);
 }
 
+bool is_supported_reference_sgemm_register_tile_shape(int register_m, int register_n) {
+    return (register_m == 4 && register_n == 4) || (register_m == 8 && register_n == 8);
+}
+
 bool validate_gemm_output_tile_dimensions(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
     if(!is_supported_gemm_output_tile_dimension(tile_config.block_m) ||
        !is_supported_gemm_output_tile_dimension(tile_config.block_n)) {
@@ -142,6 +146,38 @@ bool validate_gemm_dbuffer_vload_tile_config(GemmLabTileConfig tile_config, std:
     return true;
 }
 
+bool validate_reference_sgemm_tile_config(GemmLabTileConfig tile_config, const char* backend_label, std::string& error) {
+    if(!is_supported_gemm_dbuffer_vload_output_tile_dimension(tile_config.block_m) ||
+       !is_supported_gemm_dbuffer_vload_output_tile_dimension(tile_config.block_n)) {
+        error = std::string(backend_label) + " output tile dimensions must each be one of 32, 64, or 128.";
+        return false;
+    }
+
+    if(!is_supported_gemm_reduction_tile_dimension(tile_config.block_k)) {
+        error = std::string(backend_label) + " reduction tile dimension must be one of 8, 16, or 32.";
+        return false;
+    }
+
+    if(!is_supported_reference_sgemm_register_tile_shape(tile_config.register_m, tile_config.register_n)) {
+        error = std::string(backend_label) + " register tile must be 4x4 or 8x8.";
+        return false;
+    }
+
+    if(tile_config.block_m % tile_config.register_m != 0 || tile_config.block_n % tile_config.register_n != 0) {
+        error = std::string(backend_label) + " requires block_m/block_n to be divisible by register_m/register_n.";
+        return false;
+    }
+
+    const int threads_per_block = (tile_config.block_m / tile_config.register_m) *
+        (tile_config.block_n / tile_config.register_n);
+    if(threads_per_block <= 0 || threads_per_block > 1024) {
+        error = std::string(backend_label) + " derived thread block size must be between 1 and 1024.";
+        return false;
+    }
+
+    return true;
+}
+
 bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_config, std::string& error) {
     switch(backend) {
         case GemmLabBackend::TiledGemmBlock:
@@ -150,6 +186,10 @@ bool validate_backend_config(GemmLabBackend backend, GemmLabTileConfig tile_conf
             return validate_tiled_gemm_register_tile_config(tile_config, error);
         case GemmLabBackend::GemmDbufferVload:
             return validate_gemm_dbuffer_vload_tile_config(tile_config, error);
+        case GemmLabBackend::SgemmV1:
+            return validate_reference_sgemm_tile_config(tile_config, "sgemm_v1", error);
+        case GemmLabBackend::SgemmV3:
+            return validate_reference_sgemm_tile_config(tile_config, "sgemm_v3", error);
         case GemmLabBackend::TiledGemmV2:
         case GemmLabBackend::ManualTensorCoreV1:
             return true;
@@ -167,6 +207,10 @@ const char* backend_name(GemmLabBackend backend) {
             return "tiled_gemm_register";
         case GemmLabBackend::GemmDbufferVload:
             return "gemm_dbuffer_vload";
+        case GemmLabBackend::SgemmV1:
+            return "sgemm_v1";
+        case GemmLabBackend::SgemmV3:
+            return "sgemm_v3";
         case GemmLabBackend::TiledGemmV2:
             return "tiled_gemm_v2";
         case GemmLabBackend::ManualTensorCoreV1:
@@ -325,6 +369,28 @@ private:
                     tile_config,
                     error
                 );
+            case GemmLabBackend::SgemmV1:
+                return detail::launch_sgemm_v1(
+                    lhs_device.get(),
+                    rhs_device.get(),
+                    out_device.get(),
+                    m,
+                    n,
+                    k,
+                    tile_config,
+                    error
+                );
+            case GemmLabBackend::SgemmV3:
+                return detail::launch_sgemm_v3(
+                    lhs_device.get(),
+                    rhs_device.get(),
+                    out_device.get(),
+                    m,
+                    n,
+                    k,
+                    tile_config,
+                    error
+                );
             case GemmLabBackend::TiledGemmV2:
             case GemmLabBackend::ManualTensorCoreV1:
                 error = std::string(backend_name(backend)) + " launcher is not wired yet.";
@@ -374,6 +440,10 @@ bool gemm_lab_backend_available(GemmLabBackend backend) {
             return detail::is_tiled_gemm_register_kernel_implemented();
         case GemmLabBackend::GemmDbufferVload:
             return detail::is_gemm_dbuffer_vload_kernel_implemented();
+        case GemmLabBackend::SgemmV1:
+            return detail::is_sgemm_v1_kernel_implemented();
+        case GemmLabBackend::SgemmV3:
+            return detail::is_sgemm_v3_kernel_implemented();
         case GemmLabBackend::TiledGemmV2:
         case GemmLabBackend::ManualTensorCoreV1:
             return false;
@@ -471,6 +541,68 @@ bool gemm_dbuffer_vload_cuda(
     }
     {
         const ai_system::profiling::ScopedNvtxRange phase_range("gemm_dbuffer_vload_d2h");
+        return runner.copy_output(out, error);
+    }
+}
+
+bool sgemm_v1_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config
+) {
+    const ai_system::profiling::ScopedNvtxRange e2e_range("sgemm_v1_e2e");
+
+    PreparedGemmLabRunner runner;
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v1_prepare");
+        if(!runner.prepare(GemmLabBackend::SgemmV1, m, n, k, lhs, rhs, error, tile_config)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v1_run");
+        if(!runner.run(error)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v1_d2h");
+        return runner.copy_output(out, error);
+    }
+}
+
+bool sgemm_v3_cuda(
+    std::size_t m,
+    std::size_t n,
+    std::size_t k,
+    const std::vector<float>& lhs,
+    const std::vector<float>& rhs,
+    std::vector<float>& out,
+    std::string& error,
+    GemmLabTileConfig tile_config
+) {
+    const ai_system::profiling::ScopedNvtxRange e2e_range("sgemm_v3_e2e");
+
+    PreparedGemmLabRunner runner;
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v3_prepare");
+        if(!runner.prepare(GemmLabBackend::SgemmV3, m, n, k, lhs, rhs, error, tile_config)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v3_run");
+        if(!runner.run(error)) {
+            return false;
+        }
+    }
+    {
+        const ai_system::profiling::ScopedNvtxRange phase_range("sgemm_v3_d2h");
         return runner.copy_output(out, error);
     }
 }

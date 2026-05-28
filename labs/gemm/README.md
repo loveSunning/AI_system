@@ -19,6 +19,12 @@
 - `gemm_dbuffer_vload.cu`：第三版 GEMM，实现 shared-memory 双缓冲、register fragment 双缓冲和 `float4` global vector load。
 - `sgemm_benchmark_lab.cpp`：SGEMM 专项 benchmark 工具，对比 `cuda_naive`、`tiled_gemm_block`、`tiled_gemm_register`、`gemm_dbuffer_vload`、`cublas_sgemm`。
 
+Additional implementations now available in this lab:
+
+- `sgemm_v1.cu`: reference-style implementation adapted from `How_to_optimize_in_GPU/sgemm/sgemm_v1.cu`.
+- `sgemm_v3.cu`: reference-style warp/lane quadrant implementation adapted from `How_to_optimize_in_GPU/sgemm/sgemm_v3.cu`.
+- `sgemm_benchmark_lab.cpp` now compares `cuda_naive`, `tiled_gemm_block`, `tiled_gemm_register`, `gemm_dbuffer_vload`, `sgemm_v1`, `sgemm_v3`, and `cublas_sgemm`.
+
 ## SGEMM Benchmark
 
 构建后可执行文件位于：
@@ -80,6 +86,14 @@ out\build\windows-vs2022-cuda-release\labs\gemm\Release\sgemm_benchmark_lab.exe 
 
 - `shape`：矩阵规模，格式是 `MxNxK`。
 - `tileshape`：GEMM lab 算法使用的 tile，格式是 `MxNxK`；没有 tile 概念的实现显示 `none`。
+`sgemm_v1` / `sgemm_v3` use the same benchmark executable and run as additional implementations. Reference-shape examples:
+
+```powershell
+out\build\windows-vs2022-cuda-release\labs\gemm\Release\sgemm_benchmark_lab.exe --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 8 --gemm-reg-m 8 --gemm-reg-n 8 --warmup 2 --iters 5
+
+out\build\windows-vs2022-cuda-release\labs\gemm\Release\sgemm_benchmark_lab.exe --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 --gemm-reg-m 4 --gemm-reg-n 4 --warmup 2 --iters 5
+```
+
 - `registershape`: register-tiled GEMM per-thread tile shape, for example `4x4`; non-register implementations show `none`.
 - `sgemm_kernel_only`：只测 kernel 执行时间，适合看算法本体。
 - `sgemm_e2e`：包含准备、kernel 调用、拷回等端到端成本，默认关闭，需要 `--include-e2e`。
