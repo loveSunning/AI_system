@@ -54,7 +54,7 @@ SGEMM benchmark 和 perf engineering lab 共用一套 GEMM lab tile 参数：
 
 Register tile 只支持 `2x2`、`4x4`、`4x8`、`8x4`、`8x8`，默认是 `4x4`。
 
-默认是 `32x32x16`。当前 `block_m/block_n` 支持 `8`、`16`、`32`、`64`、`128`，`block_k` 支持 `8`、`16`、`32`。`tiled_gemm_block` 按 `block_m * block_n <= 1024` 控制线程数；`tiled_gemm_register` 按 `(block_m / reg_m) * (block_n / reg_n) <= 1024` 控制线程数。`gemm_dbuffer_vload` 支持 `block_m/block_n = 32/64/128`、`block_k = 8/16/32`、register tile `4x4` 或 `8x8`，固定 `16x16` threads/block；当 thread tile 数超过 256 时，每个线程顺序负责多个 register tile。所有这些值会传给 `GemmLabTileConfig`，再 dispatch 到对应的模板 kernel 实例，所以 `BLOCK_M`、`BLOCK_N`、`BLOCK_K` 和 register tile 仍然是编译期常量，shared memory 数组尺寸和 `#pragma unroll` 都能保持编译期展开。
+默认是 `32x32x16`。当前 `block_m/block_n` 支持 `8`、`16`、`32`、`64`、`128`，`block_k` 支持 `8`、`16`、`32`。`tiled_gemm_block` 按 `block_m * block_n <= 1024` 控制线程数；`tiled_gemm_register` 按 `(block_m / reg_m) * (block_n / reg_n) <= 1024` 控制线程数。`gemm_dbuffer_vload` 支持 `block_m/block_n = 32/64/128`、`block_k = 8/16/32`、register tile `4x4` 或 `8x8`，线程块按 `(block_n / reg_n, block_m / reg_m)` 动态派生，一个 thread 只负责一个 register tile。所有这些值会传给 `GemmLabTileConfig`，再 dispatch 到对应的模板 kernel 实例，所以 `BLOCK_M`、`BLOCK_N`、`BLOCK_K` 和 register tile 仍然是编译期常量，shared memory 数组尺寸和 `#pragma unroll` 都能保持编译期展开。
 
 `gemm_dbuffer_vload` 示例：
 

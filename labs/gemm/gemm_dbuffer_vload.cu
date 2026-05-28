@@ -10,10 +10,13 @@ namespace ai_system::labs::gemm {
 namespace {
 
 constexpr bool kGemmDbufferVloadKernelImplemented = true;
-constexpr int kThreadBlockDimX = 16;
-constexpr int kThreadBlockDimY = 16;
-constexpr int kThreadsPerBlock = kThreadBlockDimX * kThreadBlockDimY;
+constexpr int kMaxGemmDbufferVloadThreadsPerBlock = 32 * 32;
 constexpr int kFloat4Width = 4;
+
+template <int BlockM, int BlockN, int RegisterM, int RegisterN>
+constexpr int gemm_dbuffer_vload_threads_per_cta() {
+    return (BlockM / RegisterM) * (BlockN / RegisterN);
+}
 
 template <int BlockK>
 __device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {
@@ -95,13 +98,14 @@ __device__ __forceinline__ void load_global_tiles_float4(
     std::size_t block_col,
     std::size_t k_base,
     int buffer,
-    int tid
+    int tid,
+    int num_threads
 ) {
     static_assert(BlockK % kFloat4Width == 0, "gemm_dbuffer_vload requires block_k to be divisible by 4.");
     static_assert(BlockN % kFloat4Width == 0, "gemm_dbuffer_vload requires block_n to be divisible by 4.");
 
     constexpr int kLhsVectors = BlockM * BlockK / kFloat4Width;
-    for(int idx = tid; idx < kLhsVectors; idx += kThreadsPerBlock) {
+    for(int idx = tid; idx < kLhsVectors; idx += num_threads) {
         const int local_row = idx / (BlockK / kFloat4Width);
         const int local_col = (idx % (BlockK / kFloat4Width)) * kFloat4Width;
         const std::size_t global_row = block_row + static_cast<std::size_t>(local_row);
@@ -124,7 +128,7 @@ __device__ __forceinline__ void load_global_tiles_float4(
     }
 
     constexpr int kRhsVectors = BlockK * BlockN / kFloat4Width;
-    for(int idx = tid; idx < kRhsVectors; idx += kThreadsPerBlock) {
+    for(int idx = tid; idx < kRhsVectors; idx += num_threads) {
         const int local_row = idx / (BlockN / kFloat4Width);
         const int local_col = (idx % (BlockN / kFloat4Width)) * kFloat4Width;
         const std::size_t global_row = k_base + static_cast<std::size_t>(local_row);
@@ -147,118 +151,82 @@ __device__ __forceinline__ void load_global_tiles_float4(
     }
 }
 
-template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN, int WorkTiles>
+template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN>
 __device__ __forceinline__ void load_register_fragments(
     const float* lhs_tiles,
     const float* rhs_tiles,
-    float (&lhs_fragment)[WorkTiles][2][RegisterM],
-    float (&rhs_fragment)[WorkTiles][2][RegisterN],
+    float (&lhs_fragment)[2][RegisterM],
+    float (&rhs_fragment)[2][RegisterN],
     int shared_buffer,
     int register_buffer,
     int inner,
-    int tid
+    int local_row_base,
+    int local_col_base
 ) {
-    constexpr int kThreadTilesN = BlockN / RegisterN;
-    constexpr int kThreadTilesPerCta = (BlockM / RegisterM) * kThreadTilesN;
+    #pragma unroll
+    for(int row_item = 0; row_item < RegisterM; ++row_item) {
+        const int local_row = local_row_base + row_item;
+        lhs_fragment[register_buffer][row_item] =
+            lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
+                shared_buffer,
+                local_row,
+                swizzled_lhs_tile_col<BlockK>(local_row, inner)
+            )];
+    }
 
     #pragma unroll
-    for(int work_item = 0; work_item < WorkTiles; ++work_item) {
-        const int thread_tile = tid + work_item * kThreadsPerBlock;
-        if(thread_tile < kThreadTilesPerCta) {
-            const int tile_row = thread_tile / kThreadTilesN;
-            const int tile_col = thread_tile % kThreadTilesN;
-            const int local_row_base = tile_row * RegisterM;
-            const int local_col_base = tile_col * RegisterN;
-
-            #pragma unroll
-            for(int row_item = 0; row_item < RegisterM; ++row_item) {
-                const int local_row = local_row_base + row_item;
-                lhs_fragment[work_item][register_buffer][row_item] =
-                    lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
-                        shared_buffer,
-                        local_row,
-                        swizzled_lhs_tile_col<BlockK>(local_row, inner)
-                    )];
-            }
-
-            #pragma unroll
-            for(int col_item = 0; col_item < RegisterN; ++col_item) {
-                rhs_fragment[work_item][register_buffer][col_item] =
-                    rhs_tiles[rhs_tile_offset<BlockK, BlockN>(shared_buffer, inner, local_col_base + col_item)];
-            }
-        }
+    for(int col_item = 0; col_item < RegisterN; ++col_item) {
+        rhs_fragment[register_buffer][col_item] =
+            rhs_tiles[rhs_tile_offset<BlockK, BlockN>(shared_buffer, inner, local_col_base + col_item)];
     }
 }
 
-template <int BlockM, int BlockN, int RegisterM, int RegisterN, int WorkTiles>
+template <int RegisterM, int RegisterN>
 __device__ __forceinline__ void accumulate_register_tile(
-    float (&accumulator)[WorkTiles][RegisterM][RegisterN],
-    const float (&lhs_fragment)[WorkTiles][2][RegisterM],
-    const float (&rhs_fragment)[WorkTiles][2][RegisterN],
-    int register_buffer,
-    int tid
+    float (&accumulator)[RegisterM][RegisterN],
+    const float (&lhs_fragment)[2][RegisterM],
+    const float (&rhs_fragment)[2][RegisterN],
+    int register_buffer
 ) {
-    constexpr int kThreadTilesN = BlockN / RegisterN;
-    constexpr int kThreadTilesPerCta = (BlockM / RegisterM) * kThreadTilesN;
-
     #pragma unroll
-    for(int work_item = 0; work_item < WorkTiles; ++work_item) {
-        const int thread_tile = tid + work_item * kThreadsPerBlock;
-        if(thread_tile < kThreadTilesPerCta) {
-            #pragma unroll
-            for(int row_item = 0; row_item < RegisterM; ++row_item) {
-                const float lhs_value = lhs_fragment[work_item][register_buffer][row_item];
+    for(int row_item = 0; row_item < RegisterM; ++row_item) {
+        const float lhs_value = lhs_fragment[register_buffer][row_item];
 
-                #pragma unroll
-                for(int col_item = 0; col_item < RegisterN; ++col_item) {
-                    accumulator[work_item][row_item][col_item] +=
-                        lhs_value * rhs_fragment[work_item][register_buffer][col_item];
-                }
-            }
+        #pragma unroll
+        for(int col_item = 0; col_item < RegisterN; ++col_item) {
+            accumulator[row_item][col_item] += lhs_value * rhs_fragment[register_buffer][col_item];
         }
     }
 }
 
-template <int BlockM, int BlockN, int RegisterM, int RegisterN, int WorkTiles>
+template <int RegisterM, int RegisterN>
 __device__ __forceinline__ void store_output_tile(
-    const float (&accumulator)[WorkTiles][RegisterM][RegisterN],
+    const float (&accumulator)[RegisterM][RegisterN],
     float* __restrict__ out,
     std::size_t m,
     std::size_t n,
     std::size_t block_row,
     std::size_t block_col,
-    int tid
+    int local_row_base,
+    int local_col_base
 ) {
-    constexpr int kThreadTilesN = BlockN / RegisterN;
-    constexpr int kThreadTilesPerCta = (BlockM / RegisterM) * kThreadTilesN;
-
     #pragma unroll
-    for(int work_item = 0; work_item < WorkTiles; ++work_item) {
-        const int thread_tile = tid + work_item * kThreadsPerBlock;
-        if(thread_tile < kThreadTilesPerCta) {
-            const int tile_row = thread_tile / kThreadTilesN;
-            const int tile_col = thread_tile % kThreadTilesN;
-            const int local_row_base = tile_row * RegisterM;
-            const int local_col_base = tile_col * RegisterN;
+    for(int row_item = 0; row_item < RegisterM; ++row_item) {
+        const std::size_t row = block_row + static_cast<std::size_t>(local_row_base + row_item);
 
-            #pragma unroll
-            for(int row_item = 0; row_item < RegisterM; ++row_item) {
-                const std::size_t row = block_row + static_cast<std::size_t>(local_row_base + row_item);
-
-                #pragma unroll
-                for(int col_item = 0; col_item < RegisterN; ++col_item) {
-                    const std::size_t col = block_col + static_cast<std::size_t>(local_col_base + col_item);
-                    if(row < m && col < n) {
-                        out[row * n + col] = accumulator[work_item][row_item][col_item];
-                    }
-                }
+        #pragma unroll
+        for(int col_item = 0; col_item < RegisterN; ++col_item) {
+            const std::size_t col = block_col + static_cast<std::size_t>(local_col_base + col_item);
+            if(row < m && col < n) {
+                out[row * n + col] = accumulator[row_item][col_item];
             }
         }
     }
 }
 
 template <int BlockM, int BlockN, int BlockK, int RegisterM, int RegisterN>
-__global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel(
+__global__ void __launch_bounds__(gemm_dbuffer_vload_threads_per_cta<BlockM, BlockN, RegisterM, RegisterN>(), 1)
+    gemm_dbuffer_vload_kernel(
     const float* __restrict__ lhs,
     const float* __restrict__ rhs,
     float* __restrict__ out,
@@ -275,10 +243,16 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
     static_assert(BlockN % RegisterN == 0, "gemm_dbuffer_vload block_n must be divisible by register_n.");
     static_assert((BlockK & (BlockK - 1)) == 0, "gemm_dbuffer_vload block_k must be a power of two.");
 
-    constexpr int kThreadTilesPerCta = (BlockM / RegisterM) * (BlockN / RegisterN);
-    constexpr int kWorkTilesPerThread = (kThreadTilesPerCta + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    constexpr int kThreadBlockDimX = BlockN / RegisterN;
+    constexpr int kThreadsPerCta = gemm_dbuffer_vload_threads_per_cta<BlockM, BlockN, RegisterM, RegisterN>();
+    static_assert(
+        kThreadsPerCta <= kMaxGemmDbufferVloadThreadsPerBlock,
+        "gemm_dbuffer_vload derived thread block size must fit within 32 * 32 threads."
+    );
 
     const int tid = static_cast<int>(threadIdx.y) * kThreadBlockDimX + static_cast<int>(threadIdx.x);
+    const int local_row_base = static_cast<int>(threadIdx.y) * RegisterM;
+    const int local_col_base = static_cast<int>(threadIdx.x) * RegisterN;
     const std::size_t block_row = static_cast<std::size_t>(blockIdx.y) * BlockM;
     const std::size_t block_col = static_cast<std::size_t>(blockIdx.x) * BlockN;
 
@@ -286,18 +260,15 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
     float* lhs_tiles = shared_storage;
     float* rhs_tiles = lhs_tiles + 2 * BlockM * BlockK;
 
-    float accumulator[kWorkTilesPerThread][RegisterM][RegisterN];
-    float lhs_fragment[kWorkTilesPerThread][2][RegisterM];
-    float rhs_fragment[kWorkTilesPerThread][2][RegisterN];
+    float accumulator[RegisterM][RegisterN];
+    float lhs_fragment[2][RegisterM];
+    float rhs_fragment[2][RegisterN];
 
     #pragma unroll
-    for(int work_item = 0; work_item < kWorkTilesPerThread; ++work_item) {
+    for(int row_item = 0; row_item < RegisterM; ++row_item) {
         #pragma unroll
-        for(int row_item = 0; row_item < RegisterM; ++row_item) {
-            #pragma unroll
-            for(int col_item = 0; col_item < RegisterN; ++col_item) {
-                accumulator[work_item][row_item][col_item] = 0.0f;
-            }
+        for(int col_item = 0; col_item < RegisterN; ++col_item) {
+            accumulator[row_item][col_item] = 0.0f;
         }
     }
 
@@ -314,7 +285,8 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
         block_col,
         0,
         0,
-        tid
+        tid,
+        kThreadsPerCta
     );
     __syncthreads();
 
@@ -336,11 +308,12 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
                 block_col,
                 next_k_base,
                 next_shared_buffer,
-                tid
+                tid,
+                kThreadsPerCta
             );
         }
 
-        load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN, kWorkTilesPerThread>(
+        load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN>(
             lhs_tiles,
             rhs_tiles,
             lhs_fragment,
@@ -348,7 +321,8 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
             shared_buffer,
             0,
             0,
-            tid
+            local_row_base,
+            local_col_base
         );
 
         #pragma unroll
@@ -357,7 +331,7 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
             const int next_register_buffer = register_buffer ^ 1;
 
             if(inner + 1 < BlockK) {
-                load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN, kWorkTilesPerThread>(
+                load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN>(
                     lhs_tiles,
                     rhs_tiles,
                     lhs_fragment,
@@ -365,30 +339,31 @@ __global__ void __launch_bounds__(kThreadsPerBlock, 1) gemm_dbuffer_vload_kernel
                     shared_buffer,
                     next_register_buffer,
                     inner + 1,
-                    tid
+                    local_row_base,
+                    local_col_base
                 );
             }
 
-            accumulate_register_tile<BlockM, BlockN, RegisterM, RegisterN, kWorkTilesPerThread>(
+            accumulate_register_tile<RegisterM, RegisterN>(
                 accumulator,
                 lhs_fragment,
                 rhs_fragment,
-                register_buffer,
-                tid
+                register_buffer
             );
         }
 
         __syncthreads();
     }
 
-    store_output_tile<BlockM, BlockN, RegisterM, RegisterN, kWorkTilesPerThread>(
+    store_output_tile<RegisterM, RegisterN>(
         accumulator,
         out,
         m,
         n,
         block_row,
         block_col,
-        tid
+        local_row_base,
+        local_col_base
     );
 }
 
@@ -402,7 +377,7 @@ bool launch_gemm_dbuffer_vload_instance(
     std::size_t k,
     std::string& error
 ) {
-    const dim3 block(kThreadBlockDimX, kThreadBlockDimY);
+    const dim3 block(BlockN / RegisterN, BlockM / RegisterM);
     const dim3 grid(
         static_cast<unsigned int>((n + BlockN - 1) / BlockN),
         static_cast<unsigned int>((m + BlockM - 1) / BlockM)

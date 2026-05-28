@@ -103,7 +103,7 @@ Linux 下完成构建后，主要可执行文件位于 `out/build/linux-make-cud
 - `--gemm-tile-k K`: GEMM lab reduction tile; default `16`.
 - `--gemm-reg-m M`: register-tiled GEMM per-thread rows; supported pairs `2x2/4x4/4x8/8x4/8x8`, default `4x4`.
 - `--gemm-reg-n N`: register-tiled GEMM per-thread columns; supported pairs `2x2/4x4/4x8/8x4/8x8`, default `4x4`.
-- `gemm_dbuffer_vload` 支持 `block_m/block_n=32/64/128`、`block_k=8/16/32`、register tile `4x4/8x8`，固定 `16x16` threads/block。
+- `gemm_dbuffer_vload` 支持 `block_m/block_n=32/64/128`、`block_k=8/16/32`、register tile `4x4/8x8`，线程块按 `(block_n / reg_n, block_m / reg_m)` 动态派生。
 - `--warmup I`：设置每个 case 的预热轮数。
 - `--iters I`：设置每个 case 的正式测量轮数。
 

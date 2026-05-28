@@ -39,7 +39,7 @@ The `gemm_dbuffer_vload` kernel is included in the same benchmark binary when th
   --warmup 2 --iters 5
 ```
 
-Recommended third-version run with `16x16` threads/block and `float4` vector loads:
+Recommended third-version run with dynamic `(block_n / reg_n, block_m / reg_m)` threads/block and `float4` vector loads:
 
 ```powershell
 & $Exe `
@@ -296,7 +296,7 @@ This captures the third-version kernel with shared-memory double buffering, regi
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_gemm_dbuffer_vload_4096_t64x64x32_4x4_sections" `
+  -o "$Out\ncu_gemm_dbuffer_vload_4096_t64x64x32_4x4_sections_v2" `
   $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
