@@ -24,23 +24,13 @@ struct GemmWrapTileLayout {
     static constexpr int kThreadTileCols = BlockN / RegisterN;
     static constexpr int kLogicalThreads = kThreadTileRows * kThreadTileCols;
 
-    static constexpr bool kUse4x8WarpTile = kThreadTileRows % 4 == 0 && kThreadTileCols % 8 == 0;
-    static constexpr bool kUse8x4WarpTile = !kUse4x8WarpTile && kThreadTileRows % 8 == 0 && kThreadTileCols % 4 == 0;
-    static constexpr bool kUse2x16WarpTile =
-        !kUse4x8WarpTile && !kUse8x4WarpTile && kThreadTileRows % 2 == 0 && kThreadTileCols % 16 == 0;
-    static constexpr bool kUse16x2WarpTile =
-        !kUse4x8WarpTile && !kUse8x4WarpTile && !kUse2x16WarpTile && kThreadTileRows % 16 == 0 &&
-        kThreadTileCols % 2 == 0;
-    static constexpr bool kUsesWarpTiles =
-        kLogicalThreads >= 32 && (kUse4x8WarpTile || kUse8x4WarpTile || kUse2x16WarpTile || kUse16x2WarpTile);
-
-    static constexpr int kWarpThreadRows =
-        kUse4x8WarpTile ? 4 : (kUse8x4WarpTile ? 8 : (kUse2x16WarpTile ? 2 : 16));
-    static constexpr int kWarpThreadCols = 32 / kWarpThreadRows;
+    static constexpr bool kUsesWarpQuadrants =
+        RegisterM == 8 && RegisterN == 8 && BlockM % 32 == 0 && BlockN % 64 == 0;
     static constexpr int kWarpsPerCta = (kLogicalThreads + 31) / 32;
     static constexpr int kLaunchedThreads = kWarpsPerCta * 32;
     static constexpr int kBlockDimX = 32;
     static constexpr int kBlockDimY = kWarpsPerCta;
+    static constexpr bool kAllThreadsCompute = kLogicalThreads == kLaunchedThreads;
 };
 
 template <int BlockM, int BlockN, int RegisterM, int RegisterN>
@@ -54,34 +44,51 @@ __device__ __forceinline__ ThreadTileCoord compute_thread_tile_coord(int tid) {
 
     int thread_tile_row = 0;
     int thread_tile_col = 0;
-    if constexpr(Layout::kUsesWarpTiles) {
-        constexpr int kWarpsPerRow = Layout::kThreadTileCols / Layout::kWarpThreadCols;
-
-        const int warp_id = tid >> 5;
-        const int lane_id = tid & 31;
-        const int warp_row = warp_id / kWarpsPerRow;
-        const int warp_col = warp_id - warp_row * kWarpsPerRow;
-        const int lane_row = lane_id / Layout::kWarpThreadCols;
-        const int lane_col = lane_id - lane_row * Layout::kWarpThreadCols;
-
-        thread_tile_row = warp_row * Layout::kWarpThreadRows + lane_row;
-        thread_tile_col = warp_col * Layout::kWarpThreadCols + lane_col;
+    if constexpr(Layout::kUsesWarpQuadrants) {
+        // The v3-style quadrant path does not use a single contiguous thread
+        // tile coordinate. Register fragments and stores remap row/column
+        // coordinates directly from warp_id/lane_id.
     } else {
-        thread_tile_row = tid / Layout::kThreadTileCols;
-        thread_tile_col = tid - thread_tile_row * Layout::kThreadTileCols;
+        constexpr bool kUse4x8WarpTile = Layout::kThreadTileRows % 4 == 0 && Layout::kThreadTileCols % 8 == 0;
+        constexpr bool kUse8x4WarpTile =
+            !kUse4x8WarpTile && Layout::kThreadTileRows % 8 == 0 && Layout::kThreadTileCols % 4 == 0;
+        constexpr bool kUse2x16WarpTile =
+            !kUse4x8WarpTile && !kUse8x4WarpTile && Layout::kThreadTileRows % 2 == 0 &&
+            Layout::kThreadTileCols % 16 == 0;
+        constexpr bool kUse16x2WarpTile =
+            !kUse4x8WarpTile && !kUse8x4WarpTile && !kUse2x16WarpTile &&
+            Layout::kThreadTileRows % 16 == 0 && Layout::kThreadTileCols % 2 == 0;
+        constexpr bool kUsesWarpTiles =
+            Layout::kLogicalThreads >= 32 &&
+            (kUse4x8WarpTile || kUse8x4WarpTile || kUse2x16WarpTile || kUse16x2WarpTile);
+
+        if constexpr(kUsesWarpTiles) {
+            constexpr int kWarpThreadRows =
+                kUse4x8WarpTile ? 4 : (kUse8x4WarpTile ? 8 : (kUse2x16WarpTile ? 2 : 16));
+            constexpr int kWarpThreadCols = 32 / kWarpThreadRows;
+            constexpr int kWarpsPerRow = Layout::kThreadTileCols / kWarpThreadCols;
+
+            const int warp_id = tid >> 5;
+            const int lane_id = tid & 31;
+            const int warp_row = warp_id / kWarpsPerRow;
+            const int warp_col = warp_id - warp_row * kWarpsPerRow;
+            const int lane_row = lane_id / kWarpThreadCols;
+            const int lane_col = lane_id - lane_row * kWarpThreadCols;
+
+            thread_tile_row = warp_row * kWarpThreadRows + lane_row;
+            thread_tile_col = warp_col * kWarpThreadCols + lane_col;
+        } else {
+            thread_tile_row = tid / Layout::kThreadTileCols;
+            thread_tile_col = tid - thread_tile_row * Layout::kThreadTileCols;
+        }
     }
 
     return ThreadTileCoord {thread_tile_row * RegisterM, thread_tile_col * RegisterN};
 }
 
-template <int BlockK>
-__device__ __forceinline__ int swizzled_lhs_tile_col(int row, int col) {
-    return col ^ (row & (BlockK - 1));
-}
-
 template <int BlockM, int BlockK>
 __device__ __forceinline__ int lhs_tile_offset(int buffer, int row, int col) {
-    return (buffer * BlockM + row) * BlockK + col;
+    return (buffer * BlockK + col) * BlockM + row;
 }
 
 template <int BlockK, int BlockN>
@@ -108,22 +115,22 @@ __device__ __forceinline__ void store_lhs_vector(
     lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
         buffer,
         local_row,
-        swizzled_lhs_tile_col<BlockK>(local_row, local_col + 0)
+        local_col + 0
     )] = value.x;
     lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
         buffer,
         local_row,
-        swizzled_lhs_tile_col<BlockK>(local_row, local_col + 1)
+        local_col + 1
     )] = value.y;
     lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
         buffer,
         local_row,
-        swizzled_lhs_tile_col<BlockK>(local_row, local_col + 2)
+        local_col + 2
     )] = value.z;
     lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
         buffer,
         local_row,
-        swizzled_lhs_tile_col<BlockK>(local_row, local_col + 3)
+        local_col + 3
     )] = value.w;
 }
 
@@ -217,23 +224,69 @@ __device__ __forceinline__ void load_register_fragments(
     int register_buffer,
     int inner,
     int local_row_base,
-    int local_col_base
+    int local_col_base,
+    int tid
 ) {
-    #pragma unroll
-    for(int row_item = 0; row_item < RegisterM; ++row_item) {
-        const int local_row = local_row_base + row_item;
-        lhs_fragment[register_buffer][row_item] =
-            lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
-                shared_buffer,
-                local_row,
-                swizzled_lhs_tile_col<BlockK>(local_row, inner)
-            )];
-    }
+    using Layout = GemmWrapTileLayout<BlockM, BlockN, RegisterM, RegisterN>;
 
-    #pragma unroll
-    for(int col_item = 0; col_item < RegisterN; ++col_item) {
-        rhs_fragment[register_buffer][col_item] =
-            rhs_tiles[rhs_tile_offset<BlockK, BlockN>(shared_buffer, inner, local_col_base + col_item)];
+    if constexpr(Layout::kUsesWarpQuadrants) {
+        constexpr int kWarpsPerNGroup = BlockN / 64;
+        constexpr int kHalfBlockM = BlockM / 2;
+        constexpr int kHalfBlockN = BlockN / 2;
+
+        const int warp_id = tid >> 5;
+        const int lane_id = tid & 31;
+        const int warp_m = warp_id / kWarpsPerNGroup;
+        const int warp_n = warp_id - warp_m * kWarpsPerNGroup;
+        const int a_tile_index = warp_m * 16 + (lane_id / 8) * 4;
+        const int b_tile_index = warp_n * 32 + (lane_id & 7) * 4;
+
+        #pragma unroll
+        for(int row_item = 0; row_item < 4; ++row_item) {
+            const int top_row = a_tile_index + row_item;
+            const int bottom_row = a_tile_index + kHalfBlockM + row_item;
+            lhs_fragment[register_buffer][row_item] =
+                lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
+                    shared_buffer,
+                    top_row,
+                    inner
+                )];
+            lhs_fragment[register_buffer][row_item + 4] =
+                lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
+                    shared_buffer,
+                    bottom_row,
+                    inner
+                )];
+        }
+
+        #pragma unroll
+        for(int col_item = 0; col_item < 4; ++col_item) {
+            rhs_fragment[register_buffer][col_item] =
+                rhs_tiles[rhs_tile_offset<BlockK, BlockN>(shared_buffer, inner, b_tile_index + col_item)];
+            rhs_fragment[register_buffer][col_item + 4] =
+                rhs_tiles[rhs_tile_offset<BlockK, BlockN>(
+                    shared_buffer,
+                    inner,
+                    b_tile_index + kHalfBlockN + col_item
+                )];
+        }
+    } else {
+        #pragma unroll
+        for(int row_item = 0; row_item < RegisterM; ++row_item) {
+            const int local_row = local_row_base + row_item;
+            lhs_fragment[register_buffer][row_item] =
+                lhs_tiles[lhs_tile_offset<BlockM, BlockK>(
+                    shared_buffer,
+                    local_row,
+                    inner
+                )];
+        }
+
+        #pragma unroll
+        for(int col_item = 0; col_item < RegisterN; ++col_item) {
+            rhs_fragment[register_buffer][col_item] =
+                rhs_tiles[rhs_tile_offset<BlockK, BlockN>(shared_buffer, inner, local_col_base + col_item)];
+        }
     }
 }
 
@@ -255,7 +308,7 @@ __device__ __forceinline__ void accumulate_register_tile(
     }
 }
 
-template <int RegisterM, int RegisterN>
+template <int BlockM, int BlockN, int RegisterM, int RegisterN>
 __device__ __forceinline__ void store_output_tile(
     const float (&accumulator)[RegisterM][RegisterN],
     float* __restrict__ out,
@@ -264,17 +317,48 @@ __device__ __forceinline__ void store_output_tile(
     std::size_t block_row,
     std::size_t block_col,
     int local_row_base,
-    int local_col_base
+    int local_col_base,
+    int tid
 ) {
-    #pragma unroll
-    for(int row_item = 0; row_item < RegisterM; ++row_item) {
-        const std::size_t row = block_row + static_cast<std::size_t>(local_row_base + row_item);
+    using Layout = GemmWrapTileLayout<BlockM, BlockN, RegisterM, RegisterN>;
+
+    if constexpr(Layout::kUsesWarpQuadrants) {
+        constexpr int kWarpsPerNGroup = BlockN / 64;
+        constexpr int kHalfBlockM = BlockM / 2;
+        constexpr int kHalfBlockN = BlockN / 2;
+
+        const int warp_id = tid >> 5;
+        const int lane_id = tid & 31;
+        const int warp_m = warp_id / kWarpsPerNGroup;
+        const int warp_n = warp_id - warp_m * kWarpsPerNGroup;
+        const int c_row_base = warp_m * 16 + (lane_id / 8) * 4;
+        const int c_col_base = warp_n * 32 + (lane_id & 7) * 4;
 
         #pragma unroll
-        for(int col_item = 0; col_item < RegisterN; ++col_item) {
-            const std::size_t col = block_col + static_cast<std::size_t>(local_col_base + col_item);
-            if(row < m && col < n) {
-                out[row * n + col] = accumulator[row_item][col_item];
+        for(int row_item = 0; row_item < 8; ++row_item) {
+            const int local_row = row_item < 4 ? c_row_base + row_item : c_row_base + kHalfBlockM + row_item - 4;
+            const std::size_t row = block_row + static_cast<std::size_t>(local_row);
+
+            #pragma unroll
+            for(int col_item = 0; col_item < 8; ++col_item) {
+                const int local_col = col_item < 4 ? c_col_base + col_item : c_col_base + kHalfBlockN + col_item - 4;
+                const std::size_t col = block_col + static_cast<std::size_t>(local_col);
+                if(row < m && col < n) {
+                    out[row * n + col] = accumulator[row_item][col_item];
+                }
+            }
+        }
+    } else {
+        #pragma unroll
+        for(int row_item = 0; row_item < RegisterM; ++row_item) {
+            const std::size_t row = block_row + static_cast<std::size_t>(local_row_base + row_item);
+
+            #pragma unroll
+            for(int col_item = 0; col_item < RegisterN; ++col_item) {
+                const std::size_t col = block_col + static_cast<std::size_t>(local_col_base + col_item);
+                if(row < m && col < n) {
+                    out[row * n + col] = accumulator[row_item][col_item];
+                }
             }
         }
     }
@@ -306,7 +390,7 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
     );
 
     const int tid = static_cast<int>(threadIdx.y) * Layout::kBlockDimX + static_cast<int>(threadIdx.x);
-    const bool computes_output = tid < Layout::kLogicalThreads;
+    [[maybe_unused]] const bool computes_output = tid < Layout::kLogicalThreads;
     const ThreadTileCoord thread_tile =
         compute_thread_tile_coord<BlockM, BlockN, RegisterM, RegisterN>(tid);
 
@@ -370,7 +454,7 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
             );
         }
 
-        if(computes_output) {
+        if constexpr(Layout::kAllThreadsCompute) {
             load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN>(
                 lhs_tiles,
                 rhs_tiles,
@@ -380,13 +464,27 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
                 0,
                 0,
                 thread_tile.local_row_base,
-                thread_tile.local_col_base
+                thread_tile.local_col_base,
+                tid
+            );
+        } else if(computes_output) {
+            load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN>(
+                lhs_tiles,
+                rhs_tiles,
+                lhs_fragment,
+                rhs_fragment,
+                shared_buffer,
+                0,
+                0,
+                thread_tile.local_row_base,
+                thread_tile.local_col_base,
+                tid
             );
         }
 
         #pragma unroll
         for(int inner = 0; inner < BlockK; ++inner) {
-            if(computes_output) {
+            if constexpr(Layout::kAllThreadsCompute) {
                 const int register_buffer = inner & 1;
                 const int next_register_buffer = register_buffer ^ 1;
 
@@ -400,7 +498,33 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
                         next_register_buffer,
                         inner + 1,
                         thread_tile.local_row_base,
-                        thread_tile.local_col_base
+                        thread_tile.local_col_base,
+                        tid
+                    );
+                }
+
+                accumulate_register_tile<RegisterM, RegisterN>(
+                    accumulator,
+                    lhs_fragment,
+                    rhs_fragment,
+                    register_buffer
+                );
+            } else if(computes_output) {
+                const int register_buffer = inner & 1;
+                const int next_register_buffer = register_buffer ^ 1;
+
+                if(inner + 1 < BlockK) {
+                    load_register_fragments<BlockM, BlockN, BlockK, RegisterM, RegisterN>(
+                        lhs_tiles,
+                        rhs_tiles,
+                        lhs_fragment,
+                        rhs_fragment,
+                        shared_buffer,
+                        next_register_buffer,
+                        inner + 1,
+                        thread_tile.local_row_base,
+                        thread_tile.local_col_base,
+                        tid
                     );
                 }
 
@@ -416,8 +540,8 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
         __syncthreads();
     }
 
-    if(computes_output) {
-        store_output_tile<RegisterM, RegisterN>(
+    if constexpr(Layout::kAllThreadsCompute) {
+        store_output_tile<BlockM, BlockN, RegisterM, RegisterN>(
             accumulator,
             out,
             m,
@@ -425,7 +549,20 @@ __global__ void __launch_bounds__(gemm_wrap_tile_threads_per_cta<BlockM, BlockN,
             block_row,
             block_col,
             thread_tile.local_row_base,
-            thread_tile.local_col_base
+            thread_tile.local_col_base,
+            tid
+        );
+    } else if(computes_output) {
+        store_output_tile<BlockM, BlockN, RegisterM, RegisterN>(
+            accumulator,
+            out,
+            m,
+            n,
+            block_row,
+            block_col,
+            thread_tile.local_row_base,
+            thread_tile.local_col_base,
+            tid
         );
     }
 }

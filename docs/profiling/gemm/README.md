@@ -335,11 +335,11 @@ This captures the warp-tile version built on the `gemm_dbuffer_vload` data path.
   -s 2 `
   -c 1 `
   -f `
-  -o "$Out\ncu_gemm_wrap_tile_4096_t64x64x32_4x4_sections" `
+  -o "$Out\ncu_gemm_wrap_tile_4096_t128x128x8_8x8_sections" `
   $Exe `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
-  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
-  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --gemm-tile-m 128 --gemm-tile-n 128 --gemm-tile-k 8 `
+  --gemm-reg-m 8 --gemm-reg-n 8 `
   --warmup 1 --iters 1
 ```
 
