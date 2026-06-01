@@ -9,6 +9,7 @@ if(AI_SYSTEM_ENABLE_CUDA)
             tiled_gemm_block.cu
             tiled_gemm_register.cu
             gemm_dbuffer_vload.cu
+            gemm_wrap_tile.cu
             sgemm_v1.cu
             sgemm_v3.cu
     )

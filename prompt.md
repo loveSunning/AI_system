@@ -1,6 +1,5 @@
 工作任务：
-    1. D:\workspace\learing\How_to_optimize_in_GPU\sgemm\sgemm_v1.cu,参照这个实现 一个sgemm_v1到 labs/gemm。所有的block和tile的尺寸参照前面的代码。在readme中添加ncu的执行命令，各创尺寸参数参照前面代码。
-    2. D:\workspace\learing\How_to_optimize_in_GPU\sgemm\sgemm_v3.cu,参照这个实现 一个sgemm_v3到 labs/gemm。所有的block和tile的尺寸参照前面的代码。在readme中添加ncu的执行命令，各创尺寸参数参照前面代码。
+    1. 实现 gemm_wrap_tile.cu。 在gemm_dbuffer_vload.cu的基础之上。主要添加线程的layout布局。考虑线程的 wrap level tile。完成代码后，也完成各级的readme文档。包括D:\workspace\learing\AI_system\docs\profiling\gemm\README.md添加这个kernel的ncu的调用命令。
     
 
 

@@ -29,7 +29,7 @@ New-Item -ItemType Directory -Force $Out
 
 Use this before profiling to make sure the workload is correct and stable.
 The `tiled_gemm_register` commands use the default 4x4 register tile. Supported register-tile pairs are 2x2, 4x4, 4x8, 8x4, and 8x8.
-The `sgemm_v1`, `sgemm_v3`, and `gemm_dbuffer_vload` kernels are included in the same benchmark binary when the tile is one of 32/64/128 for M/N, 8/16/32 for K, and the register tile is 4x4 or 8x8.
+The `gemm_dbuffer_vload`, `gemm_wrap_tile`, `sgemm_v1`, and `sgemm_v3` kernels are included in the same benchmark binary when the tile is one of 32/64/128 for M/N, 8/16/32 for K, and the register tile is 4x4 or 8x8.
 
 ```powershell
 & $Exe `
@@ -40,6 +40,16 @@ The `sgemm_v1`, `sgemm_v3`, and `gemm_dbuffer_vload` kernels are included in the
 ```
 
 Recommended third-version run with dynamic `(block_n / reg_n, block_m / reg_m)` threads/block and `float4` vector loads:
+
+```powershell
+& $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 2 --iters 5
+```
+
+Warp-tile layout run using the same data path, but with `block.x = 32` lanes and `block.y = warps_per_cta`:
 
 ```powershell
 & $Exe `
@@ -304,6 +314,35 @@ This captures the third-version kernel with shared-memory double buffering, regi
   --warmup 1 --iters 1
 ```
 
+#### `gemm_wrap_tile` Section Command
+
+This captures the warp-tile version built on the `gemm_dbuffer_vload` data path. The CUDA block is shaped as 32 lanes by `warps_per_cta`, and each warp maps to a thread-tile rectangle inside the CTA output tile.
+
+```powershell
+& $Ncu `
+  --section SpeedOfLight `
+  --section LaunchStats `
+  --section Occupancy `
+  --section WarpStateStats `
+  --section SchedulerStats `
+  --section MemoryWorkloadAnalysis `
+  --section MemoryWorkloadAnalysis_Chart `
+  --section ComputeWorkloadAnalysis `
+  --section InstructionStats `
+  --target-processes all `
+  --kernel-name-base demangled `
+  -k regex:gemm_wrap_tile_kernel `
+  -s 2 `
+  -c 1 `
+  -f `
+  -o "$Out\ncu_gemm_wrap_tile_4096_t64x64x32_4x4_sections" `
+  $Exe `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 `
+  --gemm-reg-m 4 --gemm-reg-n 4 `
+  --warmup 1 --iters 1
+```
+
 #### `sgemm_v1` Section Command
 
 This captures the reference-style v1 kernel adapted from `How_to_optimize_in_GPU/sgemm/sgemm_v1.cu`, using `As[stage][k][m]`, `Bs[stage][k][n]`, shared-memory double buffering, register-fragment double buffering, and `float4` global loads.
@@ -557,6 +596,16 @@ Third-version `gemm_dbuffer_vload` run:
   --warmup 2 --iters 5
 ```
 
+Warp-tile `gemm_wrap_tile` run:
+
+```bash
+"$Exe" \
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
+  --warmup 2 --iters 5
+```
+
 End-to-end benchmark:
 
 ```bash
@@ -754,6 +803,32 @@ Profile `gemm_dbuffer_vload`:
   -c 1 \
   -f \
   -o "$Out/ncu_gemm_dbuffer_vload_4096_t64x64x32_4x4_sections" \
+  "$Exe" \
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
+  --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \
+  --gemm-reg-m 4 --gemm-reg-n 4 \
+  --warmup 1 --iters 1
+```
+
+Profile `gemm_wrap_tile`:
+
+```bash
+"$Ncu" \
+  --section SpeedOfLight \
+  --section LaunchStats \
+  --section Occupancy \
+  --section WarpStateStats \
+  --section SchedulerStats \
+  --section MemoryWorkloadAnalysis \
+  --section ComputeWorkloadAnalysis \
+  --section InstructionStats \
+  --target-processes all \
+  --kernel-name-base demangled \
+  -k regex:gemm_wrap_tile_kernel \
+  -s 2 \
+  -c 1 \
+  -f \
+  -o "$Out/ncu_gemm_wrap_tile_4096_t64x64x32_4x4_sections" \
   "$Exe" \
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --gemm-tile-m 64 --gemm-tile-n 64 --gemm-tile-k 32 \

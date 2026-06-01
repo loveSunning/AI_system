@@ -89,6 +89,20 @@ bool gemm_dbuffer_vload_cuda(
     return false;
 }
 
+bool gemm_wrap_tile_cuda(
+    std::size_t,
+    std::size_t,
+    std::size_t,
+    const std::vector<float>&,
+    const std::vector<float>&,
+    std::vector<float>&,
+    std::string& error,
+    GemmLabTileConfig
+) {
+    error = "CUDA support is disabled in this build.";
+    return false;
+}
+
 bool sgemm_v1_cuda(
     std::size_t,
     std::size_t,
