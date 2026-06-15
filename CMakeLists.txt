@@ -99,6 +99,7 @@ ai_system_enable_warnings(ai_system_cli)
 
 if(AI_SYSTEM_BUILD_LABS)
     add_subdirectory(labs/gemm)
+    add_subdirectory(labs/hgemm)
     add_subdirectory(labs/perf_engineering)
 endif()
 
