@@ -71,7 +71,7 @@ This PowerShell loop emits and runs one Nsight Compute command per HGEMM launche
 ```powershell
 $Kernels = @(
   @{ Name = "hgemm_naive_f16"; Regex = "hgemm_naive_f16_kernel" },
-  @{ Name = "hgemm_sliced_k_f16"; Regex = "hgemm_sliced_k_f16" },
+  @{ Name = "hgemm_sliced_k_f16"; Regex = "hgemm_sliced_k_f16_kernel" },
   @{ Name = "hgemm_t_8x8_sliced_k_f16x4"; Regex = "hgemm_t_8x8_sliced_k_f16x4_kernel" },
   @{ Name = "hgemm_t_8x8_sliced_k_f16x4_pack"; Regex = "hgemm_t_8x8_sliced_k_f16x4_pack_kernel" },
   @{ Name = "hgemm_t_8x8_sliced_k_f16x4_bcf"; Regex = "hgemm_t_8x8_sliced_k_f16x4_bcf_kernel" },
