@@ -1,12 +1,8 @@
 工作任务：
-      1.删除hgemm_thread_tile_body
-      2. 参考https://github.com/xlite-dev/HGEMM/blob/main/kernels/hgemm/naive/hgemm_async.cu实现下面几个方法：
-        hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf
-        hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async
-        hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf
-        hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async
-        hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf
-        hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async
-        async 部分是否用了 ptx inline的cp.async.如果用了，参照代码，我们的实现也要用。代码如下：
-        #define CP_ASYNC_CA(dst, src, bytes) asm volatile("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;\n" ::"r"(dst), "l"(src), "n"(bytes))
-        #define CP_ASYNC_CG(dst, src, bytes) asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], %2;\n" ::"r"(dst), "l"(src), "n"(bytes))
+      1. 参照https://github.com/xlite-dev/HGEMM/blob/main/kernels/hgemm/wmma/hgemm_wmma.cu中下面介个函数的实现：
+        void hgemm_wmma_m16n16k16_naive(torch::Tensor a, torch::Tensor b, torch::Tensor c);
+        void hgemm_wmma_m16n16k16_mma4x2(torch::Tensor a, torch::Tensor b, torch::Tensor c);
+        void hgemm_wmma_m16n16k16_mma4x2_warp2x4(torch::Tensor a, torch::Tensor b, torch::Tensor c);
+        void hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async(torch::Tensor a, torch::Tensor b, torch::Tensor c);
+        void hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async(torch::Tensor a, torch::Tensor b, torch::Tensor c);
+        对照实现hgemm_lab.cu中对于的kernel函数。方便学习理解。最好不要调用hgemm_wmma_tile_body，这个的实现好像有问题。

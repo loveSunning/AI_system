@@ -56,6 +56,12 @@ Run one kernel by name:
   --kernel hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
   --warmup 2 --iters 5
+
+# 最快的一个cuda core kernel
+& $Exe `
+  --kernel hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async `
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --warmup 2 --iters 5
 ```
 
 List all compiled launcher names and their Nsight Compute regex:
@@ -159,8 +165,8 @@ foreach($Kernel in $Kernels) {
 Use this when iterating on one kernel:
 
 ```powershell
-$KernelName = "hgemm_wmma_m16n16k16_naive"
-$KernelRegex = "hgemm_wmma_m16n16k16_naive_kernel"
+$KernelName = "hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async"
+$KernelRegex = "hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async_kernel"
 
 & $Ncu `
   --set detailed `

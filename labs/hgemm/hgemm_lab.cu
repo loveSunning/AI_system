@@ -1287,6 +1287,470 @@ __device__ void hgemm_wmma_tile_body(
     }
 }
 
+template <int BlockM, int BlockN>
+__device__ void hgemm_wmma_scalar_fallback_tile(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    const int block_row = static_cast<int>(blockIdx.y) * BlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * BlockN;
+    const int tid = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    const int thread_count = blockDim.x * blockDim.y * blockDim.z;
+
+    for(int index = tid; index < BlockM * BlockN; index += thread_count) {
+        const int row = block_row + index / BlockN;
+        const int col = block_col + index % BlockN;
+        if(row < m && col < n) {
+            float accumulator = 0.0f;
+            for(int inner = 0; inner < k; ++inner) {
+                accumulator += hgemm_load_as_float(a, row, inner, m, k) * hgemm_load_as_float(b, inner, col, k, n);
+            }
+            c[row * n + col] = __float2half_rn(accumulator);
+        }
+    }
+}
+
+template <int WmmaM, int WmmaN, int WmmaK>
+__device__ __forceinline__ void hgemm_wmma_store_float_fragment(
+    const nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, float>& fragment,
+    float* shared_fragment,
+    half* __restrict__ c,
+    int row_base,
+    int col_base,
+    int m,
+    int n,
+    int lane
+) {
+    nvcuda::wmma::store_matrix_sync(shared_fragment, fragment, WmmaN, nvcuda::wmma::mem_row_major);
+    __syncwarp();
+
+    for(int index = lane; index < WmmaM * WmmaN; index += kWarpSize) {
+        const int row = row_base + index / WmmaN;
+        const int col = col_base + index % WmmaN;
+        if(row < m && col < n) {
+            c[row * n + col] = __float2half_rn(shared_fragment[index]);
+        }
+    }
+    __syncwarp();
+}
+
+__device__ __forceinline__ void hgemm_wmma_load_half8_async(
+    const half* __restrict__ source,
+    half* __restrict__ destination
+) {
+    if(hgemm_is_aligned(source, 16u) && hgemm_is_aligned(destination, 16u)) {
+        const auto shared_address = static_cast<std::uint32_t>(__cvta_generic_to_shared(destination));
+        hgemm_cp_async_cg<16>(shared_address, source);
+        return;
+    }
+
+    hgemm_copy_contiguous_half<8, 128>(source, destination);
+}
+
+__device__ void hgemm_wmma_m16n16k16_naive_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    constexpr int kBlockM = 16;
+    constexpr int kBlockN = 16;
+    constexpr int kBlockK = 16;
+    const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+    const int lane = threadIdx.x & (kWarpSize - 1);
+
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kBlockK) != 0 || (n % 8) != 0) {
+        hgemm_wmma_scalar_fallback_tile<kBlockM, kBlockN>(a, b, c, m, n, k);
+        return;
+    }
+
+    using namespace nvcuda;
+    wmma::fragment<wmma::matrix_a, kBlockM, kBlockN, kBlockK, half, wmma::row_major> a_fragment;
+    wmma::fragment<wmma::matrix_b, kBlockM, kBlockN, kBlockK, half, wmma::row_major> b_fragment;
+    wmma::fragment<wmma::accumulator, kBlockM, kBlockN, kBlockK, float> c_fragment;
+    wmma::fill_fragment(c_fragment, 0.0f);
+
+    for(int k_base = 0; k_base < k; k_base += kBlockK) {
+        wmma::load_matrix_sync(a_fragment, a + block_row * k + k_base, k);
+        wmma::load_matrix_sync(b_fragment, b + k_base * n + block_col, n);
+        wmma::mma_sync(c_fragment, a_fragment, b_fragment, c_fragment);
+    }
+
+    __shared__ float shared_c[kBlockM * kBlockN];
+    hgemm_wmma_store_float_fragment<kBlockM, kBlockN, kBlockK>(
+        c_fragment,
+        shared_c,
+        c,
+        block_row,
+        block_col,
+        m,
+        n,
+        lane
+    );
+}
+
+__device__ void hgemm_wmma_m16n16k16_mma4x2_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    constexpr int kWmmaM = 16;
+    constexpr int kWmmaN = 16;
+    constexpr int kWmmaK = 16;
+    constexpr int kWmmaTileM = 4;
+    constexpr int kWmmaTileN = 2;
+    constexpr int kBlockM = kWmmaM * kWmmaTileM;
+    constexpr int kBlockN = kWmmaN * kWmmaTileN;
+    constexpr int kWarpCount = kWmmaTileM * kWmmaTileN;
+    const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kWmmaK) != 0) {
+        hgemm_wmma_scalar_fallback_tile<kBlockM, kBlockN>(a, b, c, m, n, k);
+        return;
+    }
+
+    using namespace nvcuda;
+    __shared__ half shared_a[kBlockM][kWmmaK];
+    __shared__ half shared_b[kWmmaK][kBlockN];
+    __shared__ float shared_c[kWarpCount][kWmmaM * kWmmaN];
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid / kWarpSize;
+    const int lane = tid & (kWarpSize - 1);
+    const int warp_m = warp_id / kWmmaTileN;
+    const int warp_n = warp_id % kWmmaTileN;
+
+    const int load_a_smem_m = tid / 4;
+    const int load_a_smem_k = (tid % 4) * 4;
+    const int load_b_smem_k = tid / 16;
+    const int load_b_smem_n = (tid % 16) * 2;
+
+    wmma::fragment<wmma::accumulator, kWmmaM, kWmmaN, kWmmaK, float> c_fragment;
+    wmma::fill_fragment(c_fragment, 0.0f);
+
+    for(int k_base = 0; k_base < k; k_base += kWmmaK) {
+        hgemm_load_contiguous_half<4, 64>(
+            a,
+            block_row + load_a_smem_m,
+            k_base + load_a_smem_k,
+            m,
+            k,
+            &shared_a[load_a_smem_m][load_a_smem_k]
+        );
+        hgemm_load_contiguous_half<2, 32>(
+            b,
+            k_base + load_b_smem_k,
+            block_col + load_b_smem_n,
+            k,
+            n,
+            &shared_b[load_b_smem_k][load_b_smem_n]
+        );
+        __syncthreads();
+
+        wmma::fragment<wmma::matrix_a, kWmmaM, kWmmaN, kWmmaK, half, wmma::row_major> a_fragment;
+        wmma::fragment<wmma::matrix_b, kWmmaM, kWmmaN, kWmmaK, half, wmma::row_major> b_fragment;
+        wmma::load_matrix_sync(a_fragment, &shared_a[warp_m * kWmmaM][0], kWmmaK);
+        wmma::load_matrix_sync(b_fragment, &shared_b[0][warp_n * kWmmaN], kBlockN);
+        wmma::mma_sync(c_fragment, a_fragment, b_fragment, c_fragment);
+        __syncthreads();
+    }
+
+    hgemm_wmma_store_float_fragment<kWmmaM, kWmmaN, kWmmaK>(
+        c_fragment,
+        shared_c[warp_id],
+        c,
+        block_row + warp_m * kWmmaM,
+        block_col + warp_n * kWmmaN,
+        m,
+        n,
+        lane
+    );
+}
+
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN>
+__device__ void hgemm_wmma_warp2x4_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    constexpr int kWmmaK = 16;
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockN = WmmaN * WmmaTileN * WarpTileN;
+    constexpr int kWarpCount = WmmaTileM * WmmaTileN;
+    static_assert(kBlockM == 128 && kBlockN == 128, "This WMMA body expects a 128x128 CTA tile.");
+    static_assert(kWarpCount == 8, "This WMMA body expects 8 warps per block.");
+
+    const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kWmmaK) != 0) {
+        hgemm_wmma_scalar_fallback_tile<kBlockM, kBlockN>(a, b, c, m, n, k);
+        return;
+    }
+
+    using namespace nvcuda;
+    __shared__ half shared_a[kBlockM][kWmmaK];
+    __shared__ half shared_b[kWmmaK][kBlockN];
+    __shared__ float shared_c[kWarpCount][WmmaM * WmmaN];
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid / kWarpSize;
+    const int lane = tid & (kWarpSize - 1);
+    const int warp_m = warp_id / WmmaTileN;
+    const int warp_n = warp_id % WmmaTileN;
+
+    const int load_a_smem_m = tid / 2;
+    const int load_a_smem_k = (tid % 2) * 8;
+    const int load_b_smem_k = tid / 16;
+    const int load_b_smem_n = (tid % 16) * 8;
+
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, float> c_fragments[WarpTileM][WarpTileN];
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+        }
+    }
+
+    for(int k_base = 0; k_base < k; k_base += kWmmaK) {
+        hgemm_load_contiguous_half<8, 128>(
+            a,
+            block_row + load_a_smem_m,
+            k_base + load_a_smem_k,
+            m,
+            k,
+            &shared_a[load_a_smem_m][load_a_smem_k]
+        );
+        hgemm_load_contiguous_half<8, 128>(
+            b,
+            k_base + load_b_smem_k,
+            block_col + load_b_smem_n,
+            k,
+            n,
+            &shared_b[load_b_smem_k][load_b_smem_n]
+        );
+        __syncthreads();
+
+        wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> a_fragments[WarpTileM];
+        wmma::fragment<wmma::matrix_b, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> b_fragments[WarpTileN];
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+            const int shared_m = warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            wmma::load_matrix_sync(a_fragments[i], &shared_a[shared_m][0], kWmmaK);
+        }
+
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int shared_n = warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            wmma::load_matrix_sync(b_fragments[j], &shared_b[0][shared_n], kBlockN);
+        }
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+            for(int j = 0; j < WarpTileN; ++j) {
+                wmma::mma_sync(c_fragments[i][j], a_fragments[i], b_fragments[j], c_fragments[i][j]);
+            }
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, kWmmaK>(
+                c_fragments[i][j],
+                shared_c[warp_id],
+                c,
+                store_row,
+                store_col,
+                m,
+                n,
+                lane
+            );
+        }
+    }
+}
+
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int Offset>
+__device__ void hgemm_wmma_warp2x4_dbuf_async_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    constexpr int kWmmaK = 16;
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockN = WmmaN * WmmaTileN * WarpTileN;
+    constexpr int kWarpCount = WmmaTileM * WmmaTileN;
+    static_assert(kBlockM == 128 && kBlockN == 128, "This WMMA body expects a 128x128 CTA tile.");
+    static_assert(kWarpCount == 8, "This WMMA body expects 8 warps per block.");
+    static_assert(Offset % 8 == 0, "WMMA shared-memory padding must preserve 16-byte alignment.");
+
+    const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kWmmaK) != 0) {
+        hgemm_wmma_scalar_fallback_tile<kBlockM, kBlockN>(a, b, c, m, n, k);
+        return;
+    }
+
+    using namespace nvcuda;
+    __shared__ half shared_a[2][kBlockM][kWmmaK + Offset];
+    __shared__ half shared_b[2][kWmmaK][kBlockN + Offset];
+    __shared__ float shared_c[kWarpCount][WmmaM * WmmaN];
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid / kWarpSize;
+    const int lane = tid & (kWarpSize - 1);
+    const int warp_m = warp_id / WmmaTileN;
+    const int warp_n = warp_id % WmmaTileN;
+
+    const int load_a_smem_m = tid / 2;
+    const int load_a_smem_k = (tid % 2) * 8;
+    const int load_b_smem_k = tid / 16;
+    const int load_b_smem_n = (tid % 16) * 8;
+    const int k_tiles = k / kWmmaK;
+
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, float> c_fragments[WarpTileM][WarpTileN];
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+        }
+    }
+
+    hgemm_wmma_load_half8_async(
+        a + (block_row + load_a_smem_m) * k + load_a_smem_k,
+        &shared_a[0][load_a_smem_m][load_a_smem_k]
+    );
+    hgemm_wmma_load_half8_async(
+        b + load_b_smem_k * n + block_col + load_b_smem_n,
+        &shared_b[0][load_b_smem_k][load_b_smem_n]
+    );
+    hgemm_cp_async_commit_group();
+    hgemm_cp_async_wait_group<0>();
+    __syncthreads();
+
+    for(int tile = 1; tile < k_tiles; ++tile) {
+        const int active_buffer = (tile - 1) & 1;
+        const int next_buffer = tile & 1;
+        const int k_base = tile * kWmmaK;
+
+        hgemm_wmma_load_half8_async(
+            a + (block_row + load_a_smem_m) * k + k_base + load_a_smem_k,
+            &shared_a[next_buffer][load_a_smem_m][load_a_smem_k]
+        );
+        hgemm_wmma_load_half8_async(
+            b + (k_base + load_b_smem_k) * n + block_col + load_b_smem_n,
+            &shared_b[next_buffer][load_b_smem_k][load_b_smem_n]
+        );
+        hgemm_cp_async_commit_group();
+
+        wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> a_fragments[WarpTileM];
+        wmma::fragment<wmma::matrix_b, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> b_fragments[WarpTileN];
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+            const int shared_m = warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            wmma::load_matrix_sync(a_fragments[i], &shared_a[active_buffer][shared_m][0], kWmmaK + Offset);
+        }
+
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int shared_n = warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            wmma::load_matrix_sync(b_fragments[j], &shared_b[active_buffer][0][shared_n], kBlockN + Offset);
+        }
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+            for(int j = 0; j < WarpTileN; ++j) {
+                wmma::mma_sync(c_fragments[i][j], a_fragments[i], b_fragments[j], c_fragments[i][j]);
+            }
+        }
+
+        hgemm_cp_async_wait_group<0>();
+        __syncthreads();
+    }
+
+    const int final_buffer = (k_tiles - 1) & 1;
+    wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> a_fragments[WarpTileM];
+    wmma::fragment<wmma::matrix_b, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> b_fragments[WarpTileN];
+
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+        const int shared_m = warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+        wmma::load_matrix_sync(a_fragments[i], &shared_a[final_buffer][shared_m][0], kWmmaK + Offset);
+    }
+
+#pragma unroll
+    for(int j = 0; j < WarpTileN; ++j) {
+        const int shared_n = warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+        wmma::load_matrix_sync(b_fragments[j], &shared_b[final_buffer][0][shared_n], kBlockN + Offset);
+    }
+
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            wmma::mma_sync(c_fragments[i][j], a_fragments[i], b_fragments[j], c_fragments[i][j]);
+        }
+    }
+
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, kWmmaK>(
+                c_fragments[i][j],
+                shared_c[warp_id],
+                c,
+                store_row,
+                store_col,
+                m,
+                n,
+                lane
+            );
+        }
+    }
+}
+
 __global__ void hgemm_wmma_m16n16k16_naive_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
@@ -1295,7 +1759,7 @@ __global__ void hgemm_wmma_m16n16k16_naive_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    hgemm_wmma_m16n16k16_naive_body(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_wmma_m16n16k16_mma4x2_kernel(
@@ -1306,7 +1770,7 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    hgemm_wmma_m16n16k16_mma4x2_body(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel(
@@ -1317,7 +1781,7 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    hgemm_wmma_warp2x4_body<16, 16, 4, 2, 2, 4>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel(
@@ -1328,7 +1792,7 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    hgemm_wmma_warp2x4_dbuf_async_body<16, 16, 4, 2, 2, 4, 8>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel(
@@ -1339,7 +1803,7 @@ __global__ void hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    hgemm_wmma_warp2x4_dbuf_async_body<32, 8, 2, 4, 2, 4, 8>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel(
@@ -1972,11 +2436,11 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::T16x8SlicedK32F16x8PackDbufAsync, "hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async", "hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel", "128x128x32", "16x8", false},
         {HgemmKernel::CublasTensorOpNn, "hgemm_cublas_tensor_op_nn", "gemm|hgemm|tensor", "cuBLAS", "cuBLAS", false},
         {HgemmKernel::CublasTensorOpTn, "hgemm_cublas_tensor_op_tn", "gemm|hgemm|tensor", "cuBLAS", "cuBLAS", false},
-        {HgemmKernel::WmmaM16n16k16Naive, "hgemm_wmma_m16n16k16_naive", "hgemm_wmma_m16n16k16_naive_kernel", "16x16x16", "warp", false},
-        {HgemmKernel::WmmaM16n16k16Mma4x2, "hgemm_wmma_m16n16k16_mma4x2", "hgemm_wmma_m16n16k16_mma4x2_kernel", "16x16x16", "warp", false},
-        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel", "16x16x16", "warp", false},
-        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4DbufAsync, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel", "16x16x16", "warp", false},
-        {HgemmKernel::WmmaM32n8k16Mma2x4Warp2x4DbufAsync, "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async", "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel", "16x16x16", "warp", false},
+        {HgemmKernel::WmmaM16n16k16Naive, "hgemm_wmma_m16n16k16_naive", "hgemm_wmma_m16n16k16_naive_kernel", "16x16x16", "1wmma/warp", false},
+        {HgemmKernel::WmmaM16n16k16Mma4x2, "hgemm_wmma_m16n16k16_mma4x2", "hgemm_wmma_m16n16k16_mma4x2_kernel", "64x32x16", "1wmma/warp", false},
+        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel", "128x128x16", "2x4wmma/warp", false},
+        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4DbufAsync, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel", "128x128x16", "2x4wmma/warp", false},
+        {HgemmKernel::WmmaM32n8k16Mma2x4Warp2x4DbufAsync, "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async", "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel", "128x128x16", "2x4wmma/warp", false},
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4Stages, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel", "16x16x16", "warp", true},
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel", "16x16x16", "warp", true},
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel", "16x16x16", "warp", true},
@@ -2180,8 +2644,9 @@ bool hgemm_wmma_m16n16k16_mma4x2(const half* a, const half* b, half* c, int m, i
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
+    enum : int { kBlockM = 64, kBlockN = 32, kThreads = 8 * kWarpSize };
+    const dim3 block(kThreads);
+    const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
@@ -2191,8 +2656,9 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4(const half* a, const half* b, half* c, 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
+    enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    const dim3 block(kThreads);
+    const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
@@ -2202,8 +2668,9 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async(const half* a, const half* b
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
+    enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    const dim3 block(kThreads);
+    const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
@@ -2213,8 +2680,9 @@ bool hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async(const half* a, const half* b,
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
+    enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    const dim3 block(kThreads);
+    const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
