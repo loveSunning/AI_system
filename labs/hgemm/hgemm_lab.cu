@@ -213,11 +213,18 @@ __device__ __forceinline__ bool hgemm_is_aligned(const void* pointer, std::uintp
 
 template <int Count, int PackBits>
 __device__ __forceinline__ void hgemm_copy_contiguous_half(const half* source, half* destination) {
-    static_assert(Count == 2 || Count == 4 || Count == 8, "Unsupported HGEMM half vector width.");
+    static_assert(
+        Count == 2 || Count == 4 || Count == 8 || Count == 16 || Count == 32,
+        "Unsupported HGEMM half vector width."
+    );
 
-    if constexpr(PackBits >= 128 && Count == 8) {
+    if constexpr(PackBits >= 128 && Count >= 8) {
         if(hgemm_is_aligned(source, 16u) && hgemm_is_aligned(destination, 16u)) {
-            *reinterpret_cast<float4*>(destination) = *reinterpret_cast<const float4*>(source);
+#pragma unroll
+            for(int offset = 0; offset < Count; offset += 8) {
+                *reinterpret_cast<float4*>(destination + offset) =
+                    *reinterpret_cast<const float4*>(source + offset);
+            }
             return;
         }
     }
@@ -304,108 +311,36 @@ __global__ void hgemm_naive_f16_kernel(
         return;
     }
 
-    float accumulator = 0.0f;
+    half accumulator = zero_half();
     for(int inner = 0; inner < k; ++inner) {
-        accumulator += __half2float(a[row * k + inner]) * __half2float(b[inner * n + col]);
+        accumulator = __hfma(a[row * k + inner], b[inner * n + col], accumulator);
     }
-    c[row * n + col] = __float2half_rn(accumulator);
+    c[row * n + col] = accumulator;
 }
 
-template <int BlockM, int BlockN, int BlockK, int ThreadM, int ThreadN, bool PadSharedB>
-__device__ void hgemm_thread_tile_body(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    static_assert(BlockM > 0 && BlockN > 0 && BlockK > 0, "HGEMM block dimensions must be positive.");
-    static_assert(ThreadM > 0 && ThreadN > 0, "HGEMM thread-tile dimensions must be positive.");
-    static_assert(BlockM % ThreadM == 0, "BlockM must be divisible by ThreadM.");
-    static_assert(BlockN % ThreadN == 0, "BlockN must be divisible by ThreadN.");
+__device__ __forceinline__ void hgemm_cp_async_commit_group() {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
 
-    constexpr int kPaddedBlockN = BlockN + (PadSharedB ? 8 : 0);
-    __shared__ half shared_a[BlockM][BlockK];
-    __shared__ half shared_b[BlockK][kPaddedBlockN];
+template <int Groups>
+__device__ __forceinline__ void hgemm_cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(Groups));
+}
 
-    const int tx = threadIdx.x;
-    const int ty = threadIdx.y;
-    const int tid = ty * blockDim.x + tx;
-    const int thread_count = blockDim.x * blockDim.y;
-    const int local_row_base = ty * ThreadM;
-    const int local_col_base = tx * ThreadN;
-    const int block_row = static_cast<int>(blockIdx.y) * BlockM;
-    const int block_col = static_cast<int>(blockIdx.x) * BlockN;
+template <int Bytes>
+__device__ __forceinline__ void hgemm_cp_async_ca(std::uint32_t shared_destination, const void* global_source) {
+    asm volatile(
+        "cp.async.ca.shared.global.L2::128B [%0], [%1], %2;\n"
+        ::"r"(shared_destination), "l"(global_source), "n"(Bytes)
+    );
+}
 
-    float accumulator[ThreadM][ThreadN];
-#pragma unroll
-    for(int row_item = 0; row_item < ThreadM; ++row_item) {
-#pragma unroll
-        for(int col_item = 0; col_item < ThreadN; ++col_item) {
-            accumulator[row_item][col_item] = 0.0f;
-        }
-    }
-
-    for(int k_base = 0; k_base < k; k_base += BlockK) {
-        for(int index = tid; index < BlockM * BlockK; index += thread_count) {
-            const int local_row = index / BlockK;
-            const int local_col = index % BlockK;
-            const int global_row = block_row + local_row;
-            const int global_col = k_base + local_col;
-            shared_a[local_row][local_col] =
-                (global_row < m && global_col < k) ? a[global_row * k + global_col] : zero_half();
-        }
-
-        for(int index = tid; index < BlockK * BlockN; index += thread_count) {
-            const int local_row = index / BlockN;
-            const int local_col = index % BlockN;
-            const int global_row = k_base + local_row;
-            const int global_col = block_col + local_col;
-            shared_b[local_row][local_col] =
-                (global_row < k && global_col < n) ? b[global_row * n + global_col] : zero_half();
-        }
-
-        __syncthreads();
-
-#pragma unroll
-        for(int inner = 0; inner < BlockK; ++inner) {
-            float a_fragment[ThreadM];
-            float b_fragment[ThreadN];
-
-#pragma unroll
-            for(int row_item = 0; row_item < ThreadM; ++row_item) {
-                a_fragment[row_item] = __half2float(shared_a[local_row_base + row_item][inner]);
-            }
-
-#pragma unroll
-            for(int col_item = 0; col_item < ThreadN; ++col_item) {
-                b_fragment[col_item] = __half2float(shared_b[inner][local_col_base + col_item]);
-            }
-
-#pragma unroll
-            for(int row_item = 0; row_item < ThreadM; ++row_item) {
-#pragma unroll
-                for(int col_item = 0; col_item < ThreadN; ++col_item) {
-                    accumulator[row_item][col_item] += a_fragment[row_item] * b_fragment[col_item];
-                }
-            }
-        }
-
-        __syncthreads();
-    }
-
-#pragma unroll
-    for(int row_item = 0; row_item < ThreadM; ++row_item) {
-        const int row = block_row + local_row_base + row_item;
-#pragma unroll
-        for(int col_item = 0; col_item < ThreadN; ++col_item) {
-            const int col = block_col + local_col_base + col_item;
-            if(row < m && col < n) {
-                c[row * n + col] = __float2half_rn(accumulator[row_item][col_item]);
-            }
-        }
-    }
+template <int Bytes>
+__device__ __forceinline__ void hgemm_cp_async_cg(std::uint32_t shared_destination, const void* global_source) {
+    asm volatile(
+        "cp.async.cg.shared.global.L2::128B [%0], [%1], %2;\n"
+        ::"r"(shared_destination), "l"(global_source), "n"(Bytes)
+    );
 }
 
 template <int BlockM, int BlockN, int BlockK>
@@ -908,6 +843,266 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body(
     hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body_impl<8>(a, b, c, m, n, k);
 }
 
+template <int BlockK, int BlockItems, int Offset>
+__device__ __forceinline__ int hgemm_dbuf_shared_offset(int buffer, int row, int col) {
+    return (buffer * BlockK + row) * (BlockItems + Offset) + col;
+}
+
+template <int Count, bool AsyncB>
+__device__ __forceinline__ void hgemm_load_b_dbuf_to_shared(
+    const half* __restrict__ b,
+    int row,
+    int col,
+    int rows,
+    int cols,
+    half* shared_destination
+) {
+    static_assert(Count == 8 || Count == 16 || Count == 32, "HGEMM dbuf B loads are 128-bit chunks.");
+
+    if constexpr(AsyncB) {
+        if(row < rows && col + Count <= cols) {
+            const half* source = b + row * cols + col;
+            if(hgemm_is_aligned(source, 16u) && hgemm_is_aligned(shared_destination, 16u)) {
+                const auto shared_base =
+                    static_cast<std::uint32_t>(__cvta_generic_to_shared(shared_destination));
+#pragma unroll
+                for(int offset = 0; offset < Count; offset += 8) {
+                    const auto shared_address =
+                        shared_base + static_cast<std::uint32_t>(offset * static_cast<int>(sizeof(half)));
+                    if constexpr(Count == 8) {
+                        hgemm_cp_async_cg<16>(shared_address, source + offset);
+                    } else {
+                        hgemm_cp_async_ca<16>(shared_address, source + offset);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    hgemm_load_contiguous_half<Count, 128>(b, row, col, rows, cols, shared_destination);
+}
+
+template <int BlockM, int BlockN, int BlockK, int ThreadM, int ThreadN, int Offset, bool AsyncB>
+__device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+) {
+    static_assert(BlockM == 128 && BlockN == 128, "HGEMM dbuf pack kernels are specialized for 128x128 CTA tiles.");
+    static_assert(BlockK == 16 || BlockK == 32, "HGEMM dbuf pack kernels support block_k 16 or 32.");
+    static_assert(ThreadM == 8 || ThreadM == 16, "HGEMM dbuf pack kernels support thread_m 8 or 16.");
+    static_assert(ThreadN == 8, "HGEMM dbuf pack kernels expect thread_n 8.");
+    static_assert(BlockM % ThreadM == 0 && BlockN % ThreadN == 0, "HGEMM dbuf thread tile must divide CTA tile.");
+
+    constexpr int kBlockDimX = BlockN / ThreadN;
+    constexpr int kBlockDimY = BlockM / ThreadM;
+    constexpr int kThreadCount = kBlockDimX * kBlockDimY;
+    static_assert((BlockM * BlockK) % kThreadCount == 0, "HGEMM dbuf A tile load must divide threads.");
+    static_assert((BlockK * BlockN) % kThreadCount == 0, "HGEMM dbuf B tile load must divide threads.");
+
+    constexpr int kLoadAItems = (BlockM * BlockK) / kThreadCount;
+    constexpr int kLoadBItems = (BlockK * BlockN) / kThreadCount;
+    static_assert(kLoadAItems == 8 || kLoadAItems == 16 || kLoadAItems == 32, "Unsupported A load width.");
+    static_assert(kLoadBItems == 8 || kLoadBItems == 16 || kLoadBItems == 32, "Unsupported B load width.");
+    static_assert(BlockK % kLoadAItems == 0, "A load width must divide block_k.");
+    static_assert(BlockN % kLoadBItems == 0, "B load width must divide block_n.");
+
+    __shared__ half shared_a[2 * BlockK * (BlockM + Offset)];
+    __shared__ half shared_b[2 * BlockK * (BlockN + Offset)];
+
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int tid = ty * kBlockDimX + tx;
+    const int block_row = static_cast<int>(blockIdx.y) * BlockM;
+    const int block_col = static_cast<int>(blockIdx.x) * BlockN;
+    const int k_tiles = (k + BlockK - 1) / BlockK;
+
+    constexpr int kLoadAVectorsPerRow = BlockK / kLoadAItems;
+    constexpr int kLoadBVectorsPerRow = BlockN / kLoadBItems;
+    const int load_a_smem_m = tid / kLoadAVectorsPerRow;
+    const int load_a_smem_k = (tid % kLoadAVectorsPerRow) * kLoadAItems;
+    const int load_b_smem_k = tid / kLoadBVectorsPerRow;
+    const int load_b_smem_n = (tid % kLoadBVectorsPerRow) * kLoadBItems;
+
+    alignas(16) half load_a[kLoadAItems];
+    alignas(16) half fragment_a[ThreadM];
+    alignas(16) half fragment_b[ThreadN];
+    alignas(16) half accumulator[ThreadM][ThreadN];
+
+#pragma unroll
+    for(int row_item = 0; row_item < ThreadM; ++row_item) {
+#pragma unroll
+        for(int col_item = 0; col_item < ThreadN; ++col_item) {
+            accumulator[row_item][col_item] = zero_half();
+        }
+    }
+
+    hgemm_load_contiguous_half<kLoadAItems, 128>(
+        a,
+        block_row + load_a_smem_m,
+        load_a_smem_k,
+        m,
+        k,
+        load_a
+    );
+#pragma unroll
+    for(int item = 0; item < kLoadAItems; ++item) {
+        shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(
+            0,
+            load_a_smem_k + item,
+            load_a_smem_m
+        )] = load_a[item];
+    }
+    hgemm_load_b_dbuf_to_shared<kLoadBItems, AsyncB>(
+        b,
+        load_b_smem_k,
+        block_col + load_b_smem_n,
+        k,
+        n,
+        &shared_b[hgemm_dbuf_shared_offset<BlockK, BlockN, Offset>(0, load_b_smem_k, load_b_smem_n)]
+    );
+    if constexpr(AsyncB) {
+        hgemm_cp_async_commit_group();
+        hgemm_cp_async_wait_group<0>();
+    }
+    __syncthreads();
+
+    for(int tile = 1; tile < k_tiles; ++tile) {
+        const int active_buffer = (tile - 1) & 1;
+        const int next_buffer = tile & 1;
+        const int k_base = tile * BlockK;
+
+        if constexpr(AsyncB) {
+            hgemm_load_b_dbuf_to_shared<kLoadBItems, true>(
+                b,
+                k_base + load_b_smem_k,
+                block_col + load_b_smem_n,
+                k,
+                n,
+                &shared_b[hgemm_dbuf_shared_offset<BlockK, BlockN, Offset>(
+                    next_buffer,
+                    load_b_smem_k,
+                    load_b_smem_n
+                )]
+            );
+            hgemm_cp_async_commit_group();
+        } else {
+            hgemm_load_contiguous_half<kLoadAItems, 128>(
+                a,
+                block_row + load_a_smem_m,
+                k_base + load_a_smem_k,
+                m,
+                k,
+                load_a
+            );
+#pragma unroll
+            for(int item = 0; item < kLoadAItems; ++item) {
+                shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(
+                    next_buffer,
+                    load_a_smem_k + item,
+                    load_a_smem_m
+                )] = load_a[item];
+            }
+            hgemm_load_b_dbuf_to_shared<kLoadBItems, false>(
+                b,
+                k_base + load_b_smem_k,
+                block_col + load_b_smem_n,
+                k,
+                n,
+                &shared_b[hgemm_dbuf_shared_offset<BlockK, BlockN, Offset>(
+                    next_buffer,
+                    load_b_smem_k,
+                    load_b_smem_n
+                )]
+            );
+        }
+
+#pragma unroll
+        for(int inner = 0; inner < BlockK; ++inner) {
+            hgemm_copy_contiguous_half<ThreadM, 128>(
+                &shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(
+                    active_buffer,
+                    inner,
+                    ty * ThreadM
+                )],
+                fragment_a
+            );
+            hgemm_copy_contiguous_half<ThreadN, 128>(
+                &shared_b[hgemm_dbuf_shared_offset<BlockK, BlockN, Offset>(
+                    active_buffer,
+                    inner,
+                    tx * ThreadN
+                )],
+                fragment_b
+            );
+
+#pragma unroll
+            for(int row_item = 0; row_item < ThreadM; ++row_item) {
+#pragma unroll
+                for(int col_item = 0; col_item < ThreadN; ++col_item) {
+                    accumulator[row_item][col_item] =
+                        __hfma(fragment_a[row_item], fragment_b[col_item], accumulator[row_item][col_item]);
+                }
+            }
+        }
+
+        if constexpr(AsyncB) {
+            hgemm_load_contiguous_half<kLoadAItems, 128>(
+                a,
+                block_row + load_a_smem_m,
+                k_base + load_a_smem_k,
+                m,
+                k,
+                load_a
+            );
+#pragma unroll
+            for(int item = 0; item < kLoadAItems; ++item) {
+                shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(
+                    next_buffer,
+                    load_a_smem_k + item,
+                    load_a_smem_m
+                )] = load_a[item];
+            }
+            hgemm_cp_async_wait_group<0>();
+        }
+
+        __syncthreads();
+    }
+
+    const int final_buffer = (k_tiles - 1) & 1;
+#pragma unroll
+    for(int inner = 0; inner < BlockK; ++inner) {
+        hgemm_copy_contiguous_half<ThreadM, 128>(
+            &shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(final_buffer, inner, ty * ThreadM)],
+            fragment_a
+        );
+        hgemm_copy_contiguous_half<ThreadN, 128>(
+            &shared_b[hgemm_dbuf_shared_offset<BlockK, BlockN, Offset>(final_buffer, inner, tx * ThreadN)],
+            fragment_b
+        );
+
+#pragma unroll
+        for(int row_item = 0; row_item < ThreadM; ++row_item) {
+#pragma unroll
+            for(int col_item = 0; col_item < ThreadN; ++col_item) {
+                accumulator[row_item][col_item] =
+                    __hfma(fragment_a[row_item], fragment_b[col_item], accumulator[row_item][col_item]);
+            }
+        }
+    }
+
+#pragma unroll
+    for(int row_item = 0; row_item < ThreadM; ++row_item) {
+        const int row = block_row + ty * ThreadM + row_item;
+        const int col = block_col + tx * ThreadN;
+        hgemm_store_contiguous_half<ThreadN, 128>(c, row, col, m, n, accumulator[row_item]);
+    }
+}
+
 __global__ void hgemm_t_8x8_sliced_k_f16x4_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
@@ -982,7 +1177,7 @@ __global__ void hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 16, 8, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 16, 8, 8, 8, false>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async_kernel(
@@ -993,7 +1188,7 @@ __global__ void hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 16, 8, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 16, 8, 8, 8, true>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_kernel(
@@ -1004,7 +1199,7 @@ __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 32, 8, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 8, 8, 8, false>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
@@ -1015,7 +1210,7 @@ __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 32, 8, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 8, 8, 8, true>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_kernel(
@@ -1026,7 +1221,7 @@ __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 32, 16, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 16, 8, 8, false>(a, b, c, m, n, k);
 }
 
 __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
@@ -1037,7 +1232,7 @@ __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
-    hgemm_thread_tile_body<128, 128, 32, 16, 8, false>(a, b, c, m, n, k);
+    hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 16, 8, 8, true>(a, b, c, m, n, k);
 }
 
 __device__ void hgemm_wmma_tile_body(

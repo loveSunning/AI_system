@@ -44,7 +44,7 @@ void print_usage() {
               << "  --swizzle-stride I     Staged swizzle stride; default: 2048\n"
               << "  --warmup I             Warmup iterations for each benchmark; default: 2\n"
               << "  --iters I              Measured iterations for each benchmark; default: 5\n"
-              << "  --no-correctness       Skip cuBLAS reference and output comparison\n"
+              << "  --no-correctness       Skip reference output comparison\n"
               << "  --help                 Show this help message\n";
 }
 
@@ -226,6 +226,26 @@ std::vector<const ai_system::labs::hgemm::HgemmKernelInfo*> select_kernels(const
     return selected;
 }
 
+bool uses_cublas_reference(ai_system::labs::hgemm::HgemmKernel kernel) {
+    using ai_system::labs::hgemm::HgemmKernel;
+    switch(kernel) {
+        case HgemmKernel::CublasTensorOpNn:
+        case HgemmKernel::CublasTensorOpTn:
+        case HgemmKernel::WmmaM16n16k16Naive:
+        case HgemmKernel::WmmaM16n16k16Mma4x2:
+        case HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4:
+        case HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4DbufAsync:
+        case HgemmKernel::WmmaM32n8k16Mma2x4Warp2x4DbufAsync:
+        case HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4Stages:
+        case HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4StagesDsmem:
+        case HgemmKernel::WmmaM16n16k16Mma4x2Warp4x4StagesDsmem:
+        case HgemmKernel::WmmaM16n16k16Mma4x4Warp4x4StagesDsmem:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -274,43 +294,80 @@ int main(int argc, char** argv) {
     }
 
     ai_system::benchmark::BenchmarkReport report;
-    std::vector<float> reference_out;
-    bool has_reference = false;
+    std::vector<float> half_reference_out;
+    std::vector<float> cublas_reference_out;
+    bool has_half_reference = false;
+    bool has_cublas_reference = false;
     int failures = 0;
 
     if(!options.skip_correctness) {
-        ai_system::labs::hgemm::PreparedHgemmLabRunner reference_runner;
-        std::string error;
-        if(reference_runner.prepare(
-               ai_system::labs::hgemm::HgemmKernel::CublasTensorOpNn,
-               options.m,
-               options.n,
-               options.k,
-               lhs,
-               rhs,
-               error,
-               options.launch_options
-           ) &&
-           reference_runner.run(error) && reference_runner.copy_output(reference_out, error)) {
-            has_reference = true;
-            ai_system::benchmark::add_validation_row(
-                report,
-                "hgemm_kernel_only",
-                "hgemm_cublas_tensor_op_nn",
-                "reference",
-                "PASS",
-                "cuBLAS Tensor Core HGEMM reference generated."
+        bool needs_half_reference = false;
+        bool needs_cublas_reference = false;
+        for(const auto* info : selected) {
+            if(uses_cublas_reference(info->kernel)) {
+                needs_cublas_reference = true;
+            } else {
+                needs_half_reference = true;
+            }
+        }
+
+        auto prepare_reference = [&](ai_system::labs::hgemm::HgemmKernel kernel,
+                                     std::string_view name,
+                                     std::string_view success_detail,
+                                     std::vector<float>& output,
+                                     bool& has_reference) {
+            ai_system::labs::hgemm::PreparedHgemmLabRunner reference_runner;
+            std::string error;
+            if(reference_runner.prepare(
+                   kernel,
+                   options.m,
+                   options.n,
+                   options.k,
+                   lhs,
+                   rhs,
+                   error,
+                   options.launch_options
+               ) &&
+               reference_runner.run(error) && reference_runner.copy_output(output, error)) {
+                has_reference = true;
+                ai_system::benchmark::add_validation_row(
+                    report,
+                    "hgemm_kernel_only",
+                    std::string(name),
+                    "reference",
+                    "PASS",
+                    std::string(success_detail)
+                );
+            } else {
+                ai_system::benchmark::add_validation_row(
+                    report,
+                    "hgemm_kernel_only",
+                    std::string(name),
+                    "reference",
+                    AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
+                    error
+                );
+                failures += AI_SYSTEM_HAS_CUDA ? 1 : 0;
+            }
+        };
+
+        if(needs_half_reference) {
+            prepare_reference(
+                ai_system::labs::hgemm::HgemmKernel::NaiveF16,
+                "hgemm_naive_f16",
+                "half-accumulate HGEMM reference generated.",
+                half_reference_out,
+                has_half_reference
             );
-        } else {
-            ai_system::benchmark::add_validation_row(
-                report,
-                "hgemm_kernel_only",
+        }
+        if(needs_cublas_reference) {
+            prepare_reference(
+                ai_system::labs::hgemm::HgemmKernel::CublasTensorOpNn,
                 "hgemm_cublas_tensor_op_nn",
-                "reference",
-                AI_SYSTEM_HAS_CUDA ? "FAIL" : "SKIP",
-                error
+                "cuBLAS Tensor Core HGEMM reference generated.",
+                cublas_reference_out,
+                has_cublas_reference
             );
-            failures += AI_SYSTEM_HAS_CUDA ? 1 : 0;
         }
     }
 
@@ -330,6 +387,11 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        const bool use_cublas_reference = uses_cublas_reference(info->kernel);
+        const bool has_reference = use_cublas_reference ? has_cublas_reference : has_half_reference;
+        const auto& reference_out = use_cublas_reference ? cublas_reference_out : half_reference_out;
+        const char* reference_name = use_cublas_reference ? "hgemm_cublas_tensor_op_nn" : "hgemm_naive_f16";
+
         if(has_reference) {
             std::vector<float> gpu_out;
             if(runner.run(error) && runner.copy_output(gpu_out, error)) {
@@ -340,7 +402,7 @@ int main(int argc, char** argv) {
                     std::string(info->name),
                     "correctness",
                     matches ? "PASS" : "FAIL",
-                    matches ? "allclose(abs=2.5e-1, rel=5e-2), reference=hgemm_cublas_tensor_op_nn."
+                    matches ? "allclose(abs=2.5e-1, rel=5e-2), reference=" + std::string(reference_name) + "."
                             : "Reference/GPU outputs diverged beyond tolerance."
                 );
                 failures += matches ? 0 : 1;

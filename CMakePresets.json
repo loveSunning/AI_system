@@ -36,6 +36,13 @@
       }
     },
     {
+      "name": "windows-vs2022-cuda-release-lineinfo",
+      "inherits": "windows-vs2022-cuda-release",
+      "cacheVariables": {
+        "CMAKE_CUDA_FLAGS": "-lineinfo"
+      }
+    },
+    {
       "name": "windows-vs2022-cpu-debug",
       "inherits": "windows-base",
       "cacheVariables": {
@@ -77,6 +84,11 @@
       "configuration": "Release"
     },
     {
+      "name": "windows-vs2022-cuda-release-lineinfo",
+      "configurePreset": "windows-vs2022-cuda-release-lineinfo",
+      "configuration": "Release"
+    },
+    {
       "name": "windows-vs2022-cpu-debug",
       "configurePreset": "windows-vs2022-cpu-debug",
       "configuration": "Debug"
@@ -94,6 +106,14 @@
     {
       "name": "windows-vs2022-cuda-release",
       "configurePreset": "windows-vs2022-cuda-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2022-cuda-release-lineinfo",
+      "configurePreset": "windows-vs2022-cuda-release-lineinfo",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true
