@@ -22,7 +22,6 @@ namespace {
 constexpr int kWarpSize = 32;
 constexpr int kWmmaTileM = 16;
 constexpr int kWmmaTileN = 16;
-constexpr int kWmmaTileK = 16;
 
 const char* cublas_status_string(cublasStatus_t status) {
     switch(status) {
@@ -1235,48 +1234,23 @@ __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 16, 8, 8, true>(a, b, c, m, n, k);
 }
 
-__device__ void hgemm_wmma_tile_body(
+template <int BlockM, int BlockN>
+__device__ void hgemm_wmma_scalar_fallback_tile_at(
     const half* __restrict__ a,
     const half* __restrict__ b,
     half* __restrict__ c,
     int m,
     int n,
-    int k
+    int k,
+    int block_row,
+    int block_col
 ) {
-    const int tile_row = static_cast<int>(blockIdx.y) * kWmmaTileM;
-    const int tile_col = static_cast<int>(blockIdx.x) * kWmmaTileN;
-    const int lane = threadIdx.x;
+    const int tid = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    const int thread_count = blockDim.x * blockDim.y * blockDim.z;
 
-    if(tile_row + kWmmaTileM <= m && tile_col + kWmmaTileN <= n && (k % kWmmaTileK) == 0) {
-        using namespace nvcuda;
-        wmma::fragment<wmma::matrix_a, kWmmaTileM, kWmmaTileN, kWmmaTileK, half, wmma::row_major> a_fragment;
-        wmma::fragment<wmma::matrix_b, kWmmaTileM, kWmmaTileN, kWmmaTileK, half, wmma::row_major> b_fragment;
-        wmma::fragment<wmma::accumulator, kWmmaTileM, kWmmaTileN, kWmmaTileK, float> c_fragment;
-        wmma::fill_fragment(c_fragment, 0.0f);
-
-        for(int k_base = 0; k_base < k; k_base += kWmmaTileK) {
-            const half* a_tile = a + tile_row * k + k_base;
-            const half* b_tile = b + k_base * n + tile_col;
-            wmma::load_matrix_sync(a_fragment, a_tile, k);
-            wmma::load_matrix_sync(b_fragment, b_tile, n);
-            wmma::mma_sync(c_fragment, a_fragment, b_fragment, c_fragment);
-        }
-
-        __shared__ float c_tile[kWmmaTileM * kWmmaTileN];
-        wmma::store_matrix_sync(c_tile, c_fragment, kWmmaTileN, wmma::mem_row_major);
-        __syncthreads();
-
-        for(int index = lane; index < kWmmaTileM * kWmmaTileN; index += kWarpSize) {
-            const int row = tile_row + index / kWmmaTileN;
-            const int col = tile_col + index % kWmmaTileN;
-            c[row * n + col] = __float2half_rn(c_tile[index]);
-        }
-        return;
-    }
-
-    for(int index = lane; index < kWmmaTileM * kWmmaTileN; index += kWarpSize) {
-        const int row = tile_row + index / kWmmaTileN;
-        const int col = tile_col + index % kWmmaTileN;
+    for(int index = tid; index < BlockM * BlockN; index += thread_count) {
+        const int row = block_row + index / BlockN;
+        const int col = block_col + index % BlockN;
         if(row < m && col < n) {
             float accumulator = 0.0f;
             for(int inner = 0; inner < k; ++inner) {
@@ -1296,22 +1270,16 @@ __device__ void hgemm_wmma_scalar_fallback_tile(
     int n,
     int k
 ) {
-    const int block_row = static_cast<int>(blockIdx.y) * BlockM;
-    const int block_col = static_cast<int>(blockIdx.x) * BlockN;
-    const int tid = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
-    const int thread_count = blockDim.x * blockDim.y * blockDim.z;
-
-    for(int index = tid; index < BlockM * BlockN; index += thread_count) {
-        const int row = block_row + index / BlockN;
-        const int col = block_col + index % BlockN;
-        if(row < m && col < n) {
-            float accumulator = 0.0f;
-            for(int inner = 0; inner < k; ++inner) {
-                accumulator += hgemm_load_as_float(a, row, inner, m, k) * hgemm_load_as_float(b, inner, col, k, n);
-            }
-            c[row * n + col] = __float2half_rn(accumulator);
-        }
-    }
+    hgemm_wmma_scalar_fallback_tile_at<BlockM, BlockN>(
+        a,
+        b,
+        c,
+        m,
+        n,
+        k,
+        static_cast<int>(blockIdx.y) * BlockM,
+        static_cast<int>(blockIdx.x) * BlockN
+    );
 }
 
 template <int WmmaM, int WmmaN, int WmmaK>
@@ -1751,6 +1719,255 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
     }
 }
 
+template <int BlockM, int BlockN, int BlockK, int APad, int BPad>
+__device__ __forceinline__ void hgemm_wmma_stage_load_async(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ shared_a,
+    half* __restrict__ shared_b,
+    int n,
+    int k,
+    int block_row,
+    int block_col,
+    int k_base,
+    int stage,
+    int tid,
+    int thread_count
+) {
+    constexpr int kAChunks = (BlockM * BlockK) / 8;
+    constexpr int kBChunks = (BlockK * BlockN) / 8;
+    constexpr int kAStageOffset = BlockM * (BlockK + APad);
+    constexpr int kBStageOffset = BlockK * (BlockN + BPad);
+
+    for(int chunk = tid; chunk < kAChunks; chunk += thread_count) {
+        const int row = chunk / (BlockK / 8);
+        const int col = (chunk % (BlockK / 8)) * 8;
+        hgemm_wmma_load_half8_async(
+            a + (block_row + row) * k + k_base + col,
+            shared_a + stage * kAStageOffset + row * (BlockK + APad) + col
+        );
+    }
+
+    for(int chunk = tid; chunk < kBChunks; chunk += thread_count) {
+        const int row = chunk / (BlockN / 8);
+        const int col = (chunk % (BlockN / 8)) * 8;
+        hgemm_wmma_load_half8_async(
+            b + (k_base + row) * n + block_col + col,
+            shared_b + stage * kBStageOffset + row * (BlockN + BPad) + col
+        );
+    }
+}
+
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int BlockN,
+    int BlockK,
+    int WarpTileM,
+    int WarpTileN,
+    int WarpTileK,
+    int APad,
+    int BPad>
+__device__ __forceinline__ void hgemm_wmma_stage_compute(
+    half* __restrict__ shared_a,
+    half* __restrict__ shared_b,
+    int warp_m,
+    int warp_n,
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, float> (&c_fragments)[WarpTileM][WarpTileN]
+) {
+    using namespace nvcuda;
+
+#pragma unroll
+    for(int warp_k = 0; warp_k < WarpTileK; ++warp_k) {
+        wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, WmmaK, half, wmma::row_major> a_fragments[WarpTileM];
+        wmma::fragment<wmma::matrix_b, WmmaM, WmmaN, WmmaK, half, wmma::row_major> b_fragments[WarpTileN];
+        const int shared_k = warp_k * WmmaK;
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+            const int shared_m = warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            const half* source = shared_a + shared_m * (BlockK + APad) + shared_k;
+            wmma::load_matrix_sync(a_fragments[i], source, BlockK + APad);
+        }
+
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int shared_n = warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            const half* source = shared_b + shared_k * (BlockN + BPad) + shared_n;
+            wmma::load_matrix_sync(b_fragments[j], source, BlockN + BPad);
+        }
+
+#pragma unroll
+        for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+            for(int j = 0; j < WarpTileN; ++j) {
+                wmma::mma_sync(c_fragments[i][j], a_fragments[i], b_fragments[j], c_fragments[i][j]);
+            }
+        }
+    }
+}
+
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int WarpTileK,
+    int APad,
+    int BPad,
+    int KStage,
+    bool BlockSwizzle>
+__device__ void hgemm_wmma_staged_pipeline_body(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k,
+    half* __restrict__ shared_a,
+    half* __restrict__ shared_b
+) {
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockN = WmmaN * WmmaTileN * WarpTileN;
+    constexpr int kBlockK = WmmaK * WarpTileK;
+    constexpr int kWarpCount = WmmaTileM * WmmaTileN;
+    constexpr int kThreadCount = kWarpCount * kWarpSize;
+    constexpr int kAStageOffset = kBlockM * (kBlockK + APad);
+    constexpr int kBStageOffset = kBlockK * (kBlockN + BPad);
+    static_assert(KStage >= 2, "WMMA staged kernels require at least two stages.");
+    static_assert((kBlockK % 8) == 0 && (kBlockN % 8) == 0, "WMMA staged cp.async copies use 8 half chunks.");
+    static_assert((APad % 8) == 0 && (BPad % 8) == 0, "WMMA staged padding must preserve 16-byte alignment.");
+    static_assert(
+        KStage * kAStageOffset * static_cast<int>(sizeof(half)) >=
+            kWarpCount * WmmaM * WmmaN * static_cast<int>(sizeof(float)),
+        "WMMA staged A shared storage must be large enough to reuse for accumulator stores."
+    );
+
+    const int bx = BlockSwizzle ? static_cast<int>(blockIdx.z) * static_cast<int>(gridDim.x) +
+                                      static_cast<int>(blockIdx.x)
+                                : static_cast<int>(blockIdx.x);
+    const int by = static_cast<int>(blockIdx.y);
+    const int block_row = by * kBlockM;
+    const int block_col = bx * kBlockN;
+    const int tid = threadIdx.x;
+    const int warp_id = tid / kWarpSize;
+    const int lane = tid & (kWarpSize - 1);
+    const int warp_m = warp_id / WmmaTileN;
+    const int warp_n = warp_id % WmmaTileN;
+    const int k_tiles = k / kBlockK;
+
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kBlockK) != 0 ||
+       (n % 8) != 0 || k_tiles < (KStage - 1)) {
+        hgemm_wmma_scalar_fallback_tile_at<kBlockM, kBlockN>(a, b, c, m, n, k, block_row, block_col);
+        return;
+    }
+
+    using namespace nvcuda;
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, WmmaK, float> c_fragments[WarpTileM][WarpTileN];
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+        }
+    }
+
+#pragma unroll
+    for(int stage = 0; stage < KStage - 1; ++stage) {
+        hgemm_wmma_stage_load_async<kBlockM, kBlockN, kBlockK, APad, BPad>(
+            a,
+            b,
+            shared_a,
+            shared_b,
+            n,
+            k,
+            block_row,
+            block_col,
+            stage * kBlockK,
+            stage,
+            tid,
+            kThreadCount
+        );
+        hgemm_cp_async_commit_group();
+    }
+
+    hgemm_cp_async_wait_group<KStage - 2>();
+    __syncthreads();
+
+    for(int tile = KStage - 1; tile < k_tiles; ++tile) {
+        const int active_stage = (tile + 1) % KStage;
+        const int next_stage = tile % KStage;
+        hgemm_wmma_stage_load_async<kBlockM, kBlockN, kBlockK, APad, BPad>(
+            a,
+            b,
+            shared_a,
+            shared_b,
+            n,
+            k,
+            block_row,
+            block_col,
+            tile * kBlockK,
+            next_stage,
+            tid,
+            kThreadCount
+        );
+        hgemm_cp_async_commit_group();
+
+        hgemm_wmma_stage_compute<WmmaM, WmmaN, WmmaK, kBlockN, kBlockK, WarpTileM, WarpTileN, WarpTileK, APad, BPad>(
+            shared_a + active_stage * kAStageOffset,
+            shared_b + active_stage * kBStageOffset,
+            warp_m,
+            warp_n,
+            c_fragments
+        );
+
+        hgemm_cp_async_wait_group<KStage - 2>();
+        __syncthreads();
+    }
+
+    if constexpr(KStage > 2) {
+        hgemm_cp_async_wait_group<0>();
+        __syncthreads();
+    }
+
+#pragma unroll
+    for(int item = 0; item < KStage - 1; ++item) {
+        const int active_stage = (k_tiles - (KStage - 1) + item) % KStage;
+        hgemm_wmma_stage_compute<WmmaM, WmmaN, WmmaK, kBlockN, kBlockK, WarpTileM, WarpTileN, WarpTileK, APad, BPad>(
+            shared_a + active_stage * kAStageOffset,
+            shared_b + active_stage * kBStageOffset,
+            warp_m,
+            warp_n,
+            c_fragments
+        );
+    }
+
+    __syncthreads();
+    float* shared_c = reinterpret_cast<float*>(shared_a);
+#pragma unroll
+    for(int i = 0; i < WarpTileM; ++i) {
+#pragma unroll
+        for(int j = 0; j < WarpTileN; ++j) {
+            const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
+            const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
+            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, WmmaK>(
+                c_fragments[i][j],
+                shared_c + warp_id * WmmaM * WmmaN,
+                c,
+                store_row,
+                store_col,
+                m,
+                n,
+                lane
+            );
+        }
+    }
+}
+
 __global__ void hgemm_wmma_m16n16k16_naive_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
@@ -1806,7 +2023,19 @@ __global__ void hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel(
     hgemm_wmma_warp2x4_dbuf_async_body<32, 8, 2, 4, 2, 4, 8>(a, b, c, m, n, k);
 }
 
-__global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel(
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int APad,
+    int BPad,
+    int KStage,
+    bool BlockSwizzle>
+__global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
     half* __restrict__ c,
@@ -1814,10 +2043,40 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    constexpr int kWarpTileK = 1;
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockN = WmmaN * WmmaTileN * WarpTileN;
+    constexpr int kBlockK = WmmaK * kWarpTileK;
+    __shared__ half shared_a[KStage * kBlockM * (kBlockK + APad)];
+    __shared__ half shared_b[KStage * kBlockK * (kBlockN + BPad)];
+    hgemm_wmma_staged_pipeline_body<
+        WmmaM,
+        WmmaN,
+        WmmaK,
+        WmmaTileM,
+        WmmaTileN,
+        WarpTileM,
+        WarpTileN,
+        kWarpTileK,
+        APad,
+        BPad,
+        KStage,
+        BlockSwizzle>(a, b, c, m, n, k, shared_a, shared_b);
 }
 
-__global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel(
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int APad,
+    int BPad,
+    int KStage,
+    bool BlockSwizzle>
+__global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
     half* __restrict__ c,
@@ -1825,10 +2084,41 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    constexpr int kWarpTileK = 1;
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockK = WmmaK * kWarpTileK;
+    extern __shared__ half shared[];
+    half* shared_a = shared;
+    half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
+    hgemm_wmma_staged_pipeline_body<
+        WmmaM,
+        WmmaN,
+        WmmaK,
+        WmmaTileM,
+        WmmaTileN,
+        WarpTileM,
+        WarpTileN,
+        kWarpTileK,
+        APad,
+        BPad,
+        KStage,
+        BlockSwizzle>(a, b, c, m, n, k, shared_a, shared_b);
 }
 
-__global__ void hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel(
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int WarpTileK,
+    int APad,
+    int BPad,
+    int KStage,
+    bool BlockSwizzle>
+__global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
     half* __restrict__ c,
@@ -1836,10 +2126,39 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockK = WmmaK * WarpTileK;
+    extern __shared__ half shared[];
+    half* shared_a = shared;
+    half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
+    hgemm_wmma_staged_pipeline_body<
+        WmmaM,
+        WmmaN,
+        WmmaK,
+        WmmaTileM,
+        WmmaTileN,
+        WarpTileM,
+        WarpTileN,
+        WarpTileK,
+        APad,
+        BPad,
+        KStage,
+        BlockSwizzle>(a, b, c, m, n, k, shared_a, shared_b);
 }
 
-__global__ void hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel(
+template <
+    int WmmaM,
+    int WmmaN,
+    int WmmaK,
+    int WmmaTileM,
+    int WmmaTileN,
+    int WarpTileM,
+    int WarpTileN,
+    int APad,
+    int BPad,
+    int KStage,
+    bool BlockSwizzle>
+__global__ void __launch_bounds__(512) hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
     half* __restrict__ c,
@@ -1847,7 +2166,25 @@ __global__ void hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel(
     int n,
     int k
 ) {
-    hgemm_wmma_tile_body(a, b, c, m, n, k);
+    constexpr int kWarpTileK = 1;
+    constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
+    constexpr int kBlockK = WmmaK * kWarpTileK;
+    extern __shared__ half shared[];
+    half* shared_a = shared;
+    half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
+    hgemm_wmma_staged_pipeline_body<
+        WmmaM,
+        WmmaN,
+        WmmaK,
+        WmmaTileM,
+        WmmaTileN,
+        WarpTileM,
+        WarpTileN,
+        kWarpTileK,
+        APad,
+        BPad,
+        KStage,
+        BlockSwizzle>(a, b, c, m, n, k, shared_a, shared_b);
 }
 
 __device__ __forceinline__ void hgemm_ldmatrix_x4(
@@ -2441,10 +2778,10 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel", "128x128x16", "2x4wmma/warp", false},
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4DbufAsync, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel", "128x128x16", "2x4wmma/warp", false},
         {HgemmKernel::WmmaM32n8k16Mma2x4Warp2x4DbufAsync, "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async", "hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel", "128x128x16", "2x4wmma/warp", false},
-        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4Stages, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel", "16x16x16", "warp", true},
-        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel", "16x16x16", "warp", true},
-        {HgemmKernel::WmmaM16n16k16Mma4x2Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel", "16x16x16", "warp", true},
-        {HgemmKernel::WmmaM16n16k16Mma4x4Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel", "16x16x16", "warp", true},
+        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4Stages, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel", "128x128x16", "2x4wmma/warp", true},
+        {HgemmKernel::WmmaM16n16k16Mma4x2Warp2x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel", "128x128x16", "2x4wmma/warp", true},
+        {HgemmKernel::WmmaM16n16k16Mma4x2Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel", "256x128x16", "4x4wmma/warp", true},
+        {HgemmKernel::WmmaM16n16k16Mma4x4Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel", "256x256x16", "4x4wmma/warp", true},
         {HgemmKernel::MmaM16n8k16Naive, "hgemm_mma_m16n8k16_naive", "hgemm_mma_m16n8k16_naive_kernel", "16x8x16", "warp", false},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4, "hgemm_mma_m16n8k16_mma2x4_warp4x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel", "16x8x16", "warp", false},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4Stages, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_kernel", "16x8x16", "warp", true},
@@ -2709,15 +3046,381 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4(const half* a, const half* b, half* c, in
     return ai_system::cuda_utils::check_last_launch(error);
 }
 
+dim3 hgemm_wmma_stage_grid(int m, int n, int block_m, int block_n, bool swizzle, int swizzle_stride) {
+    const auto grid_y = static_cast<unsigned int>((m + block_m - 1) / block_m);
+    const auto n_tiles = static_cast<unsigned int>((n + block_n - 1) / block_n);
+    if(!swizzle) {
+        return dim3(n_tiles, grid_y);
+    }
+
+    const auto n_swizzle = static_cast<unsigned int>((n + swizzle_stride - 1) / swizzle_stride);
+    return dim3((n_tiles + n_swizzle - 1) / n_swizzle, grid_y, n_swizzle);
+}
+
+template <int Stages, bool Swizzle>
+bool hgemm_launch_wmma_mma4x2_warp2x4_stages_static(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int swizzle_stride,
+    std::string& error
+) {
+    enum : int {
+        kWmmaM = 16,
+        kWmmaN = 16,
+        kWmmaK = 16,
+        kWmmaTileM = 4,
+        kWmmaTileN = 2,
+        kWarpTileM = 2,
+        kWarpTileN = 4,
+        kAPad = 8,
+        kBPad = 8,
+        kBlockM = kWmmaM * kWmmaTileM * kWarpTileM,
+        kBlockN = kWmmaN * kWmmaTileN * kWarpTileN,
+        kThreads = kWmmaTileM * kWmmaTileN * kWarpSize
+    };
+    const dim3 block(kThreads);
+    const dim3 grid = hgemm_wmma_stage_grid(m, n, kBlockM, kBlockN, Swizzle, swizzle_stride);
+    hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel<
+        kWmmaM,
+        kWmmaN,
+        kWmmaK,
+        kWmmaTileM,
+        kWmmaTileN,
+        kWarpTileM,
+        kWarpTileN,
+        kAPad,
+        kBPad,
+        Stages,
+        Swizzle><<<grid, block>>>(a, b, c, m, n, k);
+    return ai_system::cuda_utils::check_last_launch(error);
+}
+
+template <int Stages, bool Swizzle>
+bool hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int swizzle_stride,
+    std::string& error
+) {
+    enum : int {
+        kWmmaM = 16,
+        kWmmaN = 16,
+        kWmmaK = 16,
+        kWmmaTileM = 4,
+        kWmmaTileN = 2,
+        kWarpTileM = 2,
+        kWarpTileN = 4,
+        kAPad = 0,
+        kBPad = 16,
+        kBlockM = kWmmaM * kWmmaTileM * kWarpTileM,
+        kBlockN = kWmmaN * kWmmaTileN * kWarpTileN,
+        kBlockK = kWmmaK,
+        kThreads = kWmmaTileM * kWmmaTileN * kWarpSize,
+        kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
+            Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
+    };
+    if(!ai_system::cuda_utils::check_status(
+           cudaFuncSetAttribute(
+               hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel<
+                   kWmmaM,
+                   kWmmaN,
+                   kWmmaK,
+                   kWmmaTileM,
+                   kWmmaTileN,
+                   kWarpTileM,
+                   kWarpTileN,
+                   kAPad,
+                   kBPad,
+                   Stages,
+                   Swizzle>,
+               cudaFuncAttributeMaxDynamicSharedMemorySize,
+               98304
+           ),
+           "cudaFuncSetAttribute(hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel)",
+           error
+       )) {
+        return false;
+    }
+
+    const dim3 block(kThreads);
+    const dim3 grid = hgemm_wmma_stage_grid(m, n, kBlockM, kBlockN, Swizzle, swizzle_stride);
+    hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel<
+        kWmmaM,
+        kWmmaN,
+        kWmmaK,
+        kWmmaTileM,
+        kWmmaTileN,
+        kWarpTileM,
+        kWarpTileN,
+        kAPad,
+        kBPad,
+        Stages,
+        Swizzle><<<grid, block, kSharedBytes>>>(a, b, c, m, n, k);
+    return ai_system::cuda_utils::check_last_launch(error);
+}
+
+template <int Stages, bool Swizzle>
+bool hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int swizzle_stride,
+    std::string& error
+) {
+    enum : int {
+        kWmmaM = 16,
+        kWmmaN = 16,
+        kWmmaK = 16,
+        kWmmaTileM = 4,
+        kWmmaTileN = 2,
+        kWarpTileM = 4,
+        kWarpTileN = 4,
+        kWarpTileK = 1,
+        kAPad = 0,
+        kBPad = 16,
+        kBlockM = kWmmaM * kWmmaTileM * kWarpTileM,
+        kBlockN = kWmmaN * kWmmaTileN * kWarpTileN,
+        kBlockK = kWmmaK * kWarpTileK,
+        kThreads = kWmmaTileM * kWmmaTileN * kWarpSize,
+        kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
+            Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
+    };
+    if(!ai_system::cuda_utils::check_status(
+           cudaFuncSetAttribute(
+               hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel<
+                   kWmmaM,
+                   kWmmaN,
+                   kWmmaK,
+                   kWmmaTileM,
+                   kWmmaTileN,
+                   kWarpTileM,
+                   kWarpTileN,
+                   kWarpTileK,
+                   kAPad,
+                   kBPad,
+                   Stages,
+                   Swizzle>,
+               cudaFuncAttributeMaxDynamicSharedMemorySize,
+               98304
+           ),
+           "cudaFuncSetAttribute(hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel)",
+           error
+       )) {
+        return false;
+    }
+
+    const dim3 block(kThreads);
+    const dim3 grid = hgemm_wmma_stage_grid(m, n, kBlockM, kBlockN, Swizzle, swizzle_stride);
+    hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel<
+        kWmmaM,
+        kWmmaN,
+        kWmmaK,
+        kWmmaTileM,
+        kWmmaTileN,
+        kWarpTileM,
+        kWarpTileN,
+        kWarpTileK,
+        kAPad,
+        kBPad,
+        Stages,
+        Swizzle><<<grid, block, kSharedBytes>>>(a, b, c, m, n, k);
+    return ai_system::cuda_utils::check_last_launch(error);
+}
+
+template <int Stages, bool Swizzle>
+bool hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int swizzle_stride,
+    std::string& error
+) {
+    enum : int {
+        kWmmaM = 16,
+        kWmmaN = 16,
+        kWmmaK = 16,
+        kWmmaTileM = 4,
+        kWmmaTileN = 4,
+        kWarpTileM = 4,
+        kWarpTileN = 4,
+        kAPad = 0,
+        kBPad = 16,
+        kBlockM = kWmmaM * kWmmaTileM * kWarpTileM,
+        kBlockN = kWmmaN * kWmmaTileN * kWarpTileN,
+        kBlockK = kWmmaK,
+        kThreads = kWmmaTileM * kWmmaTileN * kWarpSize,
+        kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
+            Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
+    };
+    if(!ai_system::cuda_utils::check_status(
+           cudaFuncSetAttribute(
+               hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel<
+                   kWmmaM,
+                   kWmmaN,
+                   kWmmaK,
+                   kWmmaTileM,
+                   kWmmaTileN,
+                   kWarpTileM,
+                   kWarpTileN,
+                   kAPad,
+                   kBPad,
+                   Stages,
+                   Swizzle>,
+               cudaFuncAttributeMaxDynamicSharedMemorySize,
+               98304
+           ),
+           "cudaFuncSetAttribute(hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel)",
+           error
+       )) {
+        return false;
+    }
+
+    const dim3 block(kThreads);
+    const dim3 grid = hgemm_wmma_stage_grid(m, n, kBlockM, kBlockN, Swizzle, swizzle_stride);
+    hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel<
+        kWmmaM,
+        kWmmaN,
+        kWmmaK,
+        kWmmaTileM,
+        kWmmaTileN,
+        kWarpTileM,
+        kWarpTileN,
+        kAPad,
+        kBPad,
+        Stages,
+        Swizzle><<<grid, block, kSharedBytes>>>(a, b, c, m, n, k);
+    return ai_system::cuda_utils::check_last_launch(error);
+}
+
+template <bool Swizzle>
+bool hgemm_dispatch_wmma_mma4x2_warp2x4_stages_static(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int stages,
+    int swizzle_stride,
+    std::string& error
+) {
+    switch(stages) {
+        case 2:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_static<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 3:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_static<3, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 4:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_static<4, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        default:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_static<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+    }
+}
+
+template <bool Swizzle>
+bool hgemm_dispatch_wmma_mma4x2_warp2x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int stages,
+    int swizzle_stride,
+    std::string& error
+) {
+    switch(stages) {
+        case 2:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 3:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<3, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 4:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<4, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 5:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<5, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 6:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<6, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        default:
+            return hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+    }
+}
+
+template <bool Swizzle>
+bool hgemm_dispatch_wmma_mma4x2_warp4x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int stages,
+    int swizzle_stride,
+    std::string& error
+) {
+    switch(stages) {
+        case 2:
+            return hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 3:
+            return hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem<3, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 4:
+            return hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem<4, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 5:
+            return hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem<5, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        default:
+            return hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+    }
+}
+
+template <bool Swizzle>
+bool hgemm_dispatch_wmma_mma4x4_warp4x4_stages_dsmem(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    int stages,
+    int swizzle_stride,
+    std::string& error
+) {
+    switch(stages) {
+        case 2:
+            return hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 3:
+            return hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem<3, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        case 4:
+            return hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem<4, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+        default:
+            return hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem<2, Swizzle>(a, b, c, m, n, k, swizzle_stride, error);
+    }
+}
+
 bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
     const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel_launch");
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
-    hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
+    if(swizzle) {
+        return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_static<true>(
+            a, b, c, m, n, k, stages, swizzle_stride, error
+        );
+    }
+    return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_static<false>(
+        a, b, c, m, n, k, stages, swizzle_stride, error
+    );
 }
 
 bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
@@ -2725,10 +3428,14 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
-    hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
+    if(swizzle) {
+        return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_dsmem<true>(
+            a, b, c, m, n, k, stages, swizzle_stride, error
+        );
+    }
+    return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_dsmem<false>(
+        a, b, c, m, n, k, stages, swizzle_stride, error
+    );
 }
 
 bool hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
@@ -2736,10 +3443,14 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
-    hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
+    if(swizzle) {
+        return hgemm_dispatch_wmma_mma4x2_warp4x4_stages_dsmem<true>(
+            a, b, c, m, n, k, stages, swizzle_stride, error
+        );
+    }
+    return hgemm_dispatch_wmma_mma4x2_warp4x4_stages_dsmem<false>(
+        a, b, c, m, n, k, stages, swizzle_stride, error
+    );
 }
 
 bool hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
@@ -2747,10 +3458,14 @@ bool hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
-    hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
+    if(swizzle) {
+        return hgemm_dispatch_wmma_mma4x4_warp4x4_stages_dsmem<true>(
+            a, b, c, m, n, k, stages, swizzle_stride, error
+        );
+    }
+    return hgemm_dispatch_wmma_mma4x4_warp4x4_stages_dsmem<false>(
+        a, b, c, m, n, k, stages, swizzle_stride, error
+    );
 }
 
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
