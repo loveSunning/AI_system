@@ -17,6 +17,105 @@
 
 namespace ai_system::labs::hgemm {
 
+__global__ void hgemm_mma_m16n8k16_naive_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
+__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel(
+    const half* __restrict__ a,
+    const half* __restrict__ b,
+    half* __restrict__ c,
+    int m,
+    int n,
+    int k
+);
+
 namespace {
 
 constexpr int kWarpSize = 32;
@@ -254,6 +353,14 @@ __device__ __forceinline__ void hgemm_copy_contiguous_half(const half* source, h
     }
 }
 
+// Load/store helpers used by the teaching kernels below.  Count is the
+// number of half values moved by the caller, and PackBits is the preferred
+// vector width:
+//   PackBits >= 128: move groups of 8 half values with float4 when aligned.
+//   PackBits >= 64 : move groups of 4 half values with float2 when aligned.
+//   PackBits >= 32 : move groups of 2 half values with half2 when aligned.
+// Boundary tiles fall back to scalar masked loads/stores so the kernels can
+// run on arbitrary M/N/K, even when the fast path wants vector alignment.
 template <int Count, int PackBits>
 __device__ __forceinline__ void hgemm_load_contiguous_half(
     const half* values,
@@ -296,6 +403,14 @@ __device__ __forceinline__ void hgemm_store_contiguous_half(
     }
 }
 
+// One thread computes exactly one C(row, col) element.
+// Grid mapping:
+//   blockIdx.x covers columns N in groups of blockDim.x.
+//   blockIdx.y covers rows M in groups of blockDim.y.
+//   threadIdx.(x,y) selects the element inside that 2-D block tile.
+// Work per thread:
+//   reads K half values from A(row, 0:K) and K half values from B(0:K, col),
+//   performs K half FMA operations, and writes one half value to C.
 __global__ void hgemm_naive_f16_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
@@ -304,6 +419,7 @@ __global__ void hgemm_naive_f16_kernel(
     int n,
     int k
 ) {
+    // Global output coordinate owned by this thread.
     const int row = static_cast<int>(blockIdx.y) * blockDim.y + threadIdx.y;
     const int col = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
     if(row >= m || col >= n) {
@@ -354,6 +470,16 @@ __global__ void hgemm_sliced_k_f16_kernel(
     static_assert(BlockM > 0 && BlockN > 0 && BlockK > 0, "HGEMM sliced tile dimensions must be positive.");
     static_assert(BlockM * BlockN <= 1024, "HGEMM sliced output tile exceeds CUDA's thread block limit.");
 
+    // CTA tile shape is BlockM x BlockN output elements, with the K dimension
+    // processed in BlockK slices.  The launch uses block(BlockN, BlockM), so
+    // there is one thread per output element in the tile.
+    //
+    // For the instantiated 32x32x32 kernel:
+    //   threads/CTA     = 32 * 32 = 1024
+    //   shared A slice  = 32 * 32 half values
+    //   shared B slice  = 32 * 32 half values
+    //   per thread load = one A half and one B half per K slice
+    //   per thread math = 32 half FMA operations per slice, one C output
     __shared__ half shared_a[BlockM][BlockK];
     __shared__ half shared_b[BlockK][BlockN];
 
@@ -368,12 +494,15 @@ __global__ void hgemm_sliced_k_f16_kernel(
     half accumulator = zero_half();
 
     for(int k_base = 0; k_base < k; k_base += BlockK) {
+        // Flatten the CTA's 2-D threads to cooperatively cover the A tile.
+        // index -> (tile_row, tile_col) in shared_a[BlockM][BlockK].
         for(int index = tid; index < BlockM * BlockK; index += thread_count) {
             const int tile_row = index / BlockK;
             const int tile_col = index % BlockK;
             shared_a[tile_row][tile_col] = hgemm_load_or_zero(a, block_row + tile_row, k_base + tile_col, m, k);
         }
 
+        // Same flattened mapping for B, but the tile shape is BlockK x BlockN.
         for(int index = tid; index < BlockK * BlockN; index += thread_count) {
             const int tile_row = index / BlockN;
             const int tile_col = index % BlockN;
@@ -384,6 +513,8 @@ __global__ void hgemm_sliced_k_f16_kernel(
 
 #pragma unroll
         for(int inner = 0; inner < BlockK; ++inner) {
+            // Each thread reuses its row from shared_a and column from shared_b
+            // to accumulate the single C(row, col) value it owns.
             accumulator = __hfma(shared_a[local_row][inner], shared_b[inner][local_col], accumulator);
         }
         __syncthreads();
@@ -408,6 +539,21 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_plain_body(
     constexpr int kBlockK = 8;
     constexpr int kThreadM = 8;
     constexpr int kThreadN = 8;
+    // Plain 8x8 thread tile SIMT kernel.
+    //
+    // CTA shape:
+    //   blockDim = (16, 16) = 256 threads.
+    //   one CTA computes a 128x128 C tile.
+    //   each thread computes an 8x8 C micro-tile:
+    //       output rows = block_row + threadIdx.y * 8 + [0, 7]
+    //       output cols = block_col + threadIdx.x * 8 + [0, 7]
+    //
+    // Per K slice (BlockK = 8):
+    //   A tile = 128x8  half values = 1024 half.
+    //   B tile = 8x128  half values = 1024 half.
+    //   each of 256 threads loads 4 contiguous half from A and 4 from B.
+    //   compute reads 8 A half + 8 B half from shared memory for each inner k,
+    //   then performs 8x8 half FMAs into registers.
     __shared__ half shared_a[kBlockM][kBlockK];
     __shared__ half shared_b[kBlockK][kBlockN];
 
@@ -416,8 +562,12 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_plain_body(
     const int tid = ty * blockDim.x + tx;
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+    // A is 128x8, so two vector-4 loads cover each row.  tid / 2 picks the
+    // row, and (tid & 1) chooses columns 0..3 or 4..7 inside the K slice.
     const int load_a_row = tid / 2;
     const int load_a_col = (tid & 1) << 2;
+    // B is 8x128, so thirty-two vector-4 loads cover each row.
+    // tid / 32 picks the K row and (tid & 31) selects the N vector.
     const int load_b_row = tid / 32;
     const int load_b_col = (tid & 31) << 2;
 
@@ -436,6 +586,8 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_plain_body(
     }
 
     for(int k_base = 0; k_base < k; k_base += kBlockK) {
+        // Global -> register -> shared.  The templated helper chooses scalar,
+        // half2, float2, or float4 copies according to LoadPackBits/alignment.
         hgemm_load_contiguous_half<4, LoadPackBits>(a, block_row + load_a_row, k_base + load_a_col, m, k, load_a);
         hgemm_load_contiguous_half<4, LoadPackBits>(b, k_base + load_b_row, block_col + load_b_col, k, n, load_b);
         hgemm_copy_contiguous_half<4, LoadPackBits>(load_a, &shared_a[load_a_row][load_a_col]);
@@ -446,10 +598,12 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_plain_body(
         for(int inner = 0; inner < kBlockK; ++inner) {
 #pragma unroll
             for(int row_item = 0; row_item < kThreadM; ++row_item) {
+                // Thread row lane ty owns eight rows spaced contiguously in M.
                 fragment_a[row_item] = shared_a[ty * kThreadM + row_item][inner];
             }
 #pragma unroll
             for(int col_item = 0; col_item < kThreadN; ++col_item) {
+                // Thread column lane tx owns eight contiguous columns in N.
                 fragment_b[col_item] = shared_b[inner][tx * kThreadN + col_item];
             }
 #pragma unroll
@@ -470,6 +624,8 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_plain_body(
 #pragma unroll
         for(int col_item = 0; col_item < kThreadN; col_item += (StorePackBits >= 64 ? 4 : 2)) {
             const int col = block_col + tx * kThreadN + col_item;
+            // Store the 8 columns of each row as half4/half2 chunks when the
+            // chosen kernel variant allows packed stores.
             if constexpr(StorePackBits >= 64) {
                 hgemm_store_contiguous_half<4, StorePackBits>(c, row, col, m, n, &accumulator[row_item][col_item]);
             } else {
@@ -515,6 +671,18 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_bcf_split_body(
     constexpr int kBlockK = 8;
     constexpr int kThreadM = 8;
     constexpr int kThreadN = 8;
+    // Bank-conflict-friendly split layout for the 8x8 thread tile kernels.
+    //
+    // The CTA/output shape is still 128x128 and each thread still owns 8x8 C.
+    // The shared A tile is stored transposed as [K][M + Offset].  This makes
+    // the per-inner-k reads contiguous along M when a thread gathers A values,
+    // reducing shared-memory bank conflicts.  B remains [K][N + Offset].
+    //
+    // The x4 variants gather the per-thread 8x8 tile as four 4x4 quadrants:
+    //   rows ty*4+[0,3] and 64+ty*4+[0,3]
+    //   cols tx*4+[0,3] and 64+tx*4+[0,3]
+    // This keeps the load/store vectors contiguous while preserving 128x128
+    // coverage with 16x16 threads.
     __shared__ half shared_a[kBlockK][kBlockM + Offset];
     __shared__ half shared_b[kBlockK][kBlockN + Offset];
 
@@ -523,6 +691,7 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_bcf_split_body(
     const int tid = ty * blockDim.x + tx;
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
+    // Same 4-half-per-thread global load assignment as the plain body.
     const int load_a_smem_m = tid / 2;
     const int load_a_smem_k = (tid & 1) << 2;
     const int load_b_smem_k = tid / 32;
@@ -561,6 +730,7 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_bcf_split_body(
         );
 #pragma unroll
         for(int item = 0; item < 4; ++item) {
+            // Transpose A from global row-major A[m][k] into shared_a[k][m].
             shared_a[load_a_smem_k + item][load_a_smem_m] = load_a[item];
         }
         hgemm_copy_contiguous_half<4, SharedPackBits>(load_b, &shared_b[load_b_smem_k][load_b_smem_n]);
@@ -568,11 +738,15 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_bcf_split_body(
 
 #pragma unroll
         for(int inner = 0; inner < kBlockK; ++inner) {
+            // Gather four rows from the top half and four from the bottom half
+            // of the 128-row tile.  The +kBlockM/2 address is why the thread's
+            // logical 8 rows are split into two 4-row groups.
             hgemm_copy_contiguous_half<4, SharedPackBits>(&shared_a[inner][ty * kThreadM / 2], fragment_a);
             hgemm_copy_contiguous_half<4, SharedPackBits>(
                 &shared_a[inner][ty * kThreadM / 2 + kBlockM / 2],
                 fragment_a + 4
             );
+            // B is split the same way across the 128 columns.
             hgemm_copy_contiguous_half<4, SharedPackBits>(&shared_b[inner][tx * kThreadN / 2], fragment_b);
             hgemm_copy_contiguous_half<4, SharedPackBits>(
                 &shared_b[inner][tx * kThreadN / 2 + kBlockN / 2],
@@ -597,6 +771,7 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_bcf_split_body(
         const int row1 = block_row + kBlockM / 2 + ty * kThreadM / 2 + row_item;
         const int col0 = block_col + tx * kThreadN / 2;
         const int col1 = col0 + kBlockN / 2;
+        // Store the same four quadrants used during register accumulation.
         hgemm_store_contiguous_half<4, StorePackBits>(c, row0, col0, m, n, &accumulator[row_item][0]);
         hgemm_store_contiguous_half<4, StorePackBits>(c, row0, col1, m, n, &accumulator[row_item][4]);
         hgemm_store_contiguous_half<4, StorePackBits>(c, row1, col0, m, n, &accumulator[row_item + 4][0]);
@@ -640,6 +815,10 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_body_impl(
     constexpr int kBlockK = 8;
     constexpr int kThreadM = 8;
     constexpr int kThreadN = 8;
+    // x8 packed BCF variant.  The global load assignment is still 4 half from
+    // A and 4 half from B per thread per K slice, but the shared layout/padding
+    // lets each compute step read the thread's 8 A values and 8 B values as
+    // 128-bit contiguous chunks from shared memory.
     __shared__ half shared_a[kBlockK][kBlockM + Offset];
     __shared__ half shared_b[kBlockK][kBlockN + Offset];
 
@@ -679,6 +858,8 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_body_impl(
 
 #pragma unroll
         for(int inner = 0; inner < kBlockK; ++inner) {
+            // Each thread now maps to one contiguous 8-row and one contiguous
+            // 8-column stripe in the transposed/padded shared tiles.
             hgemm_copy_contiguous_half<8, 128>(&shared_a[inner][ty * kThreadM], fragment_a);
             hgemm_copy_contiguous_half<8, 128>(&shared_b[inner][tx * kThreadN], fragment_b);
 
@@ -727,6 +908,10 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body_impl(
     constexpr int kBlockK = 8;
     constexpr int kThreadM = 8;
     constexpr int kThreadN = 8;
+    // Double-buffered version of the x8 packed BCF kernel.  shared_a/shared_b
+    // have two K-slice buffers.  While the CTA computes from active_buffer,
+    // each thread prepares the next 4-half A and 4-half B vectors in registers
+    // and then publishes them to next_buffer before the next __syncthreads().
     __shared__ half shared_a[2][kBlockK][kBlockM + Offset];
     __shared__ half shared_b[2][kBlockK][kBlockN + Offset];
 
@@ -755,6 +940,7 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body_impl(
         }
     }
 
+    // Prime buffer 0 with K tile 0 before entering the pipelined loop.
     hgemm_load_contiguous_half<4, 64>(a, block_row + load_a_smem_m, load_a_smem_k, m, k, load_a);
     hgemm_load_contiguous_half<4, 64>(b, load_b_smem_k, block_col + load_b_smem_n, k, n, load_b);
 #pragma unroll
@@ -767,6 +953,8 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body_impl(
     for(int tile = 1; tile < k_tiles; ++tile) {
         const int active_buffer = (tile - 1) & 1;
         const int next_buffer = tile & 1;
+        // Load the next K tile to registers first.  The CTA then computes from
+        // active_buffer and finally writes those register values to next_buffer.
         hgemm_load_contiguous_half<4, 64>(
             a,
             block_row + load_a_smem_m,
@@ -808,6 +996,7 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body_impl(
     }
 
     const int final_buffer = (k_tiles - 1) & 1;
+    // Drain the last prefetched buffer after the loop.
 #pragma unroll
     for(int inner = 0; inner < kBlockK; ++inner) {
         hgemm_copy_contiguous_half<8, 128>(&shared_a[final_buffer][inner][ty * kThreadM], fragment_a);
@@ -844,6 +1033,9 @@ __device__ void hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body(
 
 template <int BlockK, int BlockItems, int Offset>
 __device__ __forceinline__ int hgemm_dbuf_shared_offset(int buffer, int row, int col) {
+    // Linearized address for shared[2][BlockK][BlockItems + Offset].
+    // row is the K coordinate inside the CTA slice; col is M for A's
+    // transposed tile or N for B's row-major tile.
     return (buffer * BlockK + row) * (BlockItems + Offset) + col;
 }
 
@@ -858,6 +1050,9 @@ __device__ __forceinline__ void hgemm_load_b_dbuf_to_shared(
 ) {
     static_assert(Count == 8 || Count == 16 || Count == 32, "HGEMM dbuf B loads are 128-bit chunks.");
 
+    // Async variants use cp.async for B when the full vector is in bounds and
+    // both addresses are 16-byte aligned.  Boundary tiles or unaligned pointers
+    // use the normal masked vector/scalar path.
     if constexpr(AsyncB) {
         if(row < rows && col + Count <= cols) {
             const half* source = b + row * cols + col;
@@ -910,6 +1105,31 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
     static_assert(BlockK % kLoadAItems == 0, "A load width must divide block_k.");
     static_assert(BlockN % kLoadBItems == 0, "B load width must divide block_n.");
 
+    // Generic double-buffered SIMT kernel used by these launch wrappers:
+    //   hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf(_async)
+    //   hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf(_async)
+    //   hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf(_async)
+    //
+    // CTA/output mapping:
+    //   BlockM x BlockN is always 128x128.
+    //   blockDim.x = 128 / ThreadN, blockDim.y = 128 / ThreadM.
+    //   thread (tx, ty) owns C rows ty*ThreadM+[0,ThreadM) and
+    //   C cols tx*ThreadN+[0,ThreadN) inside the CTA tile.
+    //
+    // Per K tile cooperative loads:
+    //   A has BlockM*BlockK half values, stored transposed as [K][M+Offset].
+    //   B has BlockK*BlockN half values, stored as [K][N+Offset].
+    //   kLoadAItems = (BlockM*BlockK)/threads per thread.
+    //   kLoadBItems = (BlockK*BlockN)/threads per thread.
+    //
+    // Concrete instantiations:
+    //   8x8,  K16, 256 threads: each thread loads  8 A half +  8 B half.
+    //   8x8,  K32, 256 threads: each thread loads 16 A half + 16 B half.
+    //   16x8, K32, 128 threads: each thread loads 32 A half + 32 B half.
+    //
+    // AsyncB overlaps only B's global->shared cp.async transfer with compute.
+    // A is loaded by normal vector loads because it is immediately transposed
+    // through registers into the shared A layout.
     __shared__ half shared_a[2 * BlockK * (BlockM + Offset)];
     __shared__ half shared_b[2 * BlockK * (BlockN + Offset)];
 
@@ -922,8 +1142,10 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
 
     constexpr int kLoadAVectorsPerRow = BlockK / kLoadAItems;
     constexpr int kLoadBVectorsPerRow = BlockN / kLoadBItems;
+    // A loader: each thread takes one contiguous vector along K for one M row.
     const int load_a_smem_m = tid / kLoadAVectorsPerRow;
     const int load_a_smem_k = (tid % kLoadAVectorsPerRow) * kLoadAItems;
+    // B loader: each thread takes one contiguous vector along N for one K row.
     const int load_b_smem_k = tid / kLoadBVectorsPerRow;
     const int load_b_smem_n = (tid % kLoadBVectorsPerRow) * kLoadBItems;
 
@@ -940,6 +1162,8 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
         }
     }
 
+    // Prime buffer 0.  A is written as shared_a[buffer][k][m] and B as
+    // shared_b[buffer][k][n], both through the same linear offset helper.
     hgemm_load_contiguous_half<kLoadAItems, 128>(
         a,
         block_row + load_a_smem_m,
@@ -976,6 +1200,7 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
         const int k_base = tile * BlockK;
 
         if constexpr(AsyncB) {
+            // Start B's next-buffer cp.async before computing active_buffer.
             hgemm_load_b_dbuf_to_shared<kLoadBItems, true>(
                 b,
                 k_base + load_b_smem_k,
@@ -990,6 +1215,7 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
             );
             hgemm_cp_async_commit_group();
         } else {
+            // Synchronous variant loads both A and B for next_buffer first.
             hgemm_load_contiguous_half<kLoadAItems, 128>(
                 a,
                 block_row + load_a_smem_m,
@@ -1022,6 +1248,8 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
 
 #pragma unroll
         for(int inner = 0; inner < BlockK; ++inner) {
+            // Compute phase: each thread gathers ThreadM A half values and
+            // ThreadN B half values for the current K coordinate from shared.
             hgemm_copy_contiguous_half<ThreadM, 128>(
                 &shared_a[hgemm_dbuf_shared_offset<BlockK, BlockM, Offset>(
                     active_buffer,
@@ -1050,6 +1278,8 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
         }
 
         if constexpr(AsyncB) {
+            // After compute has hidden B's copy latency, load/transposed-store
+            // A for the same next_buffer, then wait for B's cp.async group.
             hgemm_load_contiguous_half<kLoadAItems, 128>(
                 a,
                 block_row + load_a_smem_m,
@@ -1073,6 +1303,7 @@ __device__ void hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body(
     }
 
     const int final_buffer = (k_tiles - 1) & 1;
+    // Drain the final prefetched K tile.
 #pragma unroll
     for(int inner = 0; inner < BlockK; ++inner) {
         hgemm_copy_contiguous_half<ThreadM, 128>(
@@ -1110,6 +1341,8 @@ __global__ void hgemm_t_8x8_sliced_k_f16x4_kernel(
     int n,
     int k
 ) {
+    // 128x128x8 CTA, 16x16 threads, one 8x8 output tile per thread.
+    // Uses 4-half loads/stores with scalar/half2 fallback (PackBits=32).
     hgemm_thread_tile_8x8_sliced_k_f16x4_body(a, b, c, m, n, k);
 }
 
@@ -1121,6 +1354,7 @@ __global__ void hgemm_t_8x8_sliced_k_f16x4_pack_kernel(
     int n,
     int k
 ) {
+    // Same coordinates as f16x4, but prefers 64-bit vectorized loads/stores.
     hgemm_thread_tile_8x8_sliced_k_f16x4_pack_body(a, b, c, m, n, k);
 }
 
@@ -1132,6 +1366,8 @@ __global__ void hgemm_t_8x8_sliced_k_f16x4_bcf_kernel(
     int n,
     int k
 ) {
+    // Same 128x128x8 CTA, with transposed/padded shared A layout to reduce
+    // bank conflicts while gathering per-thread A fragments.
     hgemm_thread_tile_8x8_sliced_k_f16x4_bcf_body(a, b, c, m, n, k);
 }
 
@@ -1143,6 +1379,7 @@ __global__ void hgemm_t_8x8_sliced_k_f16x4_pack_bcf_kernel(
     int n,
     int k
 ) {
+    // BCF shared layout plus 64-bit packed load/store preference.
     hgemm_thread_tile_8x8_sliced_k_f16x4_pack_bcf_body(a, b, c, m, n, k);
 }
 
@@ -1154,6 +1391,7 @@ __global__ void hgemm_t_8x8_sliced_k_f16x8_pack_bcf_kernel(
     int n,
     int k
 ) {
+    // BCF shared layout, 8-half fragment reads from shared, and 128-bit stores.
     hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_body(a, b, c, m, n, k);
 }
 
@@ -1165,6 +1403,7 @@ __global__ void hgemm_t_8x8_sliced_k_f16x8_pack_bcf_dbuf_kernel(
     int n,
     int k
 ) {
+    // Adds two shared-memory K-slice buffers to the x8 packed BCF variant.
     hgemm_thread_tile_8x8_sliced_k_f16x8_pack_bcf_dbuf_body(a, b, c, m, n, k);
 }
 
@@ -1176,6 +1415,7 @@ __global__ void hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=16, ThreadM x ThreadN = 8x8, sync B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 16, 8, 8, 8, false>(a, b, c, m, n, k);
 }
 
@@ -1187,6 +1427,7 @@ __global__ void hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=16, ThreadM x ThreadN = 8x8, async B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 16, 8, 8, 8, true>(a, b, c, m, n, k);
 }
 
@@ -1198,6 +1439,7 @@ __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=32, ThreadM x ThreadN = 8x8, sync B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 8, 8, 8, false>(a, b, c, m, n, k);
 }
 
@@ -1209,6 +1451,7 @@ __global__ void hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=32, ThreadM x ThreadN = 8x8, async B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 8, 8, 8, true>(a, b, c, m, n, k);
 }
 
@@ -1220,6 +1463,7 @@ __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=32, ThreadM x ThreadN = 16x8, sync B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 16, 8, 8, false>(a, b, c, m, n, k);
 }
 
@@ -1231,6 +1475,7 @@ __global__ void hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel(
     int n,
     int k
 ) {
+    // Generic dbuf body: BlockK=32, ThreadM x ThreadN = 16x8, async B loads.
     hgemm_thread_tile_sliced_k_f16x8_pack_dbuf_body<128, 128, 32, 16, 8, 8, true>(a, b, c, m, n, k);
 }
 
@@ -1248,6 +1493,9 @@ __device__ void hgemm_wmma_scalar_fallback_tile_at(
     const int tid = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
     const int thread_count = blockDim.x * blockDim.y * blockDim.z;
 
+    // Fallback path for boundary tiles and unsupported WMMA alignment cases.
+    // Threads flatten the BlockM x BlockN output tile and stride by the CTA's
+    // total thread count, so every in-bounds C element is computed exactly once.
     for(int index = tid; index < BlockM * BlockN; index += thread_count) {
         const int row = block_row + index / BlockN;
         const int col = block_col + index % BlockN;
@@ -1293,6 +1541,10 @@ __device__ __forceinline__ void hgemm_wmma_store_float_fragment(
     int n,
     int lane
 ) {
+    // WMMA fragments cannot be directly indexed in a portable way.  Store the
+    // float accumulator fragment to shared memory, then let warp lanes write
+    // row-major C elements.  For a 16x16 fragment, each lane writes 8 elements
+    // (256 values / 32 lanes) with boundary masking.
     nvcuda::wmma::store_matrix_sync(shared_fragment, fragment, WmmaN, nvcuda::wmma::mem_row_major);
     __syncwarp();
 
@@ -1310,6 +1562,8 @@ __device__ __forceinline__ void hgemm_wmma_load_half8_async(
     const half* __restrict__ source,
     half* __restrict__ destination
 ) {
+    // One cp.async copies 16 bytes, exactly 8 half values.  The fallback keeps
+    // the helper usable in non-aligned cases.
     if(hgemm_is_aligned(source, 16u) && hgemm_is_aligned(destination, 16u)) {
         const auto shared_address = static_cast<std::uint32_t>(__cvta_generic_to_shared(destination));
         hgemm_cp_async_cg<16>(shared_address, source);
@@ -1330,10 +1584,15 @@ __device__ void hgemm_wmma_m16n16k16_naive_body(
     constexpr int kBlockM = 16;
     constexpr int kBlockN = 16;
     constexpr int kBlockK = 16;
+    // One warp computes one 16x16 output tile.  Each K iteration feeds one
+    // 16x16x16 WMMA operation with A and B loaded directly from global memory.
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
     const int lane = threadIdx.x & (kWarpSize - 1);
 
+    // WMMA load/store requirements are stricter than the scalar kernels.  Use a
+    // readable scalar fallback for partial M/N tiles, non-multiple K, or B/C
+    // leading dimensions that do not satisfy the half8 alignment assumptions.
     if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kBlockK) != 0 || (n % 8) != 0) {
         hgemm_wmma_scalar_fallback_tile<kBlockM, kBlockN>(a, b, c, m, n, k);
         return;
@@ -1380,6 +1639,13 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
     constexpr int kBlockM = kWmmaM * kWmmaTileM;
     constexpr int kBlockN = kWmmaN * kWmmaTileN;
     constexpr int kWarpCount = kWmmaTileM * kWmmaTileN;
+    // CTA tile is 64x32 with 8 warps.  Each warp owns one 16x16 WMMA output
+    // tile.  warp_id -> (warp_m, warp_n) in a 4x2 warp grid:
+    //   warp_m = warp_id / 2, warp_n = warp_id % 2.
+    //
+    // Per K slice:
+    //   A shared tile = 64x16 half = 1024 half; each thread loads 4 half.
+    //   B shared tile = 16x32 half = 512 half; each thread loads 2 half.
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
 
@@ -1399,6 +1665,7 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
     const int warp_m = warp_id / kWmmaTileN;
     const int warp_n = warp_id % kWmmaTileN;
 
+    // 256 threads cooperatively load A and B into shared memory.
     const int load_a_smem_m = tid / 4;
     const int load_a_smem_k = (tid % 4) * 4;
     const int load_b_smem_k = tid / 16;
@@ -1426,6 +1693,8 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
         );
         __syncthreads();
 
+        // Each warp loads the 16x16 A/B tile matching its warp_m/warp_n and
+        // performs one WMMA mma_sync for this K slice.
         wmma::fragment<wmma::matrix_a, kWmmaM, kWmmaN, kWmmaK, half, wmma::row_major> a_fragment;
         wmma::fragment<wmma::matrix_b, kWmmaM, kWmmaN, kWmmaK, half, wmma::row_major> b_fragment;
         wmma::load_matrix_sync(a_fragment, &shared_a[warp_m * kWmmaM][0], kWmmaK);
@@ -1468,6 +1737,21 @@ __device__ void hgemm_wmma_warp2x4_body(
     static_assert(kBlockM == 128 && kBlockN == 128, "This WMMA body expects a 128x128 CTA tile.");
     static_assert(kWarpCount == 8, "This WMMA body expects 8 warps per block.");
 
+    // 8-warp CTA for 128x128 output tiles.  WmmaTileM x WmmaTileN is the warp
+    // grid inside the CTA; WarpTileM x WarpTileN is the number of WMMA fragments
+    // computed by each warp.
+    //
+    // For hgemm_wmma_m16n16k16_mma4x2_warp2x4:
+    //   WmmaM/N/K = 16/16/16, WmmaTileM/N = 4/2, WarpTileM/N = 2/4.
+    //   each warp computes 2x4 fragments = a 32x64 C region.
+    //
+    // For hgemm_wmma_m32n8k16_mma2x4_warp2x4:
+    //   WmmaM/N/K = 32/8/16, WmmaTileM/N = 2/4, WarpTileM/N = 2/4.
+    //   each warp computes 2x4 fragments = a 64x32 C region.
+    //
+    // Per K slice for both:
+    //   A shared tile = 128x16 half = 2048 half; each thread loads 8 half.
+    //   B shared tile = 16x128 half = 2048 half; each thread loads 8 half.
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
     if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kWmmaK) != 0) {
@@ -1486,6 +1770,8 @@ __device__ void hgemm_wmma_warp2x4_body(
     const int warp_m = warp_id / WmmaTileN;
     const int warp_n = warp_id % WmmaTileN;
 
+    // A: two half8 vectors cover each M row of the 16-wide K slice.
+    // B: sixteen half8 vectors cover each K row of the 128-wide N tile.
     const int load_a_smem_m = tid / 2;
     const int load_a_smem_k = (tid % 2) * 8;
     const int load_b_smem_k = tid / 16;
@@ -1524,12 +1810,14 @@ __device__ void hgemm_wmma_warp2x4_body(
 
 #pragma unroll
         for(int i = 0; i < WarpTileM; ++i) {
+            // A fragments step along M inside this warp's row region.
             const int shared_m = warp_m * (WmmaM * WarpTileM) + i * WmmaM;
             wmma::load_matrix_sync(a_fragments[i], &shared_a[shared_m][0], kWmmaK);
         }
 
 #pragma unroll
         for(int j = 0; j < WarpTileN; ++j) {
+            // B fragments step along N inside this warp's column region.
             const int shared_n = warp_n * (WmmaN * WarpTileN) + j * WmmaN;
             wmma::load_matrix_sync(b_fragments[j], &shared_b[0][shared_n], kBlockN);
         }
@@ -1588,6 +1876,11 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
     static_assert(kWarpCount == 8, "This WMMA body expects 8 warps per block.");
     static_assert(Offset % 8 == 0, "WMMA shared-memory padding must preserve 16-byte alignment.");
 
+    // Double-buffered cp.async WMMA body.  It uses the same warp/output mapping
+    // as hgemm_wmma_warp2x4_body, but shared_a/shared_b contain two K buffers.
+    // Each thread asynchronously copies one half8 from A and one half8 from B
+    // for the next K tile.  Padding keeps rows 16-byte aligned after adding
+    // Offset to the shared-memory leading dimension.
     const int block_row = static_cast<int>(blockIdx.y) * kBlockM;
     const int block_col = static_cast<int>(blockIdx.x) * kBlockN;
     if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kWmmaK) != 0) {
@@ -1621,6 +1914,8 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
         }
     }
 
+    // Prime buffer 0.  k_tiles is exact because the fallback above rejects
+    // non-multiple-K cases.
     hgemm_wmma_load_half8_async(
         a + (block_row + load_a_smem_m) * k + load_a_smem_k,
         &shared_a[0][load_a_smem_m][load_a_smem_k]
@@ -1638,6 +1933,7 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
         const int next_buffer = tile & 1;
         const int k_base = tile * kWmmaK;
 
+        // Start the next global->shared copies before consuming active_buffer.
         hgemm_wmma_load_half8_async(
             a + (block_row + load_a_smem_m) * k + k_base + load_a_smem_k,
             &shared_a[next_buffer][load_a_smem_m][load_a_smem_k]
@@ -1676,6 +1972,7 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
     }
 
     const int final_buffer = (k_tiles - 1) & 1;
+    // Drain the final prefetched K tile.
     wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> a_fragments[WarpTileM];
     wmma::fragment<wmma::matrix_b, WmmaM, WmmaN, kWmmaK, half, wmma::row_major> b_fragments[WarpTileN];
 
@@ -1739,6 +2036,22 @@ __device__ __forceinline__ void hgemm_wmma_stage_load_async(
     constexpr int kAStageOffset = BlockM * (BlockK + APad);
     constexpr int kBStageOffset = BlockK * (BlockN + BPad);
 
+    // Load one pipeline stage with cp.async half8 chunks.
+    //
+    // A stage layout: shared_a[stage][BlockM][BlockK + APad].
+    // B stage layout: shared_b[stage][BlockK][BlockN + BPad].
+    // One chunk is 8 half values = 16 bytes = one cp.async instruction.
+    // Threads iterate chunk += thread_count, so per-thread load count is:
+    //   ceil(kAChunks / thread_count) A chunks and
+    //   ceil(kBChunks / thread_count) B chunks.
+    //
+    // Examples:
+    //   128x128x16 with 256 threads: A=256 chunks, B=256 chunks,
+    //   so each thread copies one half8 from A and one half8 from B.
+    //   256x128x16 with 256 threads: A=512 chunks, B=256 chunks,
+    //   so each thread copies two A half8 chunks and one B half8 chunk.
+    //   256x256x16 with 512 threads: A=512 chunks, B=512 chunks,
+    //   so each thread copies one half8 from each matrix.
     for(int chunk = tid; chunk < kAChunks; chunk += thread_count) {
         const int row = chunk / (BlockK / 8);
         const int col = (chunk % (BlockK / 8)) * 8;
@@ -1778,6 +2091,13 @@ __device__ __forceinline__ void hgemm_wmma_stage_compute(
 ) {
     using namespace nvcuda;
 
+    // Compute one staged shared-memory tile.  For each WarpTileK slice, a warp
+    // loads WarpTileM A fragments and WarpTileN B fragments from shared memory,
+    // then performs the full WarpTileM x WarpTileN set of mma_sync operations.
+    //
+    // warp_m/warp_n identify the warp's logical region in the CTA tile:
+    //   rows start at warp_m * (WmmaM * WarpTileM)
+    //   cols start at warp_n * (WmmaN * WarpTileN)
 #pragma unroll
     for(int warp_k = 0; warp_k < WarpTileK; ++warp_k) {
         wmma::fragment<wmma::matrix_a, WmmaM, WmmaN, WmmaK, half, wmma::row_major> a_fragments[WarpTileM];
@@ -1847,6 +2167,25 @@ __device__ void hgemm_wmma_staged_pipeline_body(
         "WMMA staged A shared storage must be large enough to reuse for accumulator stores."
     );
 
+    // Multistage WMMA pipeline.
+    //
+    // CTA/output tile:
+    //   BlockM = WmmaM * WmmaTileM * WarpTileM.
+    //   BlockN = WmmaN * WmmaTileN * WarpTileN.
+    //   BlockK = WmmaK * WarpTileK.
+    //   kWarpCount = WmmaTileM * WmmaTileN, threads = kWarpCount * 32.
+    //
+    // Grid coordinate:
+    //   without swizzle: blockIdx.x is the N tile, blockIdx.y is the M tile.
+    //   with swizzle: blockIdx.z and blockIdx.x are folded into bx as
+    //       bx = blockIdx.z * gridDim.x + blockIdx.x.
+    //   This changes CTA ordering along N while preserving the same C tile.
+    //
+    // Pipeline:
+    //   prime KStage-1 stages with cp.async,
+    //   in the steady state launch the next stage copy and compute one older
+    //   stage, then wait only far enough to keep KStage-1 groups in flight,
+    //   finally drain the remaining prefetched stages.
     const int bx = BlockSwizzle ? static_cast<int>(blockIdx.z) * static_cast<int>(gridDim.x) +
                                       static_cast<int>(blockIdx.x)
                                 : static_cast<int>(blockIdx.x);
@@ -1878,6 +2217,8 @@ __device__ void hgemm_wmma_staged_pipeline_body(
 
 #pragma unroll
     for(int stage = 0; stage < KStage - 1; ++stage) {
+        // Stage 0..KStage-2 are prefetched before the first compute.  The first
+        // compute will consume stage 0 while the loop fetches stage KStage-1.
         hgemm_wmma_stage_load_async<kBlockM, kBlockN, kBlockK, APad, BPad>(
             a,
             b,
@@ -1901,6 +2242,8 @@ __device__ void hgemm_wmma_staged_pipeline_body(
     for(int tile = KStage - 1; tile < k_tiles; ++tile) {
         const int active_stage = (tile + 1) % KStage;
         const int next_stage = tile % KStage;
+        // active_stage is the oldest completed stage; next_stage is the slot
+        // being recycled for this tile's global->shared copy.
         hgemm_wmma_stage_load_async<kBlockM, kBlockN, kBlockK, APad, BPad>(
             a,
             b,
@@ -1948,6 +2291,8 @@ __device__ void hgemm_wmma_staged_pipeline_body(
 
     __syncthreads();
     float* shared_c = reinterpret_cast<float*>(shared_a);
+    // Reuse shared_a as a temporary row-major float buffer for WMMA fragment
+    // stores.  The static_assert above guarantees the storage is large enough.
 #pragma unroll
     for(int i = 0; i < WarpTileM; ++i) {
 #pragma unroll
@@ -1976,6 +2321,7 @@ __global__ void hgemm_wmma_m16n16k16_naive_kernel(
     int n,
     int k
 ) {
+    // Thin kernel wrapper: one warp/block computes one 16x16 WMMA C tile.
     hgemm_wmma_m16n16k16_naive_body(a, b, c, m, n, k);
 }
 
@@ -1987,6 +2333,8 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_kernel(
     int n,
     int k
 ) {
+    // Thin kernel wrapper: 8 warps/block compute a 64x32 tile, one WMMA tile
+    // per warp.
     hgemm_wmma_m16n16k16_mma4x2_body(a, b, c, m, n, k);
 }
 
@@ -1998,6 +2346,8 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel(
     int n,
     int k
 ) {
+    // Thin kernel wrapper: 8 warps/block compute a 128x128 tile; each warp
+    // owns a 2x4 group of 16x16 WMMA fragments.
     hgemm_wmma_warp2x4_body<16, 16, 4, 2, 2, 4>(a, b, c, m, n, k);
 }
 
@@ -2009,6 +2359,8 @@ __global__ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel(
     int n,
     int k
 ) {
+    // Same 128x128 WMMA mapping as the non-dbuf body, but with cp.async
+    // double buffering.
     hgemm_wmma_warp2x4_dbuf_async_body<16, 16, 4, 2, 2, 4, 8>(a, b, c, m, n, k);
 }
 
@@ -2020,6 +2372,8 @@ __global__ void hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel(
     int n,
     int k
 ) {
+    // 128x128 WMMA mapping using m32n8k16 fragments.  Each warp computes a
+    // 2x4 group of 32x8 fragments, with the same cp.async double buffering.
     hgemm_wmma_warp2x4_dbuf_async_body<32, 8, 2, 4, 2, 4, 8>(a, b, c, m, n, k);
 }
 
@@ -2047,6 +2401,9 @@ __global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp2x4_stage
     constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
     constexpr int kBlockN = WmmaN * WmmaTileN * WarpTileN;
     constexpr int kBlockK = WmmaK * kWarpTileK;
+    // Static shared-memory staged kernel.  This wrapper materializes the shared
+    // arrays at compile time; the body owns all coordinate math and pipeline
+    // scheduling.  The launch wrapper instantiates it as 128x128x16, 8 warps.
     __shared__ half shared_a[KStage * kBlockM * (kBlockK + APad)];
     __shared__ half shared_b[KStage * kBlockK * (kBlockN + BPad)];
     hgemm_wmma_staged_pipeline_body<
@@ -2087,6 +2444,8 @@ __global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp2x4_stage
     constexpr int kWarpTileK = 1;
     constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
     constexpr int kBlockK = WmmaK * kWarpTileK;
+    // Dynamic shared-memory version of the 128x128x16 staged kernel.  shared_a
+    // occupies the first KStage A stages; shared_b follows immediately after.
     extern __shared__ half shared[];
     half* shared_a = shared;
     half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
@@ -2128,6 +2487,8 @@ __global__ void __launch_bounds__(256) hgemm_wmma_m16n16k16_mma4x2_warp4x4_stage
 ) {
     constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
     constexpr int kBlockK = WmmaK * WarpTileK;
+    // Dynamic shared-memory staged kernel used by the 256x128 variant.  It
+    // keeps 8 warps but gives each warp a larger 4x4 WMMA-fragment output tile.
     extern __shared__ half shared[];
     half* shared_a = shared;
     half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
@@ -2169,6 +2530,9 @@ __global__ void __launch_bounds__(512) hgemm_wmma_m16n16k16_mma4x4_warp4x4_stage
     constexpr int kWarpTileK = 1;
     constexpr int kBlockM = WmmaM * WmmaTileM * WarpTileM;
     constexpr int kBlockK = WmmaK * kWarpTileK;
+    // Dynamic shared-memory staged kernel used by the 256x256 variant.  The
+    // launch uses 16 warps (512 threads), so each thread copies one A half8 and
+    // one B half8 per 16-wide K stage.
     extern __shared__ half shared[];
     half* shared_a = shared;
     half* shared_b = shared_a + KStage * kBlockM * (kBlockK + APad);
@@ -2187,263 +2551,9 @@ __global__ void __launch_bounds__(512) hgemm_wmma_m16n16k16_mma4x4_warp4x4_stage
         BlockSwizzle>(a, b, c, m, n, k, shared_a, shared_b);
 }
 
-__device__ __forceinline__ void hgemm_ldmatrix_x4(
-    std::uint32_t& r0,
-    std::uint32_t& r1,
-    std::uint32_t& r2,
-    std::uint32_t& r3,
-    std::uint32_t shared_addr
-) {
-    asm volatile(
-        "ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0, %1, %2, %3}, [%4];\n"
-        : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-        : "r"(shared_addr)
-    );
-}
-
-__device__ __forceinline__ void hgemm_ldmatrix_x2_trans(
-    std::uint32_t& r0,
-    std::uint32_t& r1,
-    std::uint32_t shared_addr
-) {
-    asm volatile(
-        "ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0, %1}, [%2];\n"
-        : "=r"(r0), "=r"(r1)
-        : "r"(shared_addr)
-    );
-}
-
-__device__ __forceinline__ void hgemm_mma_m16n8k16_f16(
-    std::uint32_t& d0,
-    std::uint32_t& d1,
-    std::uint32_t a0,
-    std::uint32_t a1,
-    std::uint32_t a2,
-    std::uint32_t a3,
-    std::uint32_t b0,
-    std::uint32_t b1
-) {
-    asm volatile(
-        "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-        "{%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%0, %1};\n"
-        : "+r"(d0), "+r"(d1)
-        : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1)
-    );
-}
-
-__device__ __forceinline__ half hgemm_low_half(std::uint32_t packed) {
-    return __ushort_as_half(static_cast<unsigned short>(packed & 0xffffu));
-}
-
-__device__ __forceinline__ half hgemm_high_half(std::uint32_t packed) {
-    return __ushort_as_half(static_cast<unsigned short>((packed >> 16u) & 0xffffu));
-}
-
-__device__ void hgemm_mma_m16n8k16_ptx_body(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    constexpr int kMmaM = 16;
-    constexpr int kMmaN = 8;
-    constexpr int kMmaK = 16;
-    const int tile_row = static_cast<int>(blockIdx.y) * kMmaM;
-    const int tile_col = static_cast<int>(blockIdx.x) * kMmaN;
-    const int lane = threadIdx.x;
-
-    if(tile_row + kMmaM > m || tile_col + kMmaN > n || (k % kMmaK) != 0) {
-        for(int index = lane; index < kMmaM * kMmaN; index += kWarpSize) {
-            const int row = tile_row + index / kMmaN;
-            const int col = tile_col + index % kMmaN;
-            if(row < m && col < n) {
-                float accumulator = 0.0f;
-                for(int inner = 0; inner < k; ++inner) {
-                    accumulator += hgemm_load_as_float(a, row, inner, m, k) *
-                        hgemm_load_as_float(b, inner, col, k, n);
-                }
-                c[row * n + col] = __float2half_rn(accumulator);
-            }
-        }
-        return;
-    }
-
-    __shared__ half shared_a[kMmaM][kMmaK];
-    __shared__ half shared_b[kMmaK][kMmaN];
-
-    const int load_a_row = lane / 2;
-    const int load_a_col = (lane % 2) * 8;
-    const int load_b_row = lane;
-
-    std::uint32_t rc0 = 0;
-    std::uint32_t rc1 = 0;
-
-    for(int k_base = 0; k_base < k; k_base += kMmaK) {
-        #pragma unroll
-        for(int item = 0; item < 8; ++item) {
-            shared_a[load_a_row][load_a_col + item] = a[(tile_row + load_a_row) * k + k_base + load_a_col + item];
-        }
-
-        if(load_b_row < kMmaK) {
-            #pragma unroll
-            for(int item = 0; item < kMmaN; ++item) {
-                shared_b[load_b_row][item] = b[(k_base + load_b_row) * n + tile_col + item];
-            }
-        }
-
-        __syncthreads();
-
-        std::uint32_t ra0 = 0;
-        std::uint32_t ra1 = 0;
-        std::uint32_t ra2 = 0;
-        std::uint32_t ra3 = 0;
-        std::uint32_t rb0 = 0;
-        std::uint32_t rb1 = 0;
-
-        const auto a_addr = static_cast<std::uint32_t>(
-            __cvta_generic_to_shared(&shared_a[lane % 16][(lane / 16) * 8])
-        );
-        const auto b_addr = static_cast<std::uint32_t>(__cvta_generic_to_shared(&shared_b[lane % 16][0]));
-        hgemm_ldmatrix_x4(ra0, ra1, ra2, ra3, a_addr);
-        hgemm_ldmatrix_x2_trans(rb0, rb1, b_addr);
-        hgemm_mma_m16n8k16_f16(rc0, rc1, ra0, ra1, ra2, ra3, rb0, rb1);
-
-        __syncthreads();
-    }
-
-    const int store_col = tile_col + (lane % 4) * 2;
-    const int store_row0 = tile_row + lane / 4;
-    const int store_row1 = store_row0 + 8;
-    c[store_row0 * n + store_col] = hgemm_low_half(rc0);
-    c[store_row0 * n + store_col + 1] = hgemm_high_half(rc0);
-    c[store_row1 * n + store_col] = hgemm_low_half(rc1);
-    c[store_row1 * n + store_col + 1] = hgemm_high_half(rc1);
-}
-
-__global__ void hgemm_mma_m16n8k16_naive_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_ptx_body(a, b, c, m, n, k);
-}
-
 bool launch_naive_kernel(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
+    // 16x16 CUDA-thread tile.  grid.x covers N columns, grid.y covers M rows.
+    // The kernel itself maps each thread to one C element.
     const dim3 block(16, 16);
     const dim3 grid(
         static_cast<unsigned int>((n + block.x - 1) / block.x),
@@ -2455,6 +2565,8 @@ bool launch_naive_kernel(const half* a, const half* b, half* c, int m, int n, in
 
 bool launch_sliced_kernel(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
     enum : int { kBlockM = 32, kBlockN = 32, kBlockK = 32 };
+    // 32x32 output tile with one CUDA thread per C element and a 32-wide K
+    // shared-memory slice.
     const dim3 block(kBlockN, kBlockM);
     const dim3 grid(
         static_cast<unsigned int>((n + kBlockN - 1) / kBlockN),
@@ -2476,6 +2588,10 @@ bool launch_cublas_tensor_op_row_major(
 ) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    // Matrices in this lab are row-major.  cuBLAS is column-major, so the call
+    // computes C^T = B^T * A^T by passing dimensions as (n, m, k) and operands
+    // in B, A order with C leading dimension n.  Both NN/TN benchmark entries
+    // currently share this row-major tensor-op implementation.
     return check_cublas_status(
         cublasGemmEx(
             handle,
@@ -2783,7 +2899,7 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::WmmaM16n16k16Mma4x2Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel", "256x128x16", "4x4wmma/warp", true},
         {HgemmKernel::WmmaM16n16k16Mma4x4Warp4x4StagesDsmem, "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem", "hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel", "256x256x16", "4x4wmma/warp", true},
         {HgemmKernel::MmaM16n8k16Naive, "hgemm_mma_m16n8k16_naive", "hgemm_mma_m16n8k16_naive_kernel", "16x8x16", "warp", false},
-        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4, "hgemm_mma_m16n8k16_mma2x4_warp4x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel", "16x8x16", "warp", false},
+        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4, "hgemm_mma_m16n8k16_mma2x4_warp4x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel", "128x128x16", "4x4mma/warp", false},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4Stages, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmem, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmem, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel", "16x8x16", "warp", true},
@@ -2828,6 +2944,7 @@ bool hgemm_t_8x8_sliced_k_f16x4(const half* a, const half* b, half* c, int m, in
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // 16x16 threads * 8x8 outputs/thread -> one 128x128 output tile per CTA.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2839,6 +2956,7 @@ bool hgemm_t_8x8_sliced_k_f16x4_pack(const half* a, const half* b, half* c, int 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same launch shape as f16x4; only the body's vectorized load/store width changes.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x4_pack_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2850,6 +2968,7 @@ bool hgemm_t_8x8_sliced_k_f16x4_bcf(const half* a, const half* b, half* c, int m
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same 128x128 CTA tile; the kernel body changes shared-memory layout to BCF.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x4_bcf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2861,6 +2980,7 @@ bool hgemm_t_8x8_sliced_k_f16x4_pack_bcf(const half* a, const half* b, half* c, 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same 128x128 CTA tile; BCF shared layout plus packed load/store variant.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x4_pack_bcf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2872,6 +2992,7 @@ bool hgemm_t_8x8_sliced_k_f16x8_pack_bcf(const half* a, const half* b, half* c, 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same 128x128 CTA tile; body reads/writes 8-half chunks where possible.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x8_pack_bcf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2883,6 +3004,7 @@ bool hgemm_t_8x8_sliced_k_f16x8_pack_bcf_dbuf(const half* a, const half* b, half
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same 128x128 CTA tile with two shared-memory K-slice buffers.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k_f16x8_pack_bcf_dbuf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2894,6 +3016,7 @@ bool hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf(const half* a, const half* b, half* 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // 16x16 threads, 8x8 outputs/thread, BlockK=16 in the templated body.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2905,6 +3028,7 @@ bool hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async(const half* a, const half* b, 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same as k16 dbuf, but B's next K tile is copied with cp.async.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k16_f16x8_pack_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2916,6 +3040,7 @@ bool hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf(const half* a, const half* b, half* 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // 16x16 threads, 8x8 outputs/thread, BlockK=32 in the templated body.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2927,6 +3052,7 @@ bool hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async(const half* a, const half* b, 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same as k32 dbuf, but B's next K tile is copied with cp.async.
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_8x8_sliced_k32_f16x8_pack_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2938,6 +3064,7 @@ bool hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf(const half* a, const half* b, half*
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // 16x8 threads * 16x8 outputs/thread -> one 128x128 output tile per CTA.
     const dim3 block(16, 8);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2949,6 +3076,7 @@ bool hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async(const half* a, const half* b,
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Same 16x8 thread tile as above, with cp.async for B's next K tile.
     const dim3 block(16, 8);
     const dim3 grid(static_cast<unsigned int>((n + 127) / 128), static_cast<unsigned int>((m + 127) / 128));
     hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2957,11 +3085,14 @@ bool hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async(const half* a, const half* b,
 
 bool hgemm_cublas_tensor_op_nn(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
     const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_cublas_tensor_op_nn_launch");
+    // cuBLAS path uses tensor cores through CUBLAS_GEMM_DEFAULT_TENSOR_OP and
+    // the row-major operand swap described in launch_cublas_tensor_op_row_major.
     return validate_device_problem(a, b, c, m, n, k, error) && launch_cublas_with_temporary_handle(a, b, c, m, n, k, error);
 }
 
 bool hgemm_cublas_tensor_op_tn(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
     const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_cublas_tensor_op_tn_launch");
+    // Benchmark alias for the same row-major cuBLAS tensor-op implementation.
     return validate_device_problem(a, b, c, m, n, k, error) && launch_cublas_with_temporary_handle(a, b, c, m, n, k, error);
 }
 
@@ -2970,6 +3101,7 @@ bool hgemm_wmma_m16n16k16_naive(const half* a, const half* b, half* c, int m, in
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // One warp/block.  grid.x counts 16-column tiles, grid.y counts 16-row tiles.
     const dim3 block(kWarpSize);
     const dim3 grid(static_cast<unsigned int>((n + kWmmaTileN - 1) / kWmmaTileN), static_cast<unsigned int>((m + kWmmaTileM - 1) / kWmmaTileM));
     hgemm_wmma_m16n16k16_naive_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2982,6 +3114,7 @@ bool hgemm_wmma_m16n16k16_mma4x2(const half* a, const half* b, half* c, int m, i
         return false;
     }
     enum : int { kBlockM = 64, kBlockN = 32, kThreads = 8 * kWarpSize };
+    // 8 warps/block, one 64x32 output tile.  Each warp owns one 16x16 WMMA tile.
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -2994,6 +3127,7 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4(const half* a, const half* b, half* c, 
         return false;
     }
     enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    // 8 warps/block, one 128x128 output tile.  Each warp owns a 2x4 WMMA group.
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -3006,6 +3140,7 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async(const half* a, const half* b
         return false;
     }
     enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    // Same grid/block as warp2x4; body adds double-buffered cp.async loading.
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -3018,6 +3153,7 @@ bool hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async(const half* a, const half* b,
         return false;
     }
     enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    // Same 128x128 grid/block as above, but with m32n8k16 WMMA fragments.
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_wmma_m32n8k16_mma2x4_warp2x4_dbuf_async_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -3029,6 +3165,7 @@ bool hgemm_mma_m16n8k16_naive(const half* a, const half* b, half* c, int m, int 
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // One warp per CTA, one 16x8 m16n8k16 MMA output tile per CTA.
     const dim3 block(kWarpSize);
     const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
     hgemm_mma_m16n8k16_naive_kernel<<<grid, block>>>(a, b, c, m, n, k);
@@ -3040,8 +3177,11 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4(const half* a, const half* b, half* c, in
     if(!validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
+    enum : int { kBlockM = 128, kBlockN = 128, kThreads = 8 * kWarpSize };
+    // Eight warps per CTA, one 128x128 output tile per CTA.  Each warp computes
+    // a 4x4 group of m16n8k16 fragments, i.e. a 64x32 C sub-tile.
+    const dim3 block(kThreads);
+    const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
@@ -3050,9 +3190,13 @@ dim3 hgemm_wmma_stage_grid(int m, int n, int block_m, int block_n, bool swizzle,
     const auto grid_y = static_cast<unsigned int>((m + block_m - 1) / block_m);
     const auto n_tiles = static_cast<unsigned int>((n + block_n - 1) / block_n);
     if(!swizzle) {
+        // Ordinary 2-D launch: x enumerates C tile columns, y enumerates rows.
         return dim3(n_tiles, grid_y);
     }
 
+    // Swizzled launch: split the N-tile traversal across grid.z, then fold
+    // (blockIdx.z, blockIdx.x) back into bx inside the kernel.  swizzle_stride
+    // is expressed in columns, so n_swizzle is the number of N-column groups.
     const auto n_swizzle = static_cast<unsigned int>((n + swizzle_stride - 1) / swizzle_stride);
     return dim3((n_tiles + n_swizzle - 1) / n_swizzle, grid_y, n_swizzle);
 }
@@ -3082,6 +3226,12 @@ bool hgemm_launch_wmma_mma4x2_warp2x4_stages_static(
         kBlockN = kWmmaN * kWmmaTileN * kWarpTileN,
         kThreads = kWmmaTileM * kWmmaTileN * kWarpSize
     };
+    // Instantiates the static-smem staged WMMA kernel:
+    //   BlockM = 16*4*2 = 128
+    //   BlockN = 16*2*4 = 128
+    //   BlockK = 16
+    //   threads = 4*2 warps = 256
+    // Per stage, each thread copies one half8 from A and one half8 from B.
     const dim3 block(kThreads);
     const dim3 grid = hgemm_wmma_stage_grid(m, n, kBlockM, kBlockN, Swizzle, swizzle_stride);
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_kernel<
@@ -3127,6 +3277,11 @@ bool hgemm_launch_wmma_mma4x2_warp2x4_stages_dsmem(
         kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
             Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
     };
+    // Dynamic-smem version of the same 128x128x16, 8-warp staged kernel.
+    // Shared bytes are split into:
+    //   Stages * 128 * (16 + APad) half for A
+    //   Stages * 16  * (128 + BPad) half for B
+    // BPad=16 reduces shared bank conflicts and keeps half8 alignment.
     if(!ai_system::cuda_utils::check_status(
            cudaFuncSetAttribute(
                hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem_kernel<
@@ -3196,6 +3351,9 @@ bool hgemm_launch_wmma_mma4x2_warp4x4_stages_dsmem(
         kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
             Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
     };
+    // Dynamic-smem 256x128x16 variant.  It still launches 8 warps (256
+    // threads), but each warp computes a 4x4 group of 16x16 fragments.  Per
+    // stage, each thread copies two A half8 chunks and one B half8 chunk.
     if(!ai_system::cuda_utils::check_status(
            cudaFuncSetAttribute(
                hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem_kernel<
@@ -3266,6 +3424,8 @@ bool hgemm_launch_wmma_mma4x4_warp4x4_stages_dsmem(
         kSharedBytes = Stages * kBlockM * (kBlockK + kAPad) * static_cast<int>(sizeof(half)) +
             Stages * kBlockK * (kBlockN + kBPad) * static_cast<int>(sizeof(half))
     };
+    // Dynamic-smem 256x256x16 variant.  Launches 16 warps (512 threads);
+    // per stage, each thread copies one A half8 chunk and one B half8 chunk.
     if(!ai_system::cuda_utils::check_status(
            cudaFuncSetAttribute(
                hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem_kernel<
@@ -3413,6 +3573,8 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages(const half* a, const half* b, ha
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Select a compile-time KStage/Swizzle instantiation for the static-smem
+    // 128x128x16 staged pipeline.
     if(swizzle) {
         return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_static<true>(
             a, b, c, m, n, k, stages, swizzle_stride, error
@@ -3428,6 +3590,8 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Dynamic-smem 128x128x16 staged pipeline; dispatch chooses KStage and
+    // whether the grid folds blockIdx.z into the N tile coordinate.
     if(swizzle) {
         return hgemm_dispatch_wmma_mma4x2_warp2x4_stages_dsmem<true>(
             a, b, c, m, n, k, stages, swizzle_stride, error
@@ -3443,6 +3607,8 @@ bool hgemm_wmma_m16n16k16_mma4x2_warp4x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Dynamic-smem 256x128x16 staged pipeline.  The launch still uses 8 warps,
+    // but each warp computes a 4x4 WMMA-fragment group.
     if(swizzle) {
         return hgemm_dispatch_wmma_mma4x2_warp4x4_stages_dsmem<true>(
             a, b, c, m, n, k, stages, swizzle_stride, error
@@ -3458,6 +3624,8 @@ bool hgemm_wmma_m16n16k16_mma4x4_warp4x4_stages_dsmem(const half* a, const half*
     if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
         return false;
     }
+    // Dynamic-smem 256x256x16 staged pipeline.  This one launches 16 warps
+    // because WmmaTileM x WmmaTileN = 4x4.
     if(swizzle) {
         return hgemm_dispatch_wmma_mma4x4_warp4x4_stages_dsmem<true>(
             a, b, c, m, n, k, stages, swizzle_stride, error
