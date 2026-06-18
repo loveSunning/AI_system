@@ -2,7 +2,7 @@ add_library(ai_system_hgemm_lab)
 target_sources(ai_system_hgemm_lab PRIVATE hgemm_lab.cpp)
 
 if(AI_SYSTEM_ENABLE_CUDA)
-    target_sources(ai_system_hgemm_lab PRIVATE hgemm_lab.cu hgemm_mma_basic.cu)
+    target_sources(ai_system_hgemm_lab PRIVATE hgemm_lab.cu hgemm_mma_basic.cu hgemm_wmma_basic.cu)
     ai_system_configure_cuda_target(ai_system_hgemm_lab)
 endif()
 

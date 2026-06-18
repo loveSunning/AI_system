@@ -156,6 +156,20 @@ __device__ __forceinline__ void hgemm_store_mma_m16n8k16_f16x2(
     }
 }
 
+__device__ __forceinline__ void hgemm_copy_half8_aligned(const half* source, half* destination) {
+    *reinterpret_cast<float4*>(destination) = *reinterpret_cast<const float4*>(source);
+}
+
+__device__ __forceinline__ void hgemm_store_mma_m16n8k16_f16x2_aligned(
+    half* values,
+    int row,
+    int col,
+    int cols,
+    std::uint32_t packed
+) {
+    *reinterpret_cast<std::uint32_t*>(values + row * cols + col) = packed;
+}
+
 template <int BlockM, int BlockN>
 __device__ void hgemm_scalar_tile_body(
     const half* __restrict__ a,
@@ -293,6 +307,8 @@ __device__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_body(
     constexpr int kMmaTileN = 4;
     constexpr int kWarpTileM = 4;
     constexpr int kWarpTileN = 4;
+    constexpr int kAPad = 8;
+    constexpr int kBPad = 8;
     constexpr int kBlockM = kMmaM * kMmaTileM * kWarpTileM;
     constexpr int kBlockN = kMmaN * kMmaTileN * kWarpTileN;
 
@@ -307,7 +323,7 @@ __device__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_body(
     // Uniform fallback for boundary CTAs or non-16 K.  The important bit is
     // that this branch is CTA-wide, so no subset of threads can skip a later
     // barrier while other threads enter the ldmatrix/MMA loop.
-    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kMmaK) != 0) {
+    if(block_row + kBlockM > m || block_col + kBlockN > n || (k % kMmaK) != 0 || (n % 8) != 0) {
         hgemm_scalar_tile_body<kBlockM, kBlockN>(a, b, c, m, n, k);
         return;
     }
@@ -319,12 +335,15 @@ __device__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_body(
     //   Each warp computes a 64x32 subtile = 4x4 m16n8k16 fragments.
     //
     // Per K step:
-    //   A shared tile = 128x16 half values.  Each thread loads one half8;
+    //   A shared tile = 128x(16+8) half values.  Each thread loads one half8;
     //     tid/2 selects the A row, tid%2 selects K columns 0 or 8.
-    //   B shared tile = 16x128 half values.  Each thread loads one half8;
+    //   B shared tile = 16x(128+8) half values.  Each thread loads one half8;
     //     tid/16 selects the K row, tid%16 selects the N half8 group.
-    __shared__ half shared_a[kBlockM][kMmaK];
-    __shared__ half shared_b[kMmaK][kBlockN];
+    // The +8 padding matches the reference implementation and keeps both
+    // ldmatrix source rows and global half8 copies 16-byte aligned while
+    // reducing shared-memory bank conflicts.
+    __shared__ half shared_a[kBlockM][kMmaK + kAPad];
+    __shared__ half shared_b[kMmaK][kBlockN + kBPad];
 
     const int load_a_row = tid / 2;
     const int load_a_col = (tid & 1) * 8;
@@ -342,20 +361,12 @@ __device__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_body(
     }
 
     for(int k_base = 0; k_base < k; k_base += kMmaK) {
-        hgemm_load_contiguous_half<8, 128>(
-            a,
-            block_row + load_a_row,
-            k_base + load_a_col,
-            m,
-            k,
+        hgemm_copy_half8_aligned(
+            a + (block_row + load_a_row) * k + k_base + load_a_col,
             &shared_a[load_a_row][load_a_col]
         );
-        hgemm_load_contiguous_half<8, 128>(
-            b,
-            k_base + load_b_row,
-            block_col + load_b_col,
-            k,
-            n,
+        hgemm_copy_half8_aligned(
+            b + (k_base + load_b_row) * n + block_col + load_b_col,
             &shared_b[load_b_row][load_b_col]
         );
 
@@ -414,8 +425,8 @@ __device__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_body(
             const int store_row0 = fragment_row + lane / 4;
             const int store_row1 = store_row0 + 8;
             const int store_col = fragment_col + (lane % 4) * 2;
-            hgemm_store_mma_m16n8k16_f16x2(c, store_row0, store_col, m, n, rc[mma_m][mma_n][0]);
-            hgemm_store_mma_m16n8k16_f16x2(c, store_row1, store_col, m, n, rc[mma_m][mma_n][1]);
+            hgemm_store_mma_m16n8k16_f16x2_aligned(c, store_row0, store_col, n, rc[mma_m][mma_n][0]);
+            hgemm_store_mma_m16n8k16_f16x2_aligned(c, store_row1, store_col, n, rc[mma_m][mma_n][1]);
         }
     }
 }
