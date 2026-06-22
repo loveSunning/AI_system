@@ -366,6 +366,19 @@ bool uses_cublas_reference(ai_system::labs::hgemm::HgemmKernel kernel) {
     }
 }
 
+bool uses_cublas_tn_reference(ai_system::labs::hgemm::HgemmKernel kernel) {
+    using ai_system::labs::hgemm::HgemmKernel;
+    switch(kernel) {
+        case HgemmKernel::CublasTensorOpTn:
+        case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn:
+        case HgemmKernel::MmaStagesBlockSwizzleTnCute:
+        case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX4:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -415,17 +428,22 @@ int main(int argc, char** argv) {
 
     ai_system::benchmark::BenchmarkReport report;
     std::vector<float> half_reference_out;
-    std::vector<float> cublas_reference_out;
+    std::vector<float> cublas_nn_reference_out;
+    std::vector<float> cublas_tn_reference_out;
     bool has_half_reference = false;
-    bool has_cublas_reference = false;
+    bool has_cublas_nn_reference = false;
+    bool has_cublas_tn_reference = false;
     int failures = 0;
 
     if(!options.skip_correctness) {
         bool needs_half_reference = false;
-        bool needs_cublas_reference = false;
+        bool needs_cublas_nn_reference = false;
+        bool needs_cublas_tn_reference = false;
         for(const auto* info : selected) {
-            if(uses_cublas_reference(info->kernel)) {
-                needs_cublas_reference = true;
+            if(uses_cublas_tn_reference(info->kernel)) {
+                needs_cublas_tn_reference = true;
+            } else if(uses_cublas_reference(info->kernel)) {
+                needs_cublas_nn_reference = true;
             } else {
                 needs_half_reference = true;
             }
@@ -480,13 +498,22 @@ int main(int argc, char** argv) {
                 has_half_reference
             );
         }
-        if(needs_cublas_reference) {
+        if(needs_cublas_nn_reference) {
             prepare_reference(
                 ai_system::labs::hgemm::HgemmKernel::CublasTensorOpNn,
                 "hgemm_cublas_tensor_op_nn",
                 "cuBLAS Tensor Core HGEMM reference generated.",
-                cublas_reference_out,
-                has_cublas_reference
+                cublas_nn_reference_out,
+                has_cublas_nn_reference
+            );
+        }
+        if(needs_cublas_tn_reference) {
+            prepare_reference(
+                ai_system::labs::hgemm::HgemmKernel::CublasTensorOpTn,
+                "hgemm_cublas_tensor_op_tn",
+                "cuBLAS Tensor Core HGEMM TN reference generated.",
+                cublas_tn_reference_out,
+                has_cublas_tn_reference
             );
         }
     }
@@ -507,10 +534,14 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        const bool use_cublas_tn_reference = uses_cublas_tn_reference(info->kernel);
         const bool use_cublas_reference = uses_cublas_reference(info->kernel);
-        const bool has_reference = use_cublas_reference ? has_cublas_reference : has_half_reference;
-        const auto& reference_out = use_cublas_reference ? cublas_reference_out : half_reference_out;
-        const char* reference_name = use_cublas_reference ? "hgemm_cublas_tensor_op_nn" : "hgemm_naive_f16";
+        const bool has_reference = use_cublas_tn_reference ? has_cublas_tn_reference :
+            (use_cublas_reference ? has_cublas_nn_reference : has_half_reference);
+        const auto& reference_out = use_cublas_tn_reference ? cublas_tn_reference_out :
+            (use_cublas_reference ? cublas_nn_reference_out : half_reference_out);
+        const char* reference_name = use_cublas_tn_reference ? "hgemm_cublas_tensor_op_tn" :
+            (use_cublas_reference ? "hgemm_cublas_tensor_op_nn" : "hgemm_naive_f16");
 
         if(has_reference) {
             std::vector<float> gpu_out;

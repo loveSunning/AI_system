@@ -79,15 +79,6 @@ __global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel(
     int k
 );
 
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-);
-
 __global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
     const half* __restrict__ a,
     const half* __restrict__ b,
@@ -1508,8 +1499,7 @@ bool launch_cublas_tensor_op_row_major(
     const float beta = 0.0f;
     // Matrices in this lab are row-major.  cuBLAS is column-major, so the call
     // computes C^T = B^T * A^T by passing dimensions as (n, m, k) and operands
-    // in B, A order with C leading dimension n.  Both NN/TN benchmark entries
-    // currently share this row-major tensor-op implementation.
+    // in B, A order with C leading dimension n.
     return check_cublas_status(
         cublasGemmEx(
             handle,
@@ -1537,6 +1527,48 @@ bool launch_cublas_tensor_op_row_major(
     );
 }
 
+bool launch_cublas_tensor_op_row_major_tn(
+    cublasHandle_t handle,
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    std::string& error
+) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    // TN kernels in the reference HGEMM code receive B physically as [N][K].
+    // In column-major cuBLAS that buffer is a KxN matrix; op(T) turns it into
+    // the logical NxK operand, so C^T = B_T * A^T.
+    return check_cublas_status(
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            n,
+            m,
+            k,
+            &alpha,
+            b,
+            CUDA_R_16F,
+            k,
+            a,
+            CUDA_R_16F,
+            k,
+            &beta,
+            c,
+            CUDA_R_16F,
+            n,
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT_TENSOR_OP
+        ),
+        "cublasGemmEx(hgemm tensor op row-major TN)",
+        error
+    );
+}
+
 bool launch_cublas_with_temporary_handle(
     const half* a,
     const half* b,
@@ -1548,6 +1580,19 @@ bool launch_cublas_with_temporary_handle(
 ) {
     CublasHandle handle;
     return handle.create(error) && launch_cublas_tensor_op_row_major(handle.get(), a, b, c, m, n, k, error);
+}
+
+bool launch_cublas_tn_with_temporary_handle(
+    const half* a,
+    const half* b,
+    half* c,
+    int m,
+    int n,
+    int k,
+    std::string& error
+) {
+    CublasHandle handle;
+    return handle.create(error) && launch_cublas_tensor_op_row_major_tn(handle.get(), a, b, c, m, n, k, error);
 }
 
 bool is_cublas_kernel(HgemmKernel kernel) {
@@ -1596,8 +1641,9 @@ bool launch_hgemm_kernel_with_handle(
         case HgemmKernel::T16x8SlicedK32F16x8PackDbufAsync:
             return hgemm_t_16x8_sliced_k32_f16x8_pack_dbuf_async(a, b, c, m, n, k, error);
         case HgemmKernel::CublasTensorOpNn:
-        case HgemmKernel::CublasTensorOpTn:
             return launch_cublas_tensor_op_row_major(handle, a, b, c, m, n, k, error);
+        case HgemmKernel::CublasTensorOpTn:
+            return launch_cublas_tensor_op_row_major_tn(handle, a, b, c, m, n, k, error);
         case HgemmKernel::WmmaM16n16k16Naive:
             return hgemm_wmma_m16n16k16_naive(a, b, c, m, n, k, error);
         case HgemmKernel::WmmaM16n16k16Mma4x2:
@@ -2010,8 +2056,10 @@ bool hgemm_cublas_tensor_op_nn(const half* a, const half* b, half* c, int m, int
 
 bool hgemm_cublas_tensor_op_tn(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
     const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_cublas_tensor_op_tn_launch");
-    // Benchmark alias for the same row-major cuBLAS tensor-op implementation.
-    return validate_device_problem(a, b, c, m, n, k, error) && launch_cublas_with_temporary_handle(a, b, c, m, n, k, error);
+    // B is physically [N][K], matching the TN PTX-MMA kernels and the
+    // reference HGEMM utility gemm_error_check_tn.
+    return validate_device_problem(a, b, c, m, n, k, error) &&
+        launch_cublas_tn_with_temporary_handle(a, b, c, m, n, k, error);
 }
 
 bool hgemm_mma_m16n8k16_naive(const half* a, const half* b, half* c, int m, int n, int k, std::string& error) {
@@ -2037,17 +2085,6 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4(const half* a, const half* b, half* c, in
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
-}
-
-bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
-    const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel_launch");
-    if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
-        return false;
-    }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
-    hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
 
