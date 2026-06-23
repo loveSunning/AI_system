@@ -69,6 +69,22 @@
       }
     },
     {
+      "name": "linux-make-cuda-release-4090d",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AI_SYSTEM_ENABLE_CUDA": "ON",
+        "AI_SYSTEM_GPU_PROFILE": "4090d"
+      }
+    },
+    {
+      "name": "linux-make-cuda-release-4090d-lineinfo",
+      "inherits": "linux-make-cuda-release-4090d",
+      "cacheVariables": {
+        "CMAKE_CUDA_FLAGS": "-lineinfo"
+      }
+    },
+    {
       "name": "linux-make-cpu-debug",
       "inherits": "linux-base",
       "cacheVariables": {
@@ -96,6 +112,14 @@
     {
       "name": "linux-make-cuda-release",
       "configurePreset": "linux-make-cuda-release"
+    },
+    {
+      "name": "linux-make-cuda-release-4090d",
+      "configurePreset": "linux-make-cuda-release-4090d"
+    },
+    {
+      "name": "linux-make-cuda-release-4090d-lineinfo",
+      "configurePreset": "linux-make-cuda-release-4090d-lineinfo"
     },
     {
       "name": "linux-make-cpu-debug",
@@ -130,6 +154,20 @@
     {
       "name": "linux-make-cuda-release",
       "configurePreset": "linux-make-cuda-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-make-cuda-release-4090d",
+      "configurePreset": "linux-make-cuda-release-4090d",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-make-cuda-release-4090d-lineinfo",
+      "configurePreset": "linux-make-cuda-release-4090d-lineinfo",
       "output": {
         "outputOnFailure": true
       }

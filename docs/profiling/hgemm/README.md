@@ -3,6 +3,9 @@
 This note stores runnable benchmark and Nsight Compute commands for `labs/hgemm`.
 The lab follows the launcher list from [xlite-dev/HGEMM](https://github.com/xlite-dev/HGEMM), but uses raw `half*` device inputs plus explicit `M/N/K` sizes instead of `torch::Tensor`.
 
+This file is the Windows/Visual Studio version. For Ubuntu 22.04 + RTX 4090 D
+(`sm_89`), use [ubuntu-22.04-rtx4090d.md](./ubuntu-22.04-rtx4090d.md).
+
 Run commands from the repository root:
 
 ```powershell

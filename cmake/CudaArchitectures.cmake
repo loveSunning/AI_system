@@ -62,9 +62,12 @@ function(ai_system_resolve_cuda_architectures out_arches out_labels)
             set(resolved_architectures "89;120")
             set(resolved_labels "Fallback: RTX 4090 + RTX 5060")
         endif()
-    elseif(normalized_profile STREQUAL "4090" OR normalized_profile STREQUAL "rtx4090")
+    elseif(normalized_profile STREQUAL "4090" OR
+           normalized_profile STREQUAL "rtx4090" OR
+           normalized_profile STREQUAL "4090d" OR
+           normalized_profile STREQUAL "rtx4090d")
         set(resolved_architectures "89")
-        set(resolved_labels "RTX 4090 (Ada Lovelace)")
+        set(resolved_labels "RTX 4090 / RTX 4090 D (Ada Lovelace)")
     elseif(normalized_profile STREQUAL "5060" OR normalized_profile STREQUAL "rtx5060")
         set(resolved_architectures "120")
         set(resolved_labels "RTX 5060 (Blackwell)")
@@ -78,7 +81,7 @@ function(ai_system_resolve_cuda_architectures out_arches out_labels)
         message(
             FATAL_ERROR
             "Unsupported AI_SYSTEM_GPU_PROFILE='${AI_SYSTEM_GPU_PROFILE}'. "
-            "Use native, 4090, 5060, all, or a semicolon-separated SM list such as 89;120."
+            "Use native, 4090, 4090d, 5060, all, or a semicolon-separated SM list such as 89;120."
         )
     endif()
 

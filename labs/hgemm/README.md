@@ -7,7 +7,15 @@ All commands below are meant to be run from the repository root.
 cd D:\workspace\learing\AI_system
 ```
 
+On Ubuntu 22.04 + RTX 4090 D, use:
+
+```bash
+cd /workspace/AI_system
+```
+
 ## Build
+
+### Windows / RTX 5060
 
 Normal CUDA Release build:
 
@@ -35,10 +43,37 @@ Use this executable for `-lineinfo` profiling:
 $ExeLineInfo = "D:\workspace\learing\AI_system\out\build\windows-vs2022-cuda-release-lineinfo\labs\hgemm\Release\hgemm_benchmark_lab.exe"
 ```
 
+### Ubuntu 22.04 / RTX 4090 D
+
+Normal CUDA Release build fixed to `sm_89`:
+
+```bash
+cmake --preset linux-make-cuda-release-4090d
+cmake --build --preset linux-make-cuda-release-4090d --target hgemm_benchmark_lab -j"$(nproc)"
+```
+
+Build a separate line-info configuration for Nsight Compute source/PTX/SASS correlation:
+
+```bash
+cmake --preset linux-make-cuda-release-4090d-lineinfo
+cmake --build --preset linux-make-cuda-release-4090d-lineinfo --target hgemm_benchmark_lab -j"$(nproc)"
+```
+
+Use these executables on Ubuntu:
+
+```bash
+export Exe=/workspace/AI_system/out/build/linux-make-cuda-release-4090d/labs/hgemm/hgemm_benchmark_lab
+export ExeLineInfo=/workspace/AI_system/out/build/linux-make-cuda-release-4090d-lineinfo/labs/hgemm/hgemm_benchmark_lab
+```
+
 ## List Kernels
 
 ```powershell
 & $Exe --list-kernels
+```
+
+```bash
+"$Exe" --list-kernels
 ```
 
 The output includes launcher names, tile shapes, register shapes, and the Nsight Compute kernel regex.
@@ -51,10 +86,18 @@ Run the default `4096x4096x4096` comparison:
 & $Exe --warmup 2 --iters 5
 ```
 
+```bash
+"$Exe" --warmup 2 --iters 5
+```
+
 Run all kernels on an uneven shape to test boundary handling:
 
 ```powershell
 & $Exe --gemm-m 257 --gemm-n 263 --gemm-k 65 --warmup 1 --iters 1
+```
+
+```bash
+"$Exe" --gemm-m 257 --gemm-n 263 --gemm-k 65 --warmup 1 --iters 1
 ```
 
 Run one launcher:
@@ -80,6 +123,13 @@ Use `--kernel all` to compare every landed HGEMM launcher:
 & $Exe `
   --kernel all `
   --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 `
+  --warmup 2 --iters 5
+```
+
+```bash
+"$Exe" \
+  --kernel all \
+  --gemm-m 4096 --gemm-n 4096 --gemm-k 4096 \
   --warmup 2 --iters 5
 ```
 
@@ -122,4 +172,10 @@ Detailed Nsight Compute, `cuobjdump`, and `nvdisasm` commands live in:
 docs\profiling\hgemm\README.md
 ```
 
-Build with `-lineinfo` before collecting NCU reports if you want the source, PTX, and SASS views to line up with `labs\hgemm\hgemm_lab.cu`.
+On Ubuntu 22.04 + RTX 4090 D, use:
+
+```text
+docs/profiling/hgemm/ubuntu-22.04-rtx4090d.md
+```
+
+Build with `-lineinfo` before collecting NCU reports if you want the source, PTX, and SASS views to line up with the CUDA files under `labs/hgemm`.
