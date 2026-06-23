@@ -83,13 +83,6 @@ __device__ __forceinline__ half zero_half() {
     return __float2half_rn(0.0f);
 }
 
-__device__ __forceinline__ float hgemm_load_as_float(const half* values, int row, int col, int rows, int cols) {
-    if(row < rows && col < cols) {
-        return __half2float(values[row * cols + col]);
-    }
-    return 0.0f;
-}
-
 __device__ __forceinline__ half hgemm_load_or_zero(const half* values, int row, int col, int rows, int cols) {
     if(row < rows && col < cols) {
         return values[row * cols + col];
@@ -211,15 +204,21 @@ __device__ void hgemm_wmma_scalar_fallback_tile_at(
     // Fallback path for boundary tiles and unsupported WMMA alignment cases.
     // Threads flatten the BlockM x BlockN output tile and stride by the CTA's
     // total thread count, so every in-bounds C element is computed exactly once.
+    // Keep boundary tiles in half accumulation to match the WMMA tensor-core
+    // path and the inline-MMA half-accumulate kernels.
     for(int index = tid; index < BlockM * BlockN; index += thread_count) {
         const int row = block_row + index / BlockN;
         const int col = block_col + index % BlockN;
         if(row < m && col < n) {
-            float accumulator = 0.0f;
+            half accumulator = zero_half();
             for(int inner = 0; inner < k; ++inner) {
-                accumulator += hgemm_load_as_float(a, row, inner, m, k) * hgemm_load_as_float(b, inner, col, k, n);
+                accumulator = __hfma(
+                    hgemm_load_or_zero(a, row, inner, m, k),
+                    hgemm_load_or_zero(b, inner, col, k, n),
+                    accumulator
+                );
             }
-            c[row * n + col] = __float2half_rn(accumulator);
+            c[row * n + col] = accumulator;
         }
     }
 }
@@ -246,9 +245,9 @@ __device__ void hgemm_wmma_scalar_fallback_tile(
 }
 
 template <int WmmaM, int WmmaN, int WmmaK>
-__device__ __forceinline__ void hgemm_wmma_store_float_fragment(
-    const nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, float>& fragment,
-    float* shared_fragment,
+__device__ __forceinline__ void hgemm_wmma_store_half_fragment(
+    const nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, half>& fragment,
+    half* shared_fragment,
     half* __restrict__ c,
     int row_base,
     int col_base,
@@ -257,7 +256,7 @@ __device__ __forceinline__ void hgemm_wmma_store_float_fragment(
     int lane
 ) {
     // WMMA fragments cannot be directly indexed in a portable way.  Store the
-    // float accumulator fragment to shared memory, then let warp lanes write
+    // half accumulator fragment to shared memory, then let warp lanes write
     // row-major C elements.  For a 16x16 fragment, each lane writes 8 elements
     // (256 values / 32 lanes) with boundary masking.
     nvcuda::wmma::store_matrix_sync(shared_fragment, fragment, WmmaN, nvcuda::wmma::mem_row_major);
@@ -267,7 +266,7 @@ __device__ __forceinline__ void hgemm_wmma_store_float_fragment(
         const int row = row_base + index / WmmaN;
         const int col = col_base + index % WmmaN;
         if(row < m && col < n) {
-            c[row * n + col] = __float2half_rn(shared_fragment[index]);
+            c[row * n + col] = shared_fragment[index];
         }
     }
     __syncwarp();
@@ -316,8 +315,8 @@ __device__ void hgemm_wmma_m16n16k16_naive_body(
     using namespace nvcuda;
     wmma::fragment<wmma::matrix_a, kBlockM, kBlockN, kBlockK, half, wmma::row_major> a_fragment;
     wmma::fragment<wmma::matrix_b, kBlockM, kBlockN, kBlockK, half, wmma::row_major> b_fragment;
-    wmma::fragment<wmma::accumulator, kBlockM, kBlockN, kBlockK, float> c_fragment;
-    wmma::fill_fragment(c_fragment, 0.0f);
+    wmma::fragment<wmma::accumulator, kBlockM, kBlockN, kBlockK, half> c_fragment;
+    wmma::fill_fragment(c_fragment, zero_half());
 
     for(int k_base = 0; k_base < k; k_base += kBlockK) {
         wmma::load_matrix_sync(a_fragment, a + block_row * k + k_base, k);
@@ -325,8 +324,8 @@ __device__ void hgemm_wmma_m16n16k16_naive_body(
         wmma::mma_sync(c_fragment, a_fragment, b_fragment, c_fragment);
     }
 
-    __shared__ float shared_c[kBlockM * kBlockN];
-    hgemm_wmma_store_float_fragment<kBlockM, kBlockN, kBlockK>(
+    __shared__ half shared_c[kBlockM * kBlockN];
+    hgemm_wmma_store_half_fragment<kBlockM, kBlockN, kBlockK>(
         c_fragment,
         shared_c,
         c,
@@ -372,7 +371,7 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
     using namespace nvcuda;
     __shared__ half shared_a[kBlockM][kWmmaK];
     __shared__ half shared_b[kWmmaK][kBlockN];
-    __shared__ float shared_c[kWarpCount][kWmmaM * kWmmaN];
+    __shared__ half shared_c[kWarpCount][kWmmaM * kWmmaN];
 
     const int tid = threadIdx.x;
     const int warp_id = tid / kWarpSize;
@@ -386,8 +385,8 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
     const int load_b_smem_k = tid / 16;
     const int load_b_smem_n = (tid % 16) * 2;
 
-    wmma::fragment<wmma::accumulator, kWmmaM, kWmmaN, kWmmaK, float> c_fragment;
-    wmma::fill_fragment(c_fragment, 0.0f);
+    wmma::fragment<wmma::accumulator, kWmmaM, kWmmaN, kWmmaK, half> c_fragment;
+    wmma::fill_fragment(c_fragment, zero_half());
 
     for(int k_base = 0; k_base < k; k_base += kWmmaK) {
         hgemm_load_contiguous_half<4, 64>(
@@ -418,7 +417,7 @@ __device__ void hgemm_wmma_m16n16k16_mma4x2_body(
         __syncthreads();
     }
 
-    hgemm_wmma_store_float_fragment<kWmmaM, kWmmaN, kWmmaK>(
+    hgemm_wmma_store_half_fragment<kWmmaM, kWmmaN, kWmmaK>(
         c_fragment,
         shared_c[warp_id],
         c,
@@ -477,7 +476,7 @@ __device__ void hgemm_wmma_warp2x4_body(
     using namespace nvcuda;
     __shared__ half shared_a[kBlockM][kWmmaK];
     __shared__ half shared_b[kWmmaK][kBlockN];
-    __shared__ float shared_c[kWarpCount][WmmaM * WmmaN];
+    __shared__ half shared_c[kWarpCount][WmmaM * WmmaN];
 
     const int tid = threadIdx.x;
     const int warp_id = tid / kWarpSize;
@@ -492,12 +491,12 @@ __device__ void hgemm_wmma_warp2x4_body(
     const int load_b_smem_k = tid / 16;
     const int load_b_smem_n = (tid % 16) * 8;
 
-    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, float> c_fragments[WarpTileM][WarpTileN];
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, half> c_fragments[WarpTileM][WarpTileN];
 #pragma unroll
     for(int i = 0; i < WarpTileM; ++i) {
 #pragma unroll
         for(int j = 0; j < WarpTileN; ++j) {
-            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+            wmma::fill_fragment(c_fragments[i][j], zero_half());
         }
     }
 
@@ -553,7 +552,7 @@ __device__ void hgemm_wmma_warp2x4_body(
         for(int j = 0; j < WarpTileN; ++j) {
             const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
             const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
-            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, kWmmaK>(
+            hgemm_wmma_store_half_fragment<WmmaM, WmmaN, kWmmaK>(
                 c_fragments[i][j],
                 shared_c[warp_id],
                 c,
@@ -606,7 +605,7 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
     using namespace nvcuda;
     __shared__ half shared_a[2][kBlockM][kWmmaK + Offset];
     __shared__ half shared_b[2][kWmmaK][kBlockN + Offset];
-    __shared__ float shared_c[kWarpCount][WmmaM * WmmaN];
+    __shared__ half shared_c[kWarpCount][WmmaM * WmmaN];
 
     const int tid = threadIdx.x;
     const int warp_id = tid / kWarpSize;
@@ -620,12 +619,12 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
     const int load_b_smem_n = (tid % 16) * 8;
     const int k_tiles = k / kWmmaK;
 
-    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, float> c_fragments[WarpTileM][WarpTileN];
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, kWmmaK, half> c_fragments[WarpTileM][WarpTileN];
 #pragma unroll
     for(int i = 0; i < WarpTileM; ++i) {
 #pragma unroll
         for(int j = 0; j < WarpTileN; ++j) {
-            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+            wmma::fill_fragment(c_fragments[i][j], zero_half());
         }
     }
 
@@ -717,7 +716,7 @@ __device__ void hgemm_wmma_warp2x4_dbuf_async_body(
         for(int j = 0; j < WarpTileN; ++j) {
             const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
             const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
-            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, kWmmaK>(
+            hgemm_wmma_store_half_fragment<WmmaM, WmmaN, kWmmaK>(
                 c_fragments[i][j],
                 shared_c[warp_id],
                 c,
@@ -802,7 +801,7 @@ __device__ __forceinline__ void hgemm_wmma_stage_compute(
     half* __restrict__ shared_b,
     int warp_m,
     int warp_n,
-    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, float> (&c_fragments)[WarpTileM][WarpTileN]
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WmmaM, WmmaN, WmmaK, half> (&c_fragments)[WarpTileM][WarpTileN]
 ) {
     using namespace nvcuda;
 
@@ -878,8 +877,8 @@ __device__ void hgemm_wmma_staged_pipeline_body(
     static_assert((APad % 8) == 0 && (BPad % 8) == 0, "WMMA staged padding must preserve 16-byte alignment.");
     static_assert(
         KStage * kAStageOffset * static_cast<int>(sizeof(half)) >=
-            kWarpCount * WmmaM * WmmaN * static_cast<int>(sizeof(float)),
-        "WMMA staged A shared storage must be large enough to reuse for accumulator stores."
+            kWarpCount * WmmaM * WmmaN * static_cast<int>(sizeof(half)),
+        "WMMA staged A shared storage must be large enough to reuse for half accumulator stores."
     );
 
     // Multistage WMMA pipeline.
@@ -921,12 +920,12 @@ __device__ void hgemm_wmma_staged_pipeline_body(
     }
 
     using namespace nvcuda;
-    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, WmmaK, float> c_fragments[WarpTileM][WarpTileN];
+    wmma::fragment<wmma::accumulator, WmmaM, WmmaN, WmmaK, half> c_fragments[WarpTileM][WarpTileN];
 #pragma unroll
     for(int i = 0; i < WarpTileM; ++i) {
 #pragma unroll
         for(int j = 0; j < WarpTileN; ++j) {
-            wmma::fill_fragment(c_fragments[i][j], 0.0f);
+            wmma::fill_fragment(c_fragments[i][j], zero_half());
         }
     }
 
@@ -1005,8 +1004,8 @@ __device__ void hgemm_wmma_staged_pipeline_body(
     }
 
     __syncthreads();
-    float* shared_c = reinterpret_cast<float*>(shared_a);
-    // Reuse shared_a as a temporary row-major float buffer for WMMA fragment
+    half* shared_c = shared_a;
+    // Reuse shared_a as a temporary row-major half buffer for WMMA fragment
     // stores.  The static_assert above guarantees the storage is large enough.
 #pragma unroll
     for(int i = 0; i < WarpTileM; ++i) {
@@ -1014,7 +1013,7 @@ __device__ void hgemm_wmma_staged_pipeline_body(
         for(int j = 0; j < WarpTileN; ++j) {
             const int store_row = block_row + warp_m * (WmmaM * WarpTileM) + i * WmmaM;
             const int store_col = block_col + warp_n * (WmmaN * WarpTileN) + j * WmmaN;
-            hgemm_wmma_store_float_fragment<WmmaM, WmmaN, WmmaK>(
+            hgemm_wmma_store_half_fragment<WmmaM, WmmaN, WmmaK>(
                 c_fragments[i][j],
                 shared_c + warp_id * WmmaM * WmmaN,
                 c,

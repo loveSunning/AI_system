@@ -73,8 +73,8 @@ List all compiled launcher names and their Nsight Compute regex:
 Correctness uses the same tolerance for every row: `allclose(abs=2.5e-1, rel=5e-2)`.
 The reference source depends on the accumulation mode:
 
-- SIMT and inline-MMA half-accumulate kernels compare against `hgemm_naive_f16`, which also accumulates in `half`.
-- cuBLAS and WMMA float-accumulate kernels compare against `hgemm_cublas_tensor_op_nn`.
+- CUDA-core, inline-MMA, WMMA, and cuBLAS HGEMM kernels use FP16 accumulation and write FP16 C.
+- Tensor Core kernels compare against the cuBLAS Tensor Core half-accumulate reference.
 
 For profiling, `--no-correctness --warmup 1 --iters 1` keeps the launch stream simple: one warmup launch and one measured launch. The `-s 1 -c 1` Nsight Compute options skip the warmup and collect the measured launch.
 

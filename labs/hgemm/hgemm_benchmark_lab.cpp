@@ -196,6 +196,12 @@ double compute_gemm_gflops(std::size_t m, std::size_t n, std::size_t k, double a
     return flops / 1.0e9 / (average_ms / 1000.0);
 }
 
+std::string format_hgemm_register_shape(const ai_system::labs::hgemm::HgemmKernelInfo& info) {
+    std::string label(info.register_shape.empty() ? std::string_view("none") : info.register_shape);
+    label += "/f16acc";
+    return label;
+}
+
 ai_system::benchmark::BenchmarkConfig make_benchmark_config(const Options& options) {
     return ai_system::benchmark::BenchmarkConfig {options.warmup_iterations, options.measured_iterations};
 }
@@ -208,7 +214,7 @@ void print_kernel_list() {
     }
 
     for(const auto& info : infos) {
-        std::cout << info.name << "  tile=" << info.tile_shape << "  register=" << info.register_shape
+        std::cout << info.name << "  tile=" << info.tile_shape << "  register=" << format_hgemm_register_shape(info)
                   << "  ncu_regex=" << info.ncu_regex << "\n";
     }
 }
@@ -506,7 +512,7 @@ int main(int argc, char** argv) {
             prepare_reference(
                 ai_system::labs::hgemm::HgemmKernel::CublasTensorOpNn,
                 "hgemm_cublas_tensor_op_nn",
-                "cuBLAS Tensor Core HGEMM reference generated.",
+                "cuBLAS Tensor Core half-accumulate HGEMM reference generated.",
                 cublas_nn_reference_out,
                 has_cublas_nn_reference
             );
@@ -515,7 +521,7 @@ int main(int argc, char** argv) {
             prepare_reference(
                 ai_system::labs::hgemm::HgemmKernel::CublasTensorOpTn,
                 "hgemm_cublas_tensor_op_tn",
-                "cuBLAS Tensor Core HGEMM TN reference generated.",
+                "cuBLAS Tensor Core half-accumulate HGEMM TN reference generated.",
                 cublas_tn_reference_out,
                 has_cublas_tn_reference
             );
@@ -616,7 +622,7 @@ int main(int argc, char** argv) {
             compute_gemm_gflops(options.m, options.n, options.k, result.average_ms),
             "GFLOPS",
             std::string(info->tile_shape),
-            std::string(info->register_shape)
+            format_hgemm_register_shape(*info)
         );
     }
 

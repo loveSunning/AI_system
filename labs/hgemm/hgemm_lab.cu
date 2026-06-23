@@ -79,15 +79,6 @@ __global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel(
     int k
 );
 
-__global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-);
-
 namespace {
 
 constexpr int kWarpSize = 32;
@@ -1477,8 +1468,8 @@ bool launch_cublas_tensor_op_row_major(
     int k,
     std::string& error
 ) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
+    const half alpha = __float2half_rn(1.0f);
+    const half beta = __float2half_rn(0.0f);
     // Matrices in this lab are row-major.  cuBLAS is column-major, so the call
     // computes C^T = B^T * A^T by passing dimensions as (n, m, k) and operands
     // in B, A order with C leading dimension n.
@@ -1501,7 +1492,7 @@ bool launch_cublas_tensor_op_row_major(
             c,
             CUDA_R_16F,
             n,
-            CUBLAS_COMPUTE_32F,
+            CUBLAS_COMPUTE_16F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP
         ),
         "cublasGemmEx(hgemm tensor op row-major)",
@@ -1519,8 +1510,8 @@ bool launch_cublas_tensor_op_row_major_tn(
     int k,
     std::string& error
 ) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
+    const half alpha = __float2half_rn(1.0f);
+    const half beta = __float2half_rn(0.0f);
     // TN kernels in the reference HGEMM code receive B physically as [N][K].
     // In column-major cuBLAS that buffer is a KxN matrix; op(T) turns it into
     // the logical NxK operand, so C^T = B_T * A^T.
@@ -1543,7 +1534,7 @@ bool launch_cublas_tensor_op_row_major_tn(
             c,
             CUDA_R_16F,
             n,
-            CUBLAS_COMPUTE_32F,
+            CUBLAS_COMPUTE_16F,
             CUBLAS_GEMM_DEFAULT_TENSOR_OP
         ),
         "cublasGemmEx(hgemm tensor op row-major TN)",
@@ -1878,7 +1869,7 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemX4, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemRr, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},
-        {HgemmKernel::MmaStagesBlockSwizzleTnCute, "hgemm_mma_stages_block_swizzle_tn_cute", "hgemm_mma_stages_block_swizzle_tn_cute_kernel", "16x8x16", "warp", true},
+        {HgemmKernel::MmaStagesBlockSwizzleTnCute, "hgemm_mma_stages_block_swizzle_tn_cute", "hgemm_mma_stages_block_swizzle_tn_cute_kernel", "128x256x32", "4x4mma/warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX2, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2_kernel", "16x8x16", "warp", true},
@@ -2095,17 +2086,6 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4(const half* a, const half* b, half* c, in
     const dim3 block(kThreads);
     const dim3 grid(static_cast<unsigned int>((n + kBlockN - 1) / kBlockN), static_cast<unsigned int>((m + kBlockM - 1) / kBlockM));
     hgemm_mma_m16n8k16_mma2x4_warp4x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
-}
-
-bool hgemm_mma_stages_block_swizzle_tn_cute(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
-    const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_mma_stages_block_swizzle_tn_cute_kernel_launch");
-    if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
-        return false;
-    }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
-    hgemm_mma_stages_block_swizzle_tn_cute_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
 

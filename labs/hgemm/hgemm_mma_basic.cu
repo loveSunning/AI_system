@@ -4414,17 +4414,6 @@ __global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel(
     hgemm_mma_m16n8k16_naive_body(a, b, c, m, n, k);
 }
 
-__global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-) {
-    hgemm_mma_m16n8k16_naive_body(a, b, c, m, n, k);
-}
-
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages(
     const half* a,
     const half* b,

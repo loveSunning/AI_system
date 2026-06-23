@@ -66,12 +66,11 @@ Run one launcher:
   --warmup 2 --iters 5
 ```
 
-Correctness uses `allclose(abs=2.5e-1, rel=5e-2)` by default. Tensor Core paths compare
-against the cuBLAS Tensor Core reference; PTX MMA kernels use the same reference with
-`allclose(abs=5e-1, rel=5e-2)` because their reduction order differs from the scalar
-half-FMA reference at large K.
-SIMT and inline-MMA half-accumulate kernels are compared against `hgemm_naive_f16`, which also accumulates in `half`.
-cuBLAS and WMMA float-accumulate kernels are compared against `hgemm_cublas_tensor_op_nn`.
+Correctness uses `allclose(abs=2.5e-1, rel=5e-2)` by default. The lab's CUDA-core,
+inline-MMA, WMMA, and cuBLAS HGEMM variants all use FP16 accumulation and write FP16 C.
+Tensor Core paths compare against the cuBLAS Tensor Core half-accumulate reference; PTX
+MMA kernels use the same reference with `allclose(abs=5e-1, rel=5e-2)` because their
+reduction order can differ from the scalar half-FMA reference at large K.
 
 ## Performance Comparison
 
