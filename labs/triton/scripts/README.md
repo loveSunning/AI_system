@@ -15,5 +15,6 @@
 
 ```bash
 cd /workspace/AI_system/labs/triton
-PYTHONPATH=python python scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
+PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
+PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
 ```

@@ -22,6 +22,15 @@
 program_id -> group_id -> pid_m/pid_n -> C tile
 ```
 
+## Fused Softmax
+
+- `row_id = tl.program_id(0)` 映射输入矩阵的一行。
+- `offsets = tl.arange(0, BLOCK_SIZE)` 映射这一行内的列。
+- `mask = offsets < n_cols` 处理列数不是 2 的幂的情况。
+- `tl.load(..., other=-inf)` 让 padding 列在 `tl.max` 和 `tl.sum` 中不影响真实 softmax。
+
+记录重点：`BLOCK_SIZE` 是 `n_cols` 的 next power of 2。每个 program 在一行内部完成 `max -> exp -> sum -> div -> store`，减少中间张量读写。
+
 ## Persistent Matmul
 
 记录重点：

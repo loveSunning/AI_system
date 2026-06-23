@@ -19,4 +19,5 @@
 ```bash
 cd /workspace/AI_system/labs/triton
 PYTHONPATH=python pytest tests/test_vector_add.py
+PYTHONPATH=python pytest tests/test_fused_softmax.py
 ```
