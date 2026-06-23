@@ -10,3 +10,10 @@
 - `summarize_benchmarks.py`：把 CSV 汇总成阶段报告表格。
 
 脚本要能从 `labs/triton` 目录直接运行，也要在 README 中写清楚输出文件位置。
+
+当前已落地：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
+```
