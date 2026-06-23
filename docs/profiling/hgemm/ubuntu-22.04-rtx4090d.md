@@ -72,12 +72,14 @@ The default shape is `M=N=K=4096`:
 
 ```bash
 "$Exe" --warmup 2 --iters 5
+"$ExeLineInfo" --warmup 2 --iters 5
 ```
 
 List all compiled launcher names and Nsight Compute regex strings:
 
 ```bash
 "$Exe" --list-kernels
+"$ExeLineInfo" --list-kernels
 ```
 
 Run one kernel by name:
