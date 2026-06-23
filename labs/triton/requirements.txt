@@ -1,0 +1,6 @@
+numpy
+pandas
+pytest
+triton
+
+# Install torch separately with the CUDA wheel that matches the target machine.
