@@ -88,24 +88,6 @@ __global__ void hgemm_mma_stages_block_swizzle_tn_cute_kernel(
     int k
 );
 
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-);
-
-__global__ void hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel(
-    const half* __restrict__ a,
-    const half* __restrict__ b,
-    half* __restrict__ c,
-    int m,
-    int n,
-    int k
-);
-
 namespace {
 
 constexpr int kWarpSize = 32;
@@ -1814,6 +1796,32 @@ bool launch_hgemm_kernel_with_handle(
                 launch_options.swizzle_stride,
                 error
             );
+        case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle:
+            return hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle(
+                a,
+                b,
+                c,
+                m,
+                n,
+                k,
+                launch_options.stages,
+                launch_options.swizzle,
+                launch_options.swizzle_stride,
+                error
+            );
+        case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX2:
+            return hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2(
+                a,
+                b,
+                c,
+                m,
+                n,
+                k,
+                launch_options.stages,
+                launch_options.swizzle,
+                launch_options.swizzle_stride,
+                error
+            );
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX4:
             return hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4(
                 a,
@@ -1871,7 +1879,9 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemRr, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaStagesBlockSwizzleTnCute, "hgemm_mma_stages_block_swizzle_tn_cute", "hgemm_mma_stages_block_swizzle_tn_cute_kernel", "16x8x16", "warp", true},
-        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel", "16x8x16", "warp", true},
+        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel", "16x8x16", "warp", true},
+        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},
+        {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX2, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX4, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel", "16x8x16", "warp", true}
     };
     return infos;
@@ -2096,28 +2106,6 @@ bool hgemm_mma_stages_block_swizzle_tn_cute(const half* a, const half* b, half* 
     const dim3 block(kWarpSize);
     const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
     hgemm_mma_stages_block_swizzle_tn_cute_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
-}
-
-bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
-    const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel_launch");
-    if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
-        return false;
-    }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
-    hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel<<<grid, block>>>(a, b, c, m, n, k);
-    return ai_system::cuda_utils::check_last_launch(error);
-}
-
-bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error) {
-    const ai_system::profiling::ScopedNvtxRange launch_range("hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel_launch");
-    if(!validate_stage_options(stages, swizzle, swizzle_stride, error) || !validate_device_problem(a, b, c, m, n, k, error)) {
-        return false;
-    }
-    const dim3 block(kWarpSize);
-    const dim3 grid(static_cast<unsigned int>((n + 7) / 8), static_cast<unsigned int>((m + 15) / 16));
-    hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel<<<grid, block>>>(a, b, c, m, n, k);
     return ai_system::cuda_utils::check_last_launch(error);
 }
 
