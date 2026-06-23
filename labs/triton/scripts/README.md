@@ -18,3 +18,17 @@ cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
 ```
+
+生成 sweep 数据和 Triton `perf_report` 图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
+PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+```
+
+从 CSV 稳定生成 PNG 图：
+
+```bash
+python3 scripts/plot_w09_benchmarks.py --dtype float32
+python3 scripts/plot_w09_benchmarks.py --op fused_softmax --metric throughput --dtype float32
+```

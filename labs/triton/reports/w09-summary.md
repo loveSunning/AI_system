@@ -27,12 +27,13 @@ TODO: 跑完 benchmark 后填写。
 - Test: `tests/test_fused_softmax.py`
 - Benchmark: `scripts/bench_fused_softmax.py`
 
-TODO: 跑完 benchmark 后填写。
+当前 fused softmax 已在 RTX 4090 D 上通过 correctness，并完成 `4096x1024 fp32` benchmark。Triton 入门版达到 PyTorch baseline 约 `46.7%` 的估算吞吐，说明 row-wise program、mask 和 block 内 reduction 路径已经跑通；性能差距主要来自 PyTorch/CUDA 内置 softmax 更成熟的实现与调度优化。
 
 | op | impl | shape | dtype | config | avg_ms | throughput | status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| fused_softmax | triton | TODO | TODO | `BLOCK_SIZE=next_power_of_2(n_cols)` | TODO | TODO | TODO |
-| fused_softmax | torch | TODO | TODO | `torch_softmax` | TODO | TODO | TODO |
+| fused_softmax | triton | `4096x1024` | `float32` | `BLOCK_SIZE=1024;num_warps=4` | `0.063035` | `532.315 GB/s_est` | PASS |
+| fused_softmax | torch | `4096x1024` | `float32` | `torch_softmax` | `0.029420` | `1140.550 GB/s_est` | PASS |
+| fused_softmax | naive | TODO | TODO | `torch_max_exp_sum_div` | TODO | TODO | TODO |
 
 ## Program ID 解释
 

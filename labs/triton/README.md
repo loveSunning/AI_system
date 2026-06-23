@@ -93,6 +93,16 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dt
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
 ```
 
+运行 Triton 官方 `perf_report` 风格 sweep，并把图保存到 `benchmarks/plots/`：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
+PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+python3 scripts/plot_w09_benchmarks.py --dtype float32
+```
+
+`fused_softmax` benchmark 会同时比较 `triton`、`torch.softmax` 和 `naive` 三种实现。
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：
