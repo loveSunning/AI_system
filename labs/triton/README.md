@@ -110,6 +110,34 @@ python3 scripts/plot_w09_benchmarks.py --dtype float32
 /workspace/AI_system/out/triton/benchmarks/plots/
 ```
 
+## W10 Matmul 入口
+
+当前 matmul 已按 baseline + autotune 落地：
+
+- Kernel: [python/triton_playground/kernels/matmul.py](./python/triton_playground/kernels/matmul.py)
+- API: [python/triton_playground/ops/matmul.py](./python/triton_playground/ops/matmul.py)
+- Test: [tests/test_matmul.py](./tests/test_matmul.py)
+- Benchmark: [scripts/bench_matmul.py](./scripts/bench_matmul.py)
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_matmul.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_matmul.py --m 1024 --n 1024 --k 1024 --dtype float16
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

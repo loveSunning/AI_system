@@ -15,7 +15,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 推荐文件：
 
 - `w09_vector_add_softmax.csv`
-- `w10_matmul_autotune.csv`
+- `w10_matmul.csv`
 - `w11_persistent_matmul.csv`
 - `w12_fused_ops.csv`
 - `w13_online_softmax.csv`
@@ -43,4 +43,19 @@ cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
 python3 scripts/plot_w09_benchmarks.py --dtype float32
+```
+
+W10 matmul benchmark：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_matmul.py --m 1024 --n 1024 --k 1024 --dtype float16
+PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
+```
+
+默认输出：
+
+```text
+out/triton/benchmarks/w10_matmul.csv
+out/triton/benchmarks/plots/
 ```

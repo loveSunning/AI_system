@@ -22,6 +22,27 @@
 program_id -> group_id -> pid_m/pid_n -> C tile
 ```
 
+当前 W10 matmul 使用一维 `program_id` 加 grouped ordering：
+
+```text
+num_pid_m = ceil(M / BLOCK_M)
+num_pid_n = ceil(N / BLOCK_N)
+num_pid_in_group = GROUP_M * num_pid_n
+
+group_id = pid // num_pid_in_group
+first_pid_m = group_id * GROUP_M
+group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+
+pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+pid_n = (pid % num_pid_in_group) // group_size_m
+```
+
+直觉：
+
+- C 的每个 output tile 是 `[BLOCK_M, BLOCK_N]`。
+- 同一个 `group_id` 内优先扫一组相邻的 M tile，让多个 C tile 更容易复用 A/B 的 L2 cache 数据。
+- `GROUP_M=1` 接近普通 row-major tile ordering；更大的 `GROUP_M` 可能改善 L2 locality，但也要结合 shape 和 tile 配置 benchmark。
+
 ## Fused Softmax
 
 - `row_id = tl.program_id(0)` 映射输入矩阵的一行。
