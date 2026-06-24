@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 TRITON_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = TRITON_ROOT.parents[1]
+OUT_BENCHMARK_ROOT = REPO_ROOT / "out" / "triton" / "benchmarks"
 
 
 def parse_shape_x(op: str, shape: str) -> int:
@@ -91,8 +93,8 @@ def plot_metric(rows: list[dict[str, str]], op: str, metric: str, output_dir: Pa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot W09 benchmark CSV results.")
-    parser.add_argument("--input", type=Path, default=TRITON_ROOT / "benchmarks" / "w09_vector_add_softmax.csv")
-    parser.add_argument("--output-dir", type=Path, default=TRITON_ROOT / "benchmarks" / "plots")
+    parser.add_argument("--input", type=Path, default=OUT_BENCHMARK_ROOT / "w09_vector_add_softmax.csv")
+    parser.add_argument("--output-dir", type=Path, default=OUT_BENCHMARK_ROOT / "plots")
     parser.add_argument("--op", choices=["all", "vector_add", "fused_softmax"], default="all")
     parser.add_argument("--dtype", default="float32")
     parser.add_argument("--metric", choices=["both", "throughput", "avg_ms"], default="both")

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 TRITON_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = TRITON_ROOT.parents[1]
+OUT_BENCHMARK_ROOT = REPO_ROOT / "out" / "triton" / "benchmarks"
 PYTHON_ROOT = TRITON_ROOT / "python"
 
 if str(PYTHON_ROOT) not in sys.path:
@@ -195,11 +197,11 @@ def main() -> None:
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
-    parser.add_argument("--output", type=Path, default=TRITON_ROOT / "benchmarks" / "w09_vector_add_softmax.csv")
+    parser.add_argument("--output", type=Path, default=OUT_BENCHMARK_ROOT / "w09_vector_add_softmax.csv")
     parser.add_argument("--sweep", action="store_true", help="Run a power-of-two size sweep and append CSV rows.")
     parser.add_argument("--plot", action="store_true", help="Generate a Triton perf_report plot for the sweep.")
     parser.add_argument("--show-plots", action="store_true", help="Show matplotlib windows when generating plots.")
-    parser.add_argument("--plot-dir", type=Path, default=TRITON_ROOT / "benchmarks" / "plots")
+    parser.add_argument("--plot-dir", type=Path, default=OUT_BENCHMARK_ROOT / "plots")
     parser.add_argument("--min-power", type=int, default=12)
     parser.add_argument("--max-power", type=int, default=28)
     args = parser.parse_args()

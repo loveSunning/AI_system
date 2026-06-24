@@ -63,4 +63,4 @@
 1. 每完成一个 kernel，先落 correctness，再落 benchmark。
 2. 每次 benchmark 固定 warmup、iters、shape 和 dtype，不把不可复现的单次结果写入结论。
 3. 每周结束更新对应 notes，把“为什么这样映射”和“为什么这个 shape 快/慢”写清楚。
-4. 阶段结束时把 `benchmarks/` 的 CSV、`reports/` 的复盘和 `notes/` 的图表串起来，作为后续 CuTe/CUTLASS/FlashAttention 对照基线。
+4. 阶段结束时把 `out/triton/benchmarks/` 的 CSV、`reports/` 的复盘和 `notes/` 的图表串起来，作为后续 CuTe/CUTLASS/FlashAttention 对照基线。

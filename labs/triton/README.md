@@ -93,7 +93,7 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dt
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
 ```
 
-运行 Triton 官方 `perf_report` 风格 sweep，并把图保存到 `benchmarks/plots/`：
+运行 Triton 官方 `perf_report` 风格 sweep，并把结果保存到仓库级 `out/triton/benchmarks/`：
 
 ```bash
 PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
@@ -102,6 +102,13 @@ python3 scripts/plot_w09_benchmarks.py --dtype float32
 ```
 
 `fused_softmax` benchmark 会同时比较 `triton`、`torch.softmax` 和 `naive` 三种实现。
+
+默认输出位置：
+
+```text
+/workspace/AI_system/out/triton/benchmarks/w09_vector_add_softmax.csv
+/workspace/AI_system/out/triton/benchmarks/plots/
+```
 
 ## 证据要求
 
@@ -112,4 +119,4 @@ python3 scripts/plot_w09_benchmarks.py --dtype float32
 - 映射：`program_id` 到 tile 的解释，必要时画图。
 - 结论：哪些 shape 适合当前实现，哪些不适合，下一步应该改哪里。
 
-这些证据分别放到 `benchmarks/`、`reports/` 和 `notes/` 中。
+benchmark 原始结果和图片默认放到仓库级 `out/triton/benchmarks/`；阶段复盘和人工整理后的结论放到 `reports/`，解释性材料放到 `notes/`。

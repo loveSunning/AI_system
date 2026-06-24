@@ -6,7 +6,7 @@
 
 - `check_env.py`：打印 Python、Torch、Triton、CUDA、GPU 信息。
 - `run_tests.ps1` / `run_tests.sh`：统一运行 pytest。
-- `run_benchmarks.ps1` / `run_benchmarks.sh`：统一导出 `benchmarks/*.csv`。
+- `run_benchmarks.ps1` / `run_benchmarks.sh`：统一导出 `out/triton/benchmarks/*.csv`。
 - `summarize_benchmarks.py`：把 CSV 汇总成阶段报告表格。
 
 脚本要能从 `labs/triton` 目录直接运行，也要在 README 中写清楚输出文件位置。
@@ -24,6 +24,13 @@ PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024
 ```bash
 PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+```
+
+默认输出位置：
+
+```text
+/workspace/AI_system/out/triton/benchmarks/w09_vector_add_softmax.csv
+/workspace/AI_system/out/triton/benchmarks/plots/
 ```
 
 从 CSV 稳定生成 PNG 图：
