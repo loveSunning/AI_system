@@ -138,6 +138,35 @@ PYTHONPATH=python python3 scripts/bench_matmul.py --m 1024 --n 1024 --k 1024 --d
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
 ```
 
+## Dropout 入口
+
+参照官方 Low-Memory Dropout 教程，当前已落地两种 Triton dropout：
+
+- 普通 dropout: [python/triton_playground/kernels/dropout.py](./python/triton_playground/kernels/dropout.py) 中的显式 `keep_mask` 版本。
+- Low-memory dropout: 同一文件中的 `seeded_dropout` 版本，只保存 seed，不物化 mask tensor。
+- API: [python/triton_playground/ops/dropout.py](./python/triton_playground/ops/dropout.py)
+- Test: [tests/test_dropout.py](./tests/test_dropout.py)
+- Benchmark: [scripts/bench_dropout.py](./scripts/bench_dropout.py)
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_dropout.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype float32 --p 0.5
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

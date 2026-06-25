@@ -14,6 +14,8 @@
 - `triton_playground.kernels.vector_add`：W09 vector add 的 Triton JIT kernel 和 launcher。
 - `triton_playground.kernels.fused_softmax`：W09 fused softmax 的 row-wise Triton JIT kernel 和 launcher。
 - `triton_playground.kernels.matmul`：W10 matmul 的 fixed/autotuned Triton JIT kernel 和 CUDA autotune config。
+- `triton_playground.kernels.dropout`：显式 mask dropout 和 low-memory seeded dropout。
 - `triton_playground.ops.vector_add`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.fused_softmax`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.matmul`：面向测试、benchmark 和后续实验调用的 API。
+- `triton_playground.ops.dropout`：面向测试、benchmark 和后续实验调用的 API。

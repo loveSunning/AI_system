@@ -18,6 +18,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 - `w10_matmul.csv`
 - `w11_persistent_matmul.csv`
 - `w12_fused_ops.csv`
+- `w12_dropout.csv`
 - `w13_online_softmax.csv`
 - `w14_attention_forward.csv`
 
@@ -59,3 +60,17 @@ PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 -
 out/triton/benchmarks/w10_matmul.csv
 out/triton/benchmarks/plots/
 ```
+
+Dropout benchmark：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype float32 --p 0.5
+PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
+```
+
+对比项：
+
+- `triton_mask`：显式 keep-mask baseline，需要读 `x` 和 `keep_mask`，写 `out`。
+- `triton_seeded_low_memory`：只保存 seed，kernel 内用 `tl.rand(seed, offsets)` 生成 mask。
+- `torch`：`torch.nn.functional.dropout(x, p=p, training=True)`。
