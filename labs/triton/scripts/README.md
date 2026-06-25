@@ -17,7 +17,7 @@
 cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
-PYTHONPATH=python python3 scripts/bench_matmul.py --m 1024 --n 1024 --k 1024 --dtype float16
+PYTHONPATH=python python3 scripts/bench_matmul.py --m 4096 --n 4096 --k 4096 --dtype float16
 ```
 
 生成 sweep 数据和 Triton `perf_report` 图：

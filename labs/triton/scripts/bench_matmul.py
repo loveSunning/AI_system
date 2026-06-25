@@ -286,9 +286,9 @@ def parse_providers(raw: str) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark W10 Triton matmul against PyTorch.")
-    parser.add_argument("--m", type=int, default=1024)
-    parser.add_argument("--n", type=int, default=1024)
-    parser.add_argument("--k", type=int, default=1024)
+    parser.add_argument("--m", type=int, default=4096)
+    parser.add_argument("--n", type=int, default=4096)
+    parser.add_argument("--k", type=int, default=4096)
     parser.add_argument("--dtype", choices=DTYPES, default="float16")
     parser.add_argument("--providers", type=parse_providers, default=parse_providers("triton_autotune,triton_fixed,torch"))
     parser.add_argument("--block-size-m", type=int, default=128)

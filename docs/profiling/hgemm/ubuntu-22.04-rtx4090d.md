@@ -71,7 +71,7 @@ mkdir -p "$Out" "$SassOut"
 The default shape is `M=N=K=4096`:
 
 ```bash
-"$Exe" --warmup 2 --iters 5
+"$Exe" --warmup 2 --iters 10
 "$ExeLineInfo" --warmup 2 --iters 5
 ```
 
