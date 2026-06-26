@@ -167,6 +167,42 @@ PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 ```
 
+## LayerNorm 入口
+
+参照官方 Layer Normalization 教程，当前已落地 affine LayerNorm 的 Triton 前向和后向：
+
+- Kernel: [python/triton_playground/kernels/layer_norm.py](./python/triton_playground/kernels/layer_norm.py)
+- API: [python/triton_playground/ops/layer_norm.py](./python/triton_playground/ops/layer_norm.py)
+- Test: [tests/test_layer_norm.py](./tests/test_layer_norm.py)
+- Benchmark: [scripts/bench_layer_norm.py](./scripts/bench_layer_norm.py)
+
+实现边界：
+
+- 归一化维度固定为最后一维，`weight` 和 `bias` 的形状必须为 `(x.shape[-1],)`。
+- 当前支持 contiguous CUDA tensor，dtype 为 `float16` 或 `float32`。
+- 与官方教程一致，单行 feature 使用小于等于 64KB 的 fused block；超过时需要拆分或换多 CTA 实现。
+- 后向分两阶段：第一阶段每行计算 `dx` 并用 lock 累积 partial `dw/db`，第二阶段 reduce 得到最终 `dw/db`。
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_layer_norm.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --dtype float16 --mode forward
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：
