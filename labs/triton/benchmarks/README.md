@@ -16,6 +16,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 
 - `w09_vector_add_softmax.csv`
 - `w10_matmul.csv`
+- `w11_grouped_gemm.csv`
 - `w11_persistent_matmul.csv`
 - `w12_fused_ops.csv`
 - `w12_dropout.csv`
@@ -61,6 +62,19 @@ PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 -
 out/triton/benchmarks/w10_matmul.csv
 out/triton/benchmarks/plots/
 ```
+
+W11 grouped GEMM benchmark：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 --n 1024 --k 1024 --pattern vary_n
+PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
+```
+
+对比项：
+
+- `triton`：一次 grouped GEMM launch，包含 metadata tensor 构造开销。
+- `torch_loop`：Python loop 中逐个调用 `torch.matmul(a, b)`。
 
 Dropout benchmark：
 

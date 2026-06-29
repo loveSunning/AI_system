@@ -7,6 +7,7 @@
 - `test_vector_add.py`
 - `test_fused_softmax.py`
 - `test_matmul.py`
+- `test_grouped_gemm.py`
 - `test_dropout.py`
 - `test_layer_norm.py`
 - `test_persistent_matmul.py`
@@ -23,6 +24,7 @@ cd /workspace/AI_system/labs/triton
 PYTHONPATH=python pytest tests/test_vector_add.py
 PYTHONPATH=python pytest tests/test_fused_softmax.py
 PYTHONPATH=python pytest tests/test_matmul.py
+PYTHONPATH=python pytest tests/test_grouped_gemm.py
 PYTHONPATH=python pytest tests/test_dropout.py
 PYTHONPATH=python pytest tests/test_layer_norm.py
 ```

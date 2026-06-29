@@ -138,6 +138,41 @@ PYTHONPATH=python python3 scripts/bench_matmul.py --m 1024 --n 1024 --k 1024 --d
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
 ```
 
+## W11 Grouped GEMM 入口
+
+参照官方 Group GEMM 教程，当前已落地非 TMA 版本的 grouped GEMM：
+
+- Kernel: [python/triton_playground/kernels/grouped_gemm.py](./python/triton_playground/kernels/grouped_gemm.py)
+- API: [python/triton_playground/ops/grouped_gemm.py](./python/triton_playground/ops/grouped_gemm.py)
+- Test: [tests/test_grouped_gemm.py](./tests/test_grouped_gemm.py)
+- Benchmark: [scripts/bench_grouped_gemm.py](./scripts/bench_grouped_gemm.py)
+
+实现要点：
+
+- Python 侧把每个 GEMM 的 A/B/C 指针、`M/N/K`、leading dimension 打包成 device metadata tensor。
+- Kernel 侧启动固定 `NUM_SM` 个 CTA，用全局 tile 序号遍历整组 GEMM；每个 CTA 完成一个 tile 后按 `NUM_SM` 跨步继续。
+- 与官方示例不同，这里对 `M/N/K` 边界做了 mask，支持非 block size 整除的 shape。
+- 当前先支持 contiguous CUDA `float16` 输入，输出为每个 GEMM 对应的 `float16` C tensor。
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_grouped_gemm.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 --n 1024 --k 1024 --pattern vary_n
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
+```
+
 ## Dropout 入口
 
 参照官方 Low-Memory Dropout 教程，当前已落地两种 Triton dropout：
