@@ -76,6 +76,21 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-gro
 - `triton`：一次 grouped GEMM launch，包含 metadata tensor 构造开销。
 - `torch_loop`：Python loop 中逐个调用 `torch.matmul(a, b)`。
 
+W11 persistent matmul benchmark：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 --k 512 --dtype float16
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --min-power 10 --max-power 13 --k 512 --dtype float16
+```
+
+对比项：
+
+- `persistent_fixed`：非 TMA persistent scheduling，默认使用 4090D-friendly fixed tile。
+- `persistent_autotune`：非 TMA persistent scheduling，使用受 shared-memory 约束的 autotune 配置。
+- `triton_fixed`：普通 one-program-per-tile Triton matmul baseline。
+- `torch`：`torch.matmul(a, b)`。
+
 Dropout benchmark：
 
 ```bash

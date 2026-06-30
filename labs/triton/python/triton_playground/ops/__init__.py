@@ -5,6 +5,7 @@ from triton_playground.ops.fused_softmax import fused_softmax
 from triton_playground.ops.grouped_gemm import grouped_gemm
 from triton_playground.ops.layer_norm import layer_norm
 from triton_playground.ops.matmul import matmul, matmul_fixed
+from triton_playground.ops.persistent_matmul import persistent_matmul, persistent_matmul_fixed
 from triton_playground.ops.softmax_baselines import naive_softmax
 from triton_playground.ops.vector_add import vector_add
 
@@ -17,6 +18,8 @@ __all__ = [
     "matmul",
     "matmul_fixed",
     "naive_softmax",
+    "persistent_matmul",
+    "persistent_matmul_fixed",
     "seeded_dropout",
     "vector_add",
 ]

@@ -8,9 +8,9 @@
 - `test_fused_softmax.py`
 - `test_matmul.py`
 - `test_grouped_gemm.py`
+- `test_persistent_matmul.py`
 - `test_dropout.py`
 - `test_layer_norm.py`
-- `test_persistent_matmul.py`
 - `test_fused_ops.py`
 - `test_online_softmax.py`
 - `test_attention_forward.py`
@@ -25,6 +25,7 @@ PYTHONPATH=python pytest tests/test_vector_add.py
 PYTHONPATH=python pytest tests/test_fused_softmax.py
 PYTHONPATH=python pytest tests/test_matmul.py
 PYTHONPATH=python pytest tests/test_grouped_gemm.py
+PYTHONPATH=python pytest tests/test_persistent_matmul.py
 PYTHONPATH=python pytest tests/test_dropout.py
 PYTHONPATH=python pytest tests/test_layer_norm.py
 ```

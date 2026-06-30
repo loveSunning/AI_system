@@ -173,6 +173,41 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
 ```
 
+## W11 Persistent Matmul 入口
+
+参照官方 Persistent Matmul 教程，当前已落地面向 RTX 4090D 的非 TMA persistent matmul：
+
+- Kernel: [python/triton_playground/kernels/persistent_matmul.py](./python/triton_playground/kernels/persistent_matmul.py)
+- API: [python/triton_playground/ops/persistent_matmul.py](./python/triton_playground/ops/persistent_matmul.py)
+- Test: [tests/test_persistent_matmul.py](./tests/test_persistent_matmul.py)
+- Benchmark: [scripts/bench_persistent_matmul.py](./scripts/bench_persistent_matmul.py)
+
+实现要点：
+
+- 4090D 是 Ada / SM89，不使用 Hopper/Blackwell 侧重的 TMA 和 warp-specialize 路线。
+- Kernel 只启动 `min(NUM_SMS, num_tiles)` 个 program，每个 program 以 `NUM_SMS` 为步长循环处理多个 output tile。
+- 默认 fixed 配置为 `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4`，控制 shared memory 占用，适合 4090/4090D 这类卡。
+- autotune 配置限定在 4090D 友好的 shared-memory 范围内，避免教程中部分大 tile/TMA 配置在 4090 系列上失败。
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_persistent_matmul.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 --k 512 --dtype float16
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --min-power 10 --max-power 13 --k 512 --dtype float16
+```
+
 ## Dropout 入口
 
 参照官方 Low-Memory Dropout 教程，当前已落地两种 Triton dropout：

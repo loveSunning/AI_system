@@ -19,6 +19,7 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dt
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
 PYTHONPATH=python python3 scripts/bench_matmul.py --m 4096 --n 4096 --k 4096 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 --n 1024 --k 1024 --pattern vary_n
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
 ```
@@ -30,6 +31,7 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
@@ -41,6 +43,7 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --plot --min-power 12 --ma
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
 PYTHONPATH=python python3 scripts/bench_matmul.py --plot --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --plot --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
@@ -52,6 +55,7 @@ PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --min-power 12 --m
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
+PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
@@ -62,6 +66,7 @@ PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --rows 4096 --min-
 /workspace/AI_system/out/triton/benchmarks/w09_vector_add_softmax.csv
 /workspace/AI_system/out/triton/benchmarks/w10_matmul.csv
 /workspace/AI_system/out/triton/benchmarks/w11_grouped_gemm.csv
+/workspace/AI_system/out/triton/benchmarks/w11_persistent_matmul.csv
 /workspace/AI_system/out/triton/benchmarks/w12_dropout.csv
 /workspace/AI_system/out/triton/benchmarks/w12_layer_norm.csv
 /workspace/AI_system/out/triton/benchmarks/plots/
