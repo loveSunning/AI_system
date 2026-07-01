@@ -341,6 +341,36 @@ PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dt
 PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
 
+## W13 Online Softmax 入口
+
+当前已落地 online softmax 的 Torch 教学版和 Triton 版：
+- Kernel: [python/triton_playground/kernels/online_softmax.py](./python/triton_playground/kernels/online_softmax.py)
+- API: [python/triton_playground/ops/online_softmax.py](./python/triton_playground/ops/online_softmax.py)
+- Test: [tests/test_online_softmax.py](./tests/test_online_softmax.py)
+- Benchmark: [scripts/bench_online_softmax.py](./scripts/bench_online_softmax.py)
+- Note: [notes/online-softmax.md](./notes/online-softmax.md)
+
+实现要点：
+- `torch_online_softmax` 显式按列块维护 `running_max` 和 `running_sum`，不直接调用 `torch.softmax`。
+- `online_softmax` 的 Triton kernel 第一遍按块扫描得到最终归一化状态，第二遍写回输出。
+- benchmark 默认对比 `triton_online`、`torch_online`、`triton_fused` 和 `torch_softmax`。
+
+运行测试：
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_online_softmax.py
+```
+
+运行单点 benchmark：
+```bash
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --rows 4096 --cols 1024 --dtype float32 --block-size 1024
+```
+
+运行 sweep 和曲线图：
+```bash
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

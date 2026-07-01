@@ -17,6 +17,7 @@
 cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_vector_add.py --n-elements 16777216 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --rows 4096 --cols 1024 --dtype float32
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --rows 4096 --cols 1024 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_matmul.py --m 4096 --n 4096 --k 4096 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 --n 1024 --k 1024 --pattern vary_n
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 --k 512 --dtype float16
@@ -32,6 +33,7 @@ PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --rows 4096 --cols 8192
 ```bash
 PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --plot --min-power 12 --max-power 28 --dtype float32
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --plot --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --min-power 10 --max-power 13 --k 512 --dtype float16
@@ -47,6 +49,7 @@ PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --sweep --plot --rows 4
 ```bash
 PYTHONPATH=python python3 scripts/bench_vector_add.py --plot --min-power 12 --max-power 28 --dtype float32
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --plot --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --plot --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_matmul.py --plot --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --plot --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --plot --min-power 10 --max-power 13 --k 512 --dtype float16
@@ -61,6 +64,7 @@ PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --plot --min-power 1
 ```bash
 PYTHONPATH=python python3 scripts/bench_vector_add.py --sweep --min-power 12 --max-power 28 --dtype float32
 PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --rows 4096 --min-cols-power 7 --max-cols-power 12 --dtype float32
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --sweep --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
 PYTHONPATH=python python3 scripts/bench_matmul.py --sweep --min-power 8 --max-power 12 --dtype float16
 PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --min-group-size 1 --max-group-size 8 --m 1024 --n 1024 --k 1024 --pattern vary_n
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --min-power 10 --max-power 13 --k 512 --dtype float16
@@ -74,6 +78,7 @@ PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --min-power 
 
 ```text
 /workspace/AI_system/out/triton/benchmarks/w09_vector_add_softmax.csv
+/workspace/AI_system/out/triton/benchmarks/w13_online_softmax.csv
 /workspace/AI_system/out/triton/benchmarks/w10_matmul.csv
 /workspace/AI_system/out/triton/benchmarks/w11_grouped_gemm.csv
 /workspace/AI_system/out/triton/benchmarks/w11_persistent_matmul.csv

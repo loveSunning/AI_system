@@ -6,6 +6,7 @@ from triton_playground.ops.grouped_gemm import grouped_gemm
 from triton_playground.ops.layer_norm import layer_norm
 from triton_playground.ops.matmul import matmul, matmul_fixed
 from triton_playground.ops.matmul_bias_silu import matmul_bias_silu, torch_matmul_bias_silu
+from triton_playground.ops.online_softmax import online_softmax, torch_online_softmax
 from triton_playground.ops.persistent_matmul import persistent_matmul, persistent_matmul_fixed
 from triton_playground.ops.rms_norm import naive_rms_norm, rms_norm
 from triton_playground.ops.softmax_baselines import naive_softmax
@@ -22,10 +23,12 @@ __all__ = [
     "matmul_fixed",
     "naive_softmax",
     "naive_rms_norm",
+    "online_softmax",
     "persistent_matmul",
     "persistent_matmul_fixed",
     "rms_norm",
     "seeded_dropout",
+    "torch_online_softmax",
     "torch_matmul_bias_silu",
     "vector_add",
 ]

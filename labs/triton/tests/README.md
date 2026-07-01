@@ -32,4 +32,5 @@ PYTHONPATH=python pytest tests/test_persistent_matmul.py
 PYTHONPATH=python pytest tests/test_dropout.py
 PYTHONPATH=python pytest tests/test_layer_norm.py
 PYTHONPATH=python pytest tests/test_rms_norm.py
+PYTHONPATH=python pytest tests/test_online_softmax.py
 ```

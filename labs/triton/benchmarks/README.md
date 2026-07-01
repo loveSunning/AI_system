@@ -50,6 +50,21 @@ PYTHONPATH=python python3 scripts/bench_fused_softmax.py --sweep --plot --rows 4
 python3 scripts/plot_w09_benchmarks.py --dtype float32
 ```
 
+W13 online softmax benchmark：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --rows 4096 --cols 1024 --dtype float32 --block-size 1024
+PYTHONPATH=python python3 scripts/bench_online_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
+```
+
+对比项：
+
+- `triton_online`：两遍扫描的 Triton online softmax，一行一个 program，按 `BLOCK_SIZE` 分块。
+- `torch_online`：PyTorch loop 版 online recurrence，用来对照算法语义，不是性能目标。
+- `triton_fused`：W09 fused softmax baseline，整行放进一个 block。
+- `torch_softmax`：`torch.softmax(x, dim=-1)` baseline。
+
 W10 matmul benchmark：
 
 ```bash
