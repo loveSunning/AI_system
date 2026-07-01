@@ -18,6 +18,7 @@
 - `triton_playground.kernels.persistent_matmul`：W11 persistent matmul 的非 TMA fixed/autotuned kernel。
 - `triton_playground.kernels.dropout`：显式 mask dropout 和 low-memory seeded dropout。
 - `triton_playground.kernels.layer_norm`：affine LayerNorm 前向、`dx` 后向和 `dw/db` reduce kernel。
+- `triton_playground.kernels.rms_norm`：production-style 和 naive RMSNorm 前向、`dx` 后向和 `dweight` reduce kernel。
 - `triton_playground.ops.vector_add`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.fused_softmax`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.matmul`：面向测试、benchmark 和后续实验调用的 API。
@@ -25,3 +26,4 @@
 - `triton_playground.ops.persistent_matmul`：面向 4090D 友好 persistent matmul 实验的 API。
 - `triton_playground.ops.dropout`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.layer_norm`：对齐 `torch.nn.functional.layer_norm` 的最后一维 affine LayerNorm API。
+- `triton_playground.ops.rms_norm`：面向 W12 fused ops 的 RMSNorm production/naive API。

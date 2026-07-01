@@ -11,6 +11,7 @@
 - `test_persistent_matmul.py`
 - `test_dropout.py`
 - `test_layer_norm.py`
+- `test_rms_norm.py`
 - `test_fused_ops.py`
 - `test_online_softmax.py`
 - `test_attention_forward.py`
@@ -28,4 +29,5 @@ PYTHONPATH=python pytest tests/test_grouped_gemm.py
 PYTHONPATH=python pytest tests/test_persistent_matmul.py
 PYTHONPATH=python pytest tests/test_dropout.py
 PYTHONPATH=python pytest tests/test_layer_norm.py
+PYTHONPATH=python pytest tests/test_rms_norm.py
 ```

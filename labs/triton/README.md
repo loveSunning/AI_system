@@ -273,6 +273,43 @@ PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
 
+## RMSNorm 入口
+
+当前已落地 RMSNorm 的 production-style Triton 版本和 naive Triton 版本：
+
+- Kernel: [python/triton_playground/kernels/rms_norm.py](./python/triton_playground/kernels/rms_norm.py)
+- API: [python/triton_playground/ops/rms_norm.py](./python/triton_playground/ops/rms_norm.py)
+- Test: [tests/test_rms_norm.py](./tests/test_rms_norm.py)
+- Benchmark: [scripts/bench_rms_norm.py](./scripts/bench_rms_norm.py)
+
+实现边界：
+
+- 归一化维度固定为最后一维，`weight` 的形状必须为 `(x.shape[-1],)`。
+- 当前支持 contiguous CUDA tensor，dtype 为 `float16` 或 `float32`。
+- 与 LayerNorm lab 保持一致，单行 feature 使用小于等于 64KB 的 fused block。
+- production-style backward 使用 `dx + partial dweight` fused kernel 和最终 `dweight` reduce kernel。
+- naive backward 使用独立 `dx` kernel 和按列块扫描所有 row 的 `dweight` reduce kernel，主要用于教学和 benchmark 对比。
+
+运行测试：
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_rms_norm.py
+```
+
+运行单点 benchmark：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dtype float16 --mode forward
+```
+
+运行 sweep 和曲线图：
+
+```bash
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

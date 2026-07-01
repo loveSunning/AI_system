@@ -21,6 +21,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 - `w12_fused_ops.csv`
 - `w12_dropout.csv`
 - `w12_layer_norm.csv`
+- `w12_rms_norm.csv`
 - `w13_online_softmax.csv`
 - `w14_attention_forward.csv`
 
@@ -117,3 +118,17 @@ PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096
 - `triton`：Triton affine LayerNorm，前向保存 `mean/rstd`，后向分两阶段 reduce `dw/db`。
 - `torch`：`torch.nn.functional.layer_norm(x, normalized_shape, weight, bias, eps)`。
 - `--mode forward` 只测前向，`--mode backward` 复用一次前向图后只测 backward。
+RMSNorm benchmark:
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+```
+
+Providers:
+
+- `triton_prod`: production-style Triton RMSNorm, backward fuses `dx` and partial `dweight`.
+- `triton_naive`: simple Triton RMSNorm, backward uses separate `dx` and column-wise `dweight` reduction kernels.
+- `torch`: PyTorch expression baseline, `x * rsqrt(mean(x^2) + eps) * weight`.
+- `--mode forward` benchmarks forward only; `--mode backward` reuses one forward graph and benchmarks backward.

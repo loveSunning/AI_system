@@ -22,6 +22,7 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --group-size 4 --m 1024 
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
 ```
 
 生成 sweep 数据和 Triton `perf_report` 图：
@@ -34,6 +35,7 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --plot --min-gro
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
 
 生成 Triton `perf_report` 图：
@@ -46,6 +48,7 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --plot --min-group-size 
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --plot --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
 
 生成 sweep 数据：
@@ -58,6 +61,7 @@ PYTHONPATH=python python3 scripts/bench_grouped_gemm.py --sweep --min-group-size
 PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --min-power 10 --max-power 13 --k 512 --dtype float16
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 ```
 
 默认输出位置：
@@ -69,6 +73,7 @@ PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --rows 4096 --min-
 /workspace/AI_system/out/triton/benchmarks/w11_persistent_matmul.csv
 /workspace/AI_system/out/triton/benchmarks/w12_dropout.csv
 /workspace/AI_system/out/triton/benchmarks/w12_layer_norm.csv
+/workspace/AI_system/out/triton/benchmarks/w12_rms_norm.csv
 /workspace/AI_system/out/triton/benchmarks/plots/
 ```
 
