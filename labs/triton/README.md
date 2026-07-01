@@ -281,6 +281,7 @@ PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096
 - API: [python/triton_playground/ops/rms_norm.py](./python/triton_playground/ops/rms_norm.py)
 - Test: [tests/test_rms_norm.py](./tests/test_rms_norm.py)
 - Benchmark: [scripts/bench_rms_norm.py](./scripts/bench_rms_norm.py)
+- W12 report: [reports/w12-fused-ops.md](./reports/w12-fused-ops.md)
 
 实现边界：
 

@@ -7,6 +7,7 @@
 - `w09-summary.md`
 - `w10-matmul-autotune.md`
 - `w11-persistent-mapping.md`
+- `w12-fused-ops.md`
 - `w12-triton-playground-v0.1.md`
 - `w13-online-softmax.md`
 - `w14-attention-primitives-v0.1.md`
