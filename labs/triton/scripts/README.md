@@ -23,6 +23,7 @@ PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --m 8192 --n 8192 -
 PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_rms_norm.py --rows 4096 --cols 8192 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --m 1024 --n 1024 --k 1024 --dtype float16
 PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --rows 4096 --cols 8192 --dtype float16 --mode backward
 ```
 
@@ -37,6 +38,7 @@ PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --plot --mi
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --plot --min-power 10 --max-power 13 --k 1024 --dtype float16
 PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --sweep --plot --rows 4096 --cols 8192 --dtype float16 --mode backward
 ```
 
@@ -51,6 +53,7 @@ PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --plot --min-power 
 PYTHONPATH=python python3 scripts/bench_dropout.py --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_rms_norm.py --plot --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --plot --min-power 10 --max-power 13 --k 1024 --dtype float16
 ```
 
 生成 sweep 数据：
@@ -64,6 +67,7 @@ PYTHONPATH=python python3 scripts/bench_persistent_matmul.py --sweep --min-power
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --min-power 12 --max-power 28 --dtype float32 --p 0.5
 PYTHONPATH=python python3 scripts/bench_layer_norm.py --sweep --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --rows 4096 --min-cols 1024 --max-cols 16384 --cols-step 512 --dtype float16 --mode backward
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --min-power 10 --max-power 13 --k 1024 --dtype float16
 ```
 
 默认输出位置：
@@ -76,6 +80,7 @@ PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --rows 4096 --min-co
 /workspace/AI_system/out/triton/benchmarks/w12_dropout.csv
 /workspace/AI_system/out/triton/benchmarks/w12_layer_norm.csv
 /workspace/AI_system/out/triton/benchmarks/w12_rms_norm.csv
+/workspace/AI_system/out/triton/benchmarks/w12_matmul_bias_silu.csv
 /workspace/AI_system/out/triton/benchmarks/plots/
 ```
 

@@ -237,6 +237,36 @@ PYTHONPATH=python python3 scripts/bench_dropout.py --n-elements 16777216 --dtype
 PYTHONPATH=python python3 scripts/bench_dropout.py --sweep --plot --min-power 12 --max-power 28 --dtype float32 --p 0.5
 ```
 
+## MatMul + Bias + SiLU 入口
+
+当前已落地 fused matmul epilogue 版本：
+- Kernel: [python/triton_playground/kernels/matmul_bias_silu.py](./python/triton_playground/kernels/matmul_bias_silu.py)
+- API: [python/triton_playground/ops/matmul_bias_silu.py](./python/triton_playground/ops/matmul_bias_silu.py)
+- Test: [tests/test_matmul_bias_silu.py](./tests/test_matmul_bias_silu.py)
+- Benchmark: [scripts/bench_matmul_bias_silu.py](./scripts/bench_matmul_bias_silu.py)
+- W12 report: [reports/w12-fused-ops.md](./reports/w12-fused-ops.md)
+
+实现要点：
+- 主循环沿用 W10 matmul 的 `pid_m/pid_n` grouped ordering 和 `tl.dot`。
+- epilogue 直接计算 `z = A @ B + bias` 和 `SiLU(z) = z * sigmoid(z)`，避免单独物化 bias-add 中间结果。
+- 当前 benchmark 的 `TFLOP/s` 只按 matmul FLOPs 估算，bias 和 SiLU 的 element-wise FLOPs 不计入。
+
+运行测试：
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_matmul_bias_silu.py
+```
+
+运行单点 benchmark：
+```bash
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --m 1024 --n 1024 --k 1024 --dtype float16
+```
+
+运行 sweep 和曲线图：
+```bash
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --plot --min-power 10 --max-power 13 --k 1024 --dtype float16
+```
+
 ## LayerNorm 入口
 
 参照官方 Layer Normalization 教程，当前已落地 affine LayerNorm 的 Triton 前向和后向：

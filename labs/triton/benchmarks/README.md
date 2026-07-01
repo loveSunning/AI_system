@@ -22,6 +22,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 - `w12_dropout.csv`
 - `w12_layer_norm.csv`
 - `w12_rms_norm.csv`
+- `w12_matmul_bias_silu.csv`
 - `w13_online_softmax.csv`
 - `w14_attention_forward.csv`
 
@@ -132,3 +133,18 @@ Providers:
 - `triton_naive`: simple Triton RMSNorm, backward uses separate `dx` and column-wise `dweight` reduction kernels.
 - `torch`: PyTorch expression baseline, `x * rsqrt(mean(x^2) + eps) * weight`.
 - `--mode forward` benchmarks forward only; `--mode backward` reuses one forward graph and benchmarks backward.
+
+MatMul + Bias + SiLU benchmark:
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --m 1024 --n 1024 --k 1024 --dtype float16
+PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --plot --min-power 10 --max-power 13 --k 1024 --dtype float16
+```
+
+Providers:
+
+- `triton_fused`: Triton matmul mainloop with fused bias + SiLU epilogue.
+- `torch_expression`: PyTorch `torch.nn.functional.silu(a @ b + bias)` expression baseline.
+- `torch_compile`: `torch.compile` version of the PyTorch expression when available.
+- `TFLOP/s` counts matmul FLOPs only, so it is best used for same-shape relative comparison.

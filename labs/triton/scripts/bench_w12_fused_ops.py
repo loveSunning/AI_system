@@ -18,7 +18,9 @@ def run_command(command: list[str], dry_run: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the W12 fused-ops benchmark set: Dropout, LayerNorm, and RMSNorm.")
+    parser = argparse.ArgumentParser(
+        description="Run the W12 fused-ops benchmark set: Dropout, LayerNorm, RMSNorm, and MatMul+Bias+SiLU."
+    )
     parser.add_argument("--rows", type=int, default=4096)
     parser.add_argument("--cols", type=int, default=8192)
     parser.add_argument("--dtype", choices=["float16", "float32"], default="float16")
@@ -26,6 +28,11 @@ def main() -> None:
     parser.add_argument("--dropout-elements", type=int, default=1 << 24)
     parser.add_argument("--dropout-dtype", choices=["float16", "float32"], default="float32")
     parser.add_argument("--dropout-p", type=float, default=0.5)
+    parser.add_argument("--matmul-m", type=int, default=1024)
+    parser.add_argument("--matmul-n", type=int, default=1024)
+    parser.add_argument("--matmul-k", type=int, default=1024)
+    parser.add_argument("--matmul-dtype", choices=["float16", "float32"], default="float16")
+    parser.add_argument("--matmul-no-compile", action="store_true")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
     parser.add_argument("--sweep", action="store_true", help="Run the default sweep for each W12 op.")
@@ -81,7 +88,26 @@ def main() -> None:
             "--iters",
             str(args.iters),
         ],
+        [
+            python,
+            "scripts/bench_matmul_bias_silu.py",
+            "--m",
+            str(args.matmul_m),
+            "--n",
+            str(args.matmul_n),
+            "--k",
+            str(args.matmul_k),
+            "--dtype",
+            args.matmul_dtype,
+            "--warmup",
+            str(args.warmup),
+            "--iters",
+            str(args.iters),
+        ],
     ]
+
+    if args.matmul_no_compile:
+        commands[-1].append("--no-compile")
 
     if args.sweep:
         for command in commands:
