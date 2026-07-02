@@ -415,7 +415,8 @@ PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --ba
 - 每个 program 负责一个 `batch-head + Q block`。
 - 沿 K/V 的 S 维扫描 block，维护 online softmax 状态 `m/l/acc`。
 - 不物化完整 `scores/probs`，最后直接写回 `O`。
-- 当前是 forward-only 教学版，暂不包含 backward、FP8、autotune 和架构特化。
+- `flash_attention(...)` 通过 `torch.autograd.Function` 接入 Triton backward，计算 `dQ/dK/dV`。
+- 当前暂不包含 dropout、attention bias、FP8、autotune 和架构特化。
 
 运行测试：
 ```bash
@@ -427,6 +428,7 @@ PYTHONPATH=python pytest tests/test_fused_attention.py
 ```bash
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 ```
 
 运行 sweep 和曲线图：

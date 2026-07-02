@@ -16,7 +16,7 @@ if str(PYTHON_ROOT) not in sys.path:
 import torch
 import triton
 
-from triton_playground.ops import torch_fused_attention_reference, triton_fused_attention, triton_stepwise_attention
+from triton_playground.ops import flash_attention, torch_fused_attention_reference, triton_fused_attention, triton_stepwise_attention
 
 
 DTYPES = {
@@ -87,22 +87,45 @@ def assert_close(actual: torch.Tensor, expected: torch.Tensor) -> None:
 def make_inputs(args: argparse.Namespace) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     dtype = DTYPES[args.dtype]
     torch.manual_seed(0)
-    q = torch.randn((args.batch, args.heads, args.seq, args.dim), device="cuda", dtype=dtype)
-    k = torch.randn_like(q)
-    v = torch.randn_like(q)
+    requires_grad = args.mode == "backward"
+    q = torch.randn((args.batch, args.heads, args.seq, args.dim), device="cuda", dtype=dtype, requires_grad=requires_grad)
+    k = torch.randn_like(q, requires_grad=requires_grad)
+    v = torch.randn_like(q, requires_grad=requires_grad)
 
     if not args.skip_correctness:
-        expected = torch_fused_attention_reference(q, k, v, causal=args.causal)
-        actual = triton_fused_attention(
-            q,
-            k,
-            v,
-            causal=args.causal,
-            block_m=args.block_m,
-            block_n=args.block_n,
-            block_d=args.block_d,
-        )
-        assert_close(actual, expected)
+        if args.mode == "forward":
+            expected = torch_fused_attention_reference(q, k, v, causal=args.causal)
+            actual = triton_fused_attention(
+                q,
+                k,
+                v,
+                causal=args.causal,
+                block_m=args.block_m,
+                block_n=args.block_n,
+                block_d=args.block_d,
+            )
+            assert_close(actual, expected)
+        else:
+            q_ref = q.detach().clone().requires_grad_(True)
+            k_ref = k.detach().clone().requires_grad_(True)
+            v_ref = v.detach().clone().requires_grad_(True)
+            q_tri = q.detach().clone().requires_grad_(True)
+            k_tri = k.detach().clone().requires_grad_(True)
+            v_tri = v.detach().clone().requires_grad_(True)
+            dout = torch.randn_like(q)
+            torch_fused_attention_reference(q_ref, k_ref, v_ref, causal=args.causal).backward(dout)
+            flash_attention(
+                q_tri,
+                k_tri,
+                v_tri,
+                causal=args.causal,
+                block_m=args.block_m,
+                block_n=args.block_n,
+                block_d=args.block_d,
+            ).backward(dout)
+            torch.testing.assert_close(q_tri.grad.float(), q_ref.grad.float(), rtol=5e-2, atol=5e-2)
+            torch.testing.assert_close(k_tri.grad.float(), k_ref.grad.float(), rtol=5e-2, atol=5e-2)
+            torch.testing.assert_close(v_tri.grad.float(), v_ref.grad.float(), rtol=5e-2, atol=5e-2)
 
     return q, k, v
 
@@ -114,6 +137,53 @@ def benchmark_provider(
     v: torch.Tensor,
     args: argparse.Namespace,
 ) -> tuple[float, float, float]:
+    if args.mode == "backward":
+        dout = torch.randn_like(q)
+
+        def bench_backward(fn):
+            q.grad = None
+            k.grad = None
+            v.grad = None
+            fn().backward(dout)
+
+        if provider == "flash_attention":
+            return do_bench_ms(
+                lambda: bench_backward(
+                    lambda: flash_attention(
+                        q,
+                        k,
+                        v,
+                        causal=args.causal,
+                        block_m=args.block_m,
+                        block_n=args.block_n,
+                        block_d=args.block_d,
+                    )
+                ),
+                args.warmup,
+                args.iters,
+            )
+        if provider == "torch_attention":
+            return do_bench_ms(
+                lambda: bench_backward(lambda: torch_fused_attention_reference(q, k, v, causal=args.causal)),
+                args.warmup,
+                args.iters,
+            )
+        raise ValueError(f"provider {provider} does not support backward mode")
+
+    if provider == "flash_attention":
+        return do_bench_ms(
+            lambda: flash_attention(
+                q,
+                k,
+                v,
+                causal=args.causal,
+                block_m=args.block_m,
+                block_n=args.block_n,
+                block_d=args.block_d,
+            ),
+            args.warmup,
+            args.iters,
+        )
     if provider == "triton_fused":
         return do_bench_ms(
             lambda: triton_fused_attention(
@@ -148,7 +218,7 @@ def benchmark_provider(
 
 
 def config_text(provider: str, args: argparse.Namespace) -> str:
-    if provider == "triton_fused":
+    if provider in {"flash_attention", "triton_fused"}:
         return f"BLOCK_M={args.block_m};BLOCK_N={args.block_n};BLOCK_D={args.block_d or 'next_power_of_2(D)'};causal={args.causal}"
     if provider == "triton_stepwise":
         return f"BLOCK_M={args.block_m};BLOCK_N={args.block_n};BLOCK_D={args.stepwise_block_d};materialized;causal={args.causal}"
@@ -156,8 +226,10 @@ def config_text(provider: str, args: argparse.Namespace) -> str:
 
 
 def notes_text(provider: str, scores_mib: float, probs_mib: float) -> str:
+    if provider == "flash_attention":
+        return "Triton FlashAttention-1 style forward/backward; no scores/probs materialization"
     if provider == "triton_fused":
-        return "online softmax fused forward; no scores/probs materialization"
+        return "online softmax fused forward only; no scores/probs materialization"
     return f"materialized scores_fp32={scores_mib:.2f}MiB;probs={probs_mib:.2f}MiB"
 
 
@@ -176,7 +248,7 @@ def result_row(
         "impl": provider,
         "shape": f"B={args.batch};H={args.heads};S={args.seq};D={args.dim}",
         "dtype": args.dtype,
-        "config": config_text(provider, args),
+        "config": f"{config_text(provider, args)};mode={args.mode}",
         "warmup": args.warmup,
         "iters": args.iters,
         "avg_ms": f"{median_ms:.6f}",
@@ -290,7 +362,7 @@ def run_perf_report(args: argparse.Namespace) -> None:
 
 def parse_providers(raw: str) -> list[str]:
     providers = [part.strip() for part in raw.split(",") if part.strip()]
-    allowed = {"triton_fused", "triton_stepwise", "torch_attention"}
+    allowed = {"flash_attention", "triton_fused", "triton_stepwise", "torch_attention"}
     unknown = [provider for provider in providers if provider not in allowed]
     if unknown:
         raise argparse.ArgumentTypeError(f"unknown provider(s): {', '.join(unknown)}")
@@ -304,8 +376,9 @@ def main() -> None:
     parser.add_argument("--seq", type=int, default=256)
     parser.add_argument("--dim", type=int, default=64)
     parser.add_argument("--dtype", choices=DTYPES, default="float16")
+    parser.add_argument("--mode", choices=["forward", "backward"], default="forward")
     parser.add_argument("--causal", action="store_true")
-    parser.add_argument("--providers", type=parse_providers, default=parse_providers("triton_fused,triton_stepwise,torch_attention"))
+    parser.add_argument("--providers", type=parse_providers, default=parse_providers("flash_attention,triton_fused,triton_stepwise,torch_attention"))
     parser.add_argument("--block-m", type=int, default=16)
     parser.add_argument("--block-n", type=int, default=32)
     parser.add_argument("--block-d", type=int, default=None)
@@ -328,6 +401,8 @@ def main() -> None:
         raise ValueError("batch, heads, seq, and dim must be positive")
     if args.block_m <= 0 or args.block_n <= 0:
         raise ValueError("block_m and block_n must be positive")
+    if args.mode == "backward":
+        args.providers = [provider for provider in args.providers if provider in {"flash_attention", "torch_attention"}]
     if not args.providers:
         raise ValueError("at least one provider must be enabled")
 

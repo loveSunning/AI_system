@@ -10,7 +10,7 @@ fused:
 QK^T block -> online softmax state -> accumulate PV -> O
 ```
 
-当前实现是教学版 forward-only kernel，参考 Triton 官方 fused attention 教程的核心思路，但暂不实现 backward、FP8、TensorDescriptor、warp-specialization、Hopper/Blackwell 专用路径和 autotune。
+当前实现是 FlashAttention-1 learning implementation，参考 Triton 官方 fused attention 教程和原始 FlashAttention-1 的核心思路：forward 使用 online softmax，不物化 `scores/probs`；backward 使用 Triton kernel 计算 `dQ/dK/dV`；Python API 使用 `torch.autograd.Function` 暴露 `flash_attention(...)`。暂不实现 dropout、attention bias、FP8、TensorDescriptor、warp-specialization、Hopper/Blackwell 专用路径和 autotune。
 
 ## 输入输出
 
@@ -235,6 +235,41 @@ for each Q block:
 - 当前实现是教学版，未做 autotune、官方教程中的 descriptor 路径和架构特化。
 - 当前 `tl.dot(p, V)` 为了清晰使用 fp32 路径，性能不是最终目标。
 
+## Backward
+
+FlashAttention-1 backward 需要在不保存完整 `scores/probs` 的前提下重建局部概率块。当前实现 forward 会额外保存：
+
+```text
+lse = m + log(l)
+```
+
+backward 中重建：
+
+```text
+P_block = exp(QK_block * scale - lse[:, None])
+```
+
+反向传播公式：
+
+```text
+dV = P^T @ dO
+dP = dO @ V^T
+delta_i = sum_d O[i, d] * dO[i, d]
+dS = P * (dP - delta[:, None])
+dQ = dS @ K * scale
+dK = dS^T @ Q * scale
+```
+
+当前 backward 拆成三个 Triton kernel：
+
+```text
+1. preprocess: delta = rowsum(O * dO)
+2. dQ kernel: 每个 program 负责一个 Q block，扫描所有 K/V block
+3. dK/dV kernel: 每个 program 负责一个 K/V block，扫描所有 Q block
+```
+
+这样 forward/backward 都不需要保存或读取完整 `scores/probs`。
+
 ## 运行
 
 Correctness：
@@ -249,6 +284,7 @@ Benchmark：
 ```bash
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 

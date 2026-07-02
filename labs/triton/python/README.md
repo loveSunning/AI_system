@@ -34,4 +34,4 @@
 - `triton_playground.ops.matmul_bias_silu`：面向 W12 fused epilogue 实验的 `SiLU(A @ B + bias)` API。
 - `triton_playground.ops.online_softmax`：面向 W13 online softmax 实验的 Triton API 和 Torch 教学版。
 - `triton_playground.ops.attention_forward`：面向 W14 attention forward 实验的 Torch reference 和 Triton stepwise API。
-- `triton_playground.ops.fused_attention`：面向 W14 fused attention forward 实验的 Triton API 和 Torch reference 包装。
+- `triton_playground.ops.fused_attention`：面向 W14 FlashAttention-1 learning 实验的 Triton autograd API、forward-only API 和 Torch reference 包装。

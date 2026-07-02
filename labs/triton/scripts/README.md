@@ -28,6 +28,7 @@ PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --m 1024 --n 1024 --
 PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --rows 4096 --cols 8192 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 ```
 
 生成 sweep 数据和 Triton `perf_report` 图：

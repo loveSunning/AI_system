@@ -186,12 +186,14 @@ W14 fused attention benchmark:
 cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
 Providers:
 
-- `triton_fused`: one fused Triton forward kernel with online softmax state `m/l/acc`.
+- `flash_attention`: Triton FlashAttention-1 style autograd API with forward and backward kernels.
+- `triton_fused`: one fused Triton forward-only kernel with online softmax state `m/l/acc`.
 - `triton_stepwise`: materialized Triton baseline from `scripts/bench_attention_forward.py`.
 - `torch_attention`: PyTorch materialized baseline.
 - Fused attention does not materialize `scores/probs`; materialized baselines report estimated `scores/probs` memory in CSV `notes`.

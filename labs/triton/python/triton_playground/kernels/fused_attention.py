@@ -11,6 +11,7 @@ def _fused_attention_fwd_kernel(
     k_ptr,
     v_ptr,
     out_ptr,
+    lse_ptr,
     S: tl.constexpr,
     D: tl.constexpr,
     SCALE: tl.constexpr,
@@ -74,6 +75,205 @@ def _fused_attention_fwd_kernel(
         out,
         mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
     )
+    tl.store(lse_ptr + bh * S + offs_m, m_i + tl.log(l_i), mask=offs_m < S)
+
+
+@triton.jit
+def _fused_attention_bwd_preprocess_kernel(
+    out_ptr,
+    do_ptr,
+    delta_ptr,
+    S: tl.constexpr,
+    D: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    start_m = tl.program_id(axis=0)
+    bh = tl.program_id(axis=1)
+
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+    base = bh * S * D
+
+    out = tl.load(
+        out_ptr + base + offs_m[:, None] * D + offs_d[None, :],
+        mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
+        other=0.0,
+    ).to(tl.float32)
+    do = tl.load(
+        do_ptr + base + offs_m[:, None] * D + offs_d[None, :],
+        mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
+        other=0.0,
+    ).to(tl.float32)
+    delta = tl.sum(out * do, axis=1)
+    tl.store(delta_ptr + bh * S + offs_m, delta, mask=offs_m < S)
+
+
+@triton.jit
+def _fused_attention_bwd_dq_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    do_ptr,
+    lse_ptr,
+    delta_ptr,
+    dq_ptr,
+    S: tl.constexpr,
+    D: tl.constexpr,
+    SCALE: tl.constexpr,
+    CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    start_m = tl.program_id(axis=0)
+    bh = tl.program_id(axis=1)
+
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    q_base = q_ptr + bh * S * D
+    k_base = k_ptr + bh * S * D
+    v_base = v_ptr + bh * S * D
+    do_base = do_ptr + bh * S * D
+    dq_base = dq_ptr + bh * S * D
+
+    q = tl.load(
+        q_base + offs_m[:, None] * D + offs_d[None, :],
+        mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
+        other=0.0,
+    )
+    do = tl.load(
+        do_base + offs_m[:, None] * D + offs_d[None, :],
+        mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
+        other=0.0,
+    ).to(tl.float32)
+    lse = tl.load(lse_ptr + bh * S + offs_m, mask=offs_m < S, other=float("inf")).to(tl.float32)
+    delta = tl.load(delta_ptr + bh * S + offs_m, mask=offs_m < S, other=0.0).to(tl.float32)
+
+    dq = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
+    for kv_start in tl.range(0, S, BLOCK_N):
+        offs_kv = kv_start + offs_n
+        k_t = tl.load(
+            k_base + offs_kv[None, :] * D + offs_d[:, None],
+            mask=(offs_kv[None, :] < S) & (offs_d[:, None] < D),
+            other=0.0,
+        )
+        k = tl.load(
+            k_base + offs_kv[:, None] * D + offs_d[None, :],
+            mask=(offs_kv[:, None] < S) & (offs_d[None, :] < D),
+            other=0.0,
+        )
+        v_t = tl.load(
+            v_base + offs_kv[None, :] * D + offs_d[:, None],
+            mask=(offs_kv[None, :] < S) & (offs_d[:, None] < D),
+            other=0.0,
+        )
+
+        qk = tl.dot(q, k_t) * SCALE
+        valid = (offs_m[:, None] < S) & (offs_kv[None, :] < S)
+        if CAUSAL:
+            valid = valid & (offs_kv[None, :] <= offs_m[:, None])
+        qk = tl.where(valid, qk, -float("inf"))
+
+        p = tl.exp(qk - lse[:, None])
+        p = tl.where(valid, p, 0.0)
+        dp = tl.dot(do, v_t)
+        ds = p * (dp - delta[:, None])
+        dq += tl.dot(ds.to(tl.float32), k.to(tl.float32)) * SCALE
+
+    tl.store(
+        dq_base + offs_m[:, None] * D + offs_d[None, :],
+        dq,
+        mask=(offs_m[:, None] < S) & (offs_d[None, :] < D),
+    )
+
+
+@triton.jit
+def _fused_attention_bwd_dkdv_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    do_ptr,
+    lse_ptr,
+    delta_ptr,
+    dk_ptr,
+    dv_ptr,
+    S: tl.constexpr,
+    D: tl.constexpr,
+    SCALE: tl.constexpr,
+    CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    start_n = tl.program_id(axis=0)
+    bh = tl.program_id(axis=1)
+
+    offs_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    q_base = q_ptr + bh * S * D
+    k_base = k_ptr + bh * S * D
+    v_base = v_ptr + bh * S * D
+    do_base = do_ptr + bh * S * D
+    dk_base = dk_ptr + bh * S * D
+    dv_base = dv_ptr + bh * S * D
+
+    k_t = tl.load(
+        k_base + offs_n[None, :] * D + offs_d[:, None],
+        mask=(offs_n[None, :] < S) & (offs_d[:, None] < D),
+        other=0.0,
+    )
+    v_t = tl.load(
+        v_base + offs_n[None, :] * D + offs_d[:, None],
+        mask=(offs_n[None, :] < S) & (offs_d[:, None] < D),
+        other=0.0,
+    )
+
+    dk = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    dv = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    for q_start in tl.range(0, S, BLOCK_M):
+        q_rows = q_start + offs_m
+        q = tl.load(
+            q_base + q_rows[:, None] * D + offs_d[None, :],
+            mask=(q_rows[:, None] < S) & (offs_d[None, :] < D),
+            other=0.0,
+        )
+        do = tl.load(
+            do_base + q_rows[:, None] * D + offs_d[None, :],
+            mask=(q_rows[:, None] < S) & (offs_d[None, :] < D),
+            other=0.0,
+        ).to(tl.float32)
+        lse = tl.load(lse_ptr + bh * S + q_rows, mask=q_rows < S, other=float("inf")).to(tl.float32)
+        delta = tl.load(delta_ptr + bh * S + q_rows, mask=q_rows < S, other=0.0).to(tl.float32)
+
+        qk = tl.dot(q, k_t) * SCALE
+        valid = (q_rows[:, None] < S) & (offs_n[None, :] < S)
+        if CAUSAL:
+            valid = valid & (offs_n[None, :] <= q_rows[:, None])
+        qk = tl.where(valid, qk, -float("inf"))
+
+        p = tl.exp(qk - lse[:, None])
+        p = tl.where(valid, p, 0.0)
+        dv += tl.dot(tl.trans(p).to(tl.float32), do)
+
+        dp = tl.dot(do, v_t)
+        ds = p * (dp - delta[:, None])
+        dk += tl.dot(tl.trans(ds).to(tl.float32), q.to(tl.float32)) * SCALE
+
+    tl.store(
+        dk_base + offs_n[:, None] * D + offs_d[None, :],
+        dk,
+        mask=(offs_n[:, None] < S) & (offs_d[None, :] < D),
+    )
+    tl.store(
+        dv_base + offs_n[:, None] * D + offs_d[None, :],
+        dv,
+        mask=(offs_n[:, None] < S) & (offs_d[None, :] < D),
+    )
 
 
 def next_power_of_2(value: int) -> int:
@@ -110,6 +310,29 @@ def launch_fused_attention(
     block_n: int = 32,
     block_d: int | None = None,
 ) -> torch.Tensor:
+    out, _ = launch_fused_attention_with_lse(
+        q,
+        k,
+        v,
+        causal=causal,
+        scale=scale,
+        block_m=block_m,
+        block_n=block_n,
+        block_d=block_d,
+    )
+    return out
+
+
+def launch_fused_attention_with_lse(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    causal: bool = False,
+    scale: float | None = None,
+    block_m: int = 16,
+    block_n: int = 32,
+    block_d: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     B, H, S, D = _validate_fused_attention_inputs(q, k, v)
     if block_m <= 0 or block_n <= 0:
         raise ValueError("block_m and block_n must be positive")
@@ -126,6 +349,7 @@ def launch_fused_attention(
     k = k.contiguous()
     v = v.contiguous()
     out = torch.empty_like(q)
+    lse = torch.empty((B, H, S), device=q.device, dtype=torch.float32)
 
     grid = (triton.cdiv(S, block_m), B * H)
     _fused_attention_fwd_kernel[grid](
@@ -133,6 +357,7 @@ def launch_fused_attention(
         k,
         v,
         out,
+        lse,
         S,
         D,
         float(scale),
@@ -143,4 +368,98 @@ def launch_fused_attention(
         num_warps=4,
         num_stages=4,
     )
-    return out
+    return out, lse
+
+
+def launch_fused_attention_backward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    do: torch.Tensor,
+    causal: bool = False,
+    scale: float | None = None,
+    block_m: int = 16,
+    block_n: int = 32,
+    block_d: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    B, H, S, D = _validate_fused_attention_inputs(q, k, v)
+    if out.shape != q.shape or do.shape != q.shape:
+        raise ValueError("out and do must have the same shape as q")
+    if lse.shape != (B, H, S):
+        raise ValueError(f"lse must have shape {(B, H, S)}, got {tuple(lse.shape)}")
+    if block_m <= 0 or block_n <= 0:
+        raise ValueError("block_m and block_n must be positive")
+    if block_d is None:
+        block_d = next_power_of_2(D)
+    if block_d < D:
+        raise ValueError(f"block_d must be >= D, got block_d={block_d}, D={D}")
+    if block_d & (block_d - 1):
+        raise ValueError("block_d must be a power of two")
+    if scale is None:
+        scale = D ** -0.5
+
+    q = q.contiguous()
+    k = k.contiguous()
+    v = v.contiguous()
+    out = out.contiguous()
+    lse = lse.contiguous()
+    do = do.contiguous()
+
+    dq = torch.empty_like(q)
+    dk = torch.empty_like(k)
+    dv = torch.empty_like(v)
+    delta = torch.empty((B, H, S), device=q.device, dtype=torch.float32)
+    bh = B * H
+
+    q_grid = (triton.cdiv(S, block_m), bh)
+    kv_grid = (triton.cdiv(S, block_n), bh)
+    _fused_attention_bwd_preprocess_kernel[q_grid](
+        out,
+        do,
+        delta,
+        S,
+        D,
+        BLOCK_M=block_m,
+        BLOCK_D=block_d,
+        num_warps=4,
+    )
+    _fused_attention_bwd_dq_kernel[q_grid](
+        q,
+        k,
+        v,
+        do,
+        lse,
+        delta,
+        dq,
+        S,
+        D,
+        float(scale),
+        CAUSAL=causal,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_D=block_d,
+        num_warps=4,
+        num_stages=4,
+    )
+    _fused_attention_bwd_dkdv_kernel[kv_grid](
+        q,
+        k,
+        v,
+        do,
+        lse,
+        delta,
+        dk,
+        dv,
+        S,
+        D,
+        float(scale),
+        CAUSAL=causal,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_D=block_d,
+        num_warps=4,
+        num_stages=4,
+    )
+    return dq, dk, dv
