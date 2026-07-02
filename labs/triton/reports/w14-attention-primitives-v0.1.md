@@ -7,6 +7,7 @@
 | op | kernel | API | test | benchmark |
 | --- | --- | --- | --- | --- |
 | Attention Forward | `python/triton_playground/kernels/attention_forward.py` | `python/triton_playground/ops/attention_forward.py` | `tests/test_attention_forward.py` | `scripts/bench_attention_forward.py` |
+| Fused Attention Forward | `python/triton_playground/kernels/fused_attention.py` | `python/triton_playground/ops/fused_attention.py` | `tests/test_fused_attention.py` | `scripts/bench_fused_attention.py` |
 
 ## 算法
 
@@ -23,11 +24,33 @@ Triton 拆成三个 kernel：
 - `_attention_softmax_kernel`: 一行 scores 一个 program，输出 `probs`。
 - `_pv_out_kernel`: tile 化计算 `out = probs @ V`。
 
+Fused attention forward 把 softmax 和 `PV` 合入一个 kernel：
+
+```text
+for each Q block:
+    m = -inf
+    l = 0
+    acc = 0
+    for each K/V block:
+        qk = Q_block @ K_block.T * scale
+        qk = mask(qk)
+        m_new = max(m, rowmax(qk))
+        p = exp(qk - m_new)
+        alpha = exp(m - m_new)
+        l = l * alpha + rowsum(p)
+        acc = acc * alpha[:, None] + p @ V_block
+        m = m_new
+    O_block = acc / l[:, None]
+```
+
+详细流程见 `notes/fused-attention.md`。
+
 ## Correctness
 
 ```bash
 cd /workspace/AI_system/labs/triton
 PYTHONPATH=python pytest tests/test_attention_forward.py
+PYTHONPATH=python pytest tests/test_fused_attention.py
 ```
 
 覆盖点：
@@ -45,18 +68,23 @@ cd /workspace/AI_system/labs/triton
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
 默认输出：
 
 ```text
 out/triton/benchmarks/w14_attention_forward.csv
+out/triton/benchmarks/w14_fused_attention.csv
 out/triton/benchmarks/plots/
 ```
 
 Providers:
 
 - `triton_stepwise`: Triton materialized attention primitives。
+- `triton_fused`: Triton fused attention forward with online softmax state。
 - `torch_attention`: PyTorch materialized `matmul -> softmax -> matmul` baseline。
 
 CSV 中的 `notes` 会记录估算的物化显存：
@@ -72,7 +100,8 @@ probs = B * H * S * S * sizeof(dtype) bytes
 - `q/k/v` shape 必须相同，固定为 `[B, H, S, D]`。
 - softmax 当前要求 `softmax_block >= S`，适合教学版 materialized attention。
 - 没有做 online softmax + PV 融合，因此显存和 kernel launch 都不是 FlashAttention 路线。
+- Fused attention 当前是教学版 forward-only kernel，未实现 backward、autotune、官方教程中的 TensorDescriptor/FP8/架构特化路径。
 
 ## 下一步
 
-下一步把 W13 online softmax 的 `m/l` 状态带进 attention tile 循环中，避免物化完整 `scores/probs`，再逐步走向 fused attention forward。
+下一步是在 fused forward 的基础上继续补 backward，并把 tile config/autotune 和更接近官方教程的 descriptor 路线接入。

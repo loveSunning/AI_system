@@ -402,6 +402,38 @@ PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
+## W14 Fused Attention 入口
+
+当前已落地 fused attention forward 教学版：
+- Kernel: [python/triton_playground/kernels/fused_attention.py](./python/triton_playground/kernels/fused_attention.py)
+- API: [python/triton_playground/ops/fused_attention.py](./python/triton_playground/ops/fused_attention.py)
+- Test: [tests/test_fused_attention.py](./tests/test_fused_attention.py)
+- Benchmark: [scripts/bench_fused_attention.py](./scripts/bench_fused_attention.py)
+- Note: [notes/fused-attention.md](./notes/fused-attention.md)
+
+实现要点：
+- 每个 program 负责一个 `batch-head + Q block`。
+- 沿 K/V 的 S 维扫描 block，维护 online softmax 状态 `m/l/acc`。
+- 不物化完整 `scores/probs`，最后直接写回 `O`。
+- 当前是 forward-only 教学版，暂不包含 backward、FP8、autotune 和架构特化。
+
+运行测试：
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_fused_attention.py
+```
+
+运行单点 benchmark：
+```bash
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+```
+
+运行 sweep 和曲线图：
+```bash
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

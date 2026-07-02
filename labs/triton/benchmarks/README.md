@@ -25,6 +25,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 - `w12_matmul_bias_silu.csv`
 - `w13_online_softmax.csv`
 - `w14_attention_forward.csv`
+- `w14_fused_attention.csv`
 
 同一个 CSV 中保留 PyTorch、cuBLAS 或手写 CUDA reference 的结果，避免只看 Triton 单点数字。
 
@@ -178,3 +179,19 @@ Providers:
 - `triton_stepwise`: materialized Triton attention, split into QK scores, softmax, and PV output kernels.
 - `torch_attention`: PyTorch materialized baseline, `matmul -> softmax -> matmul`.
 - CSV `notes` records the estimated materialized `scores` fp32 memory and `probs` memory.
+
+W14 fused attention benchmark:
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
+Providers:
+
+- `triton_fused`: one fused Triton forward kernel with online softmax state `m/l/acc`.
+- `triton_stepwise`: materialized Triton baseline from `scripts/bench_attention_forward.py`.
+- `torch_attention`: PyTorch materialized baseline.
+- Fused attention does not materialize `scores/probs`; materialized baselines report estimated `scores/probs` memory in CSV `notes`.

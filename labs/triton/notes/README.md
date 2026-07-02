@@ -10,3 +10,4 @@
 
 - [program-id-mapping.md](./program-id-mapping.md)
 - [online-softmax.md](./online-softmax.md)
+- [fused-attention.md](./fused-attention.md)

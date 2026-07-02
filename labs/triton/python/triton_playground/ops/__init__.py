@@ -2,6 +2,7 @@
 
 from triton_playground.ops.attention_forward import torch_attention, triton_stepwise_attention
 from triton_playground.ops.dropout import dropout_with_mask, low_memory_dropout, seeded_dropout
+from triton_playground.ops.fused_attention import torch_fused_attention_reference, triton_fused_attention
 from triton_playground.ops.fused_softmax import fused_softmax
 from triton_playground.ops.grouped_gemm import grouped_gemm
 from triton_playground.ops.layer_norm import layer_norm
@@ -32,6 +33,8 @@ __all__ = [
     "torch_online_softmax",
     "torch_matmul_bias_silu",
     "torch_attention",
+    "torch_fused_attention_reference",
+    "triton_fused_attention",
     "triton_stepwise_attention",
     "vector_add",
 ]

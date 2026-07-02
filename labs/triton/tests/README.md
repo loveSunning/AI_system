@@ -16,6 +16,7 @@
 - `test_fused_ops.py`
 - `test_online_softmax.py`
 - `test_attention_forward.py`
+- `test_fused_attention.py`
 
 每个测试至少记录 shape、dtype、reference、`atol/rtol`。Attention 相关测试要覆盖 causal mask 和非 2 的幂 shape。
 
@@ -34,4 +35,5 @@ PYTHONPATH=python pytest tests/test_layer_norm.py
 PYTHONPATH=python pytest tests/test_rms_norm.py
 PYTHONPATH=python pytest tests/test_online_softmax.py
 PYTHONPATH=python pytest tests/test_attention_forward.py
+PYTHONPATH=python pytest tests/test_fused_attention.py
 ```
