@@ -163,3 +163,18 @@ Providers:
 - `torch_expression`: PyTorch `torch.nn.functional.silu(a @ b + bias)` expression baseline.
 - `torch_compile`: `torch.compile` version of the PyTorch expression when available.
 - `TFLOP/s` counts matmul FLOPs only, so it is best used for same-shape relative comparison.
+
+W14 attention forward benchmark:
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
+Providers:
+
+- `triton_stepwise`: materialized Triton attention, split into QK scores, softmax, and PV output kernels.
+- `torch_attention`: PyTorch materialized baseline, `matmul -> softmax -> matmul`.
+- CSV `notes` records the estimated materialized `scores` fp32 memory and `probs` memory.

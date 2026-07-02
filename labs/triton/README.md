@@ -371,6 +371,37 @@ PYTHONPATH=python python3 scripts/bench_online_softmax.py --rows 4096 --cols 102
 PYTHONPATH=python python3 scripts/bench_online_softmax.py --sweep --plot --rows 4096 --min-cols-power 7 --max-cols-power 13 --dtype float32 --block-size 1024
 ```
 
+## W14 Attention Forward 入口
+
+当前已落地 stepwise/materialized attention forward：
+- Kernel: [python/triton_playground/kernels/attention_forward.py](./python/triton_playground/kernels/attention_forward.py)
+- API: [python/triton_playground/ops/attention_forward.py](./python/triton_playground/ops/attention_forward.py)
+- Test: [tests/test_attention_forward.py](./tests/test_attention_forward.py)
+- Benchmark: [scripts/bench_attention_forward.py](./scripts/bench_attention_forward.py)
+- Report: [reports/w14-attention-primitives-v0.1.md](./reports/w14-attention-primitives-v0.1.md)
+
+实现要点：
+- `torch_attention` 是物化 reference：`scores = Q @ K.T`，`probs = softmax(scores)`，`out = probs @ V`。
+- `triton_stepwise_attention` 拆成三个 Triton kernel：`QK.T` scores、scores softmax、`PV` out。
+- 当前版本会物化 `scores/probs`，用于学习和验收；它不是 FlashAttention，也不追求比 fused attention 更快。
+
+运行测试：
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_attention_forward.py
+```
+
+运行单点 benchmark：
+```bash
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
+```
+
+运行 sweep 和曲线图：
+```bash
+PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

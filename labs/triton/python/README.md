@@ -21,6 +21,7 @@
 - `triton_playground.kernels.rms_norm`：production-style 和 naive RMSNorm 前向、`dx` 后向和 `dweight` reduce kernel。
 - `triton_playground.kernels.matmul_bias_silu`：W12 matmul mainloop + fused bias/SiLU epilogue kernel。
 - `triton_playground.kernels.online_softmax`：W13 两遍扫描 online softmax kernel。
+- `triton_playground.kernels.attention_forward`：W14 stepwise attention forward 的 QK、softmax、PV kernels。
 - `triton_playground.ops.vector_add`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.fused_softmax`：面向测试、benchmark 和后续实验调用的 API。
 - `triton_playground.ops.matmul`：面向测试、benchmark 和后续实验调用的 API。
@@ -31,3 +32,4 @@
 - `triton_playground.ops.rms_norm`：面向 W12 fused ops 的 RMSNorm production/naive API。
 - `triton_playground.ops.matmul_bias_silu`：面向 W12 fused epilogue 实验的 `SiLU(A @ B + bias)` API。
 - `triton_playground.ops.online_softmax`：面向 W13 online softmax 实验的 Triton API 和 Torch 教学版。
+- `triton_playground.ops.attention_forward`：面向 W14 attention forward 实验的 Torch reference 和 Triton stepwise API。
