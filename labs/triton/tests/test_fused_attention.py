@@ -78,6 +78,35 @@ def test_fused_attention_rejects_too_small_block_d() -> None:
         triton_fused_attention(q, q, q, block_d=32)
 
 
+def test_fused_attention_dropout_is_deterministic_for_same_seed() -> None:
+    torch, _, _, triton_fused_attention, _ = require_triton_fused_attention()
+    q = torch.randn((1, 2, 64, 32), device="cuda", dtype=torch.float16)
+    k = torch.randn_like(q)
+    v = torch.randn_like(q)
+
+    actual_a = triton_fused_attention(q, k, v, dropout_p=0.25, dropout_seed=123, block_m=16, block_n=32)
+    actual_b = triton_fused_attention(q, k, v, dropout_p=0.25, dropout_seed=123, block_m=16, block_n=32)
+    actual_c = triton_fused_attention(q, k, v, dropout_p=0.25, dropout_seed=456, block_m=16, block_n=32)
+
+    torch.testing.assert_close(actual_a, actual_b, rtol=0.0, atol=0.0)
+    assert (actual_a.float() - actual_c.float()).abs().max().item() > 0.0
+
+
+def test_flash_attention_dropout_backward_smoke() -> None:
+    torch, flash_attention, _, _, _ = require_triton_fused_attention()
+    q = torch.randn((1, 2, 32, 32), device="cuda", dtype=torch.float16, requires_grad=True)
+    k = torch.randn_like(q, requires_grad=True)
+    v = torch.randn_like(q, requires_grad=True)
+    dout = torch.randn_like(q)
+
+    out = flash_attention(q, k, v, dropout_p=0.2, dropout_seed=123, block_m=16, block_n=32)
+    out.backward(dout)
+
+    assert torch.isfinite(q.grad).all()
+    assert torch.isfinite(k.grad).all()
+    assert torch.isfinite(v.grad).all()
+
+
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("shape", [(1, 1, 16, 32), (1, 2, 32, 32), (1, 2, 33, 64)])
 def test_flash_attention_backward_matches_torch(causal: bool, shape: tuple[int, int, int, int]) -> None:

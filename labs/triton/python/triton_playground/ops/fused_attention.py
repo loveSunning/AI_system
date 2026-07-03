@@ -22,6 +22,8 @@ class _FlashAttention1Function(torch.autograd.Function):
         block_m: int,
         block_n: int,
         block_d: int | None,
+        dropout_p: float,
+        dropout_seed: int,
     ) -> torch.Tensor:
         out, lse = launch_fused_attention_with_lse(
             q,
@@ -32,6 +34,8 @@ class _FlashAttention1Function(torch.autograd.Function):
             block_m=block_m,
             block_n=block_n,
             block_d=block_d,
+            dropout_p=dropout_p,
+            dropout_seed=dropout_seed,
         )
         ctx.save_for_backward(q, k, v, out, lse)
         ctx.causal = causal
@@ -39,6 +43,8 @@ class _FlashAttention1Function(torch.autograd.Function):
         ctx.block_m = block_m
         ctx.block_n = block_n
         ctx.block_d = block_d
+        ctx.dropout_p = dropout_p
+        ctx.dropout_seed = dropout_seed
         return out
 
     @staticmethod
@@ -56,8 +62,10 @@ class _FlashAttention1Function(torch.autograd.Function):
             block_m=ctx.block_m,
             block_n=ctx.block_n,
             block_d=ctx.block_d,
+            dropout_p=ctx.dropout_p,
+            dropout_seed=ctx.dropout_seed,
         )
-        return dq, dk, dv, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None
 
 
 def triton_fused_attention(
@@ -69,6 +77,8 @@ def triton_fused_attention(
     block_m: int = 16,
     block_n: int = 32,
     block_d: int | None = None,
+    dropout_p: float = 0.0,
+    dropout_seed: int = 0,
 ) -> torch.Tensor:
     """Fused attention forward with online softmax, without materializing scores/probs."""
     return launch_fused_attention(
@@ -80,6 +90,8 @@ def triton_fused_attention(
         block_m=block_m,
         block_n=block_n,
         block_d=block_d,
+        dropout_p=dropout_p,
+        dropout_seed=dropout_seed,
     )
 
 
@@ -92,11 +104,24 @@ def flash_attention(
     block_m: int = 16,
     block_n: int = 32,
     block_d: int | None = None,
+    dropout_p: float = 0.0,
+    dropout_seed: int = 0,
 ) -> torch.Tensor:
     """FlashAttention-1 style exact attention with Triton forward and backward."""
     if scale is None:
         scale = q.shape[-1] ** -0.5
-    return _FlashAttention1Function.apply(q, k, v, causal, float(scale), block_m, block_n, block_d)
+    return _FlashAttention1Function.apply(
+        q,
+        k,
+        v,
+        causal,
+        float(scale),
+        block_m,
+        block_n,
+        block_d,
+        float(dropout_p),
+        int(dropout_seed),
+    )
 
 
 def torch_fused_attention_reference(

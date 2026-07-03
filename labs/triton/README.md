@@ -416,7 +416,8 @@ PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --ba
 - 沿 K/V 的 S 维扫描 block，维护 online softmax 状态 `m/l/acc`。
 - 不物化完整 `scores/probs`，最后直接写回 `O`。
 - `flash_attention(...)` 通过 `torch.autograd.Function` 接入 Triton backward，计算 `dQ/dK/dV`。
-- 当前暂不包含 dropout、attention bias、FP8、autotune 和架构特化。
+- attention dropout 使用 `dropout_p/dropout_seed` 在 forward/backward 中重建 mask，不物化完整 dropout mask。
+- 当前暂不包含 attention bias、FP8、autotune 和架构特化。
 
 运行测试：
 ```bash
@@ -429,6 +430,7 @@ PYTHONPATH=python pytest tests/test_fused_attention.py
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --dropout-p 0.1 --dropout-seed 123
 ```
 
 运行 sweep 和曲线图：

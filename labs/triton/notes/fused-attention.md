@@ -10,7 +10,7 @@ fused:
 QK^T block -> online softmax state -> accumulate PV -> O
 ```
 
-当前实现是 FlashAttention-1 learning implementation，参考 Triton 官方 fused attention 教程和原始 FlashAttention-1 的核心思路：forward 使用 online softmax，不物化 `scores/probs`；backward 使用 Triton kernel 计算 `dQ/dK/dV`；Python API 使用 `torch.autograd.Function` 暴露 `flash_attention(...)`。暂不实现 dropout、attention bias、FP8、TensorDescriptor、warp-specialization、Hopper/Blackwell 专用路径和 autotune。
+当前实现是 FlashAttention-1 learning implementation，参考 Triton 官方 fused attention 教程和原始 FlashAttention-1 的核心思路：forward 使用 online softmax，不物化 `scores/probs`；dropout 使用 seed 重建 mask，不物化完整 dropout mask；backward 使用 Triton kernel 计算 `dQ/dK/dV`；Python API 使用 `torch.autograd.Function` 暴露 `flash_attention(...)`。暂不实现 attention bias、FP8、TensorDescriptor、warp-specialization、Hopper/Blackwell 专用路径和 autotune。
 
 ## 输入输出
 
@@ -270,6 +270,47 @@ dK = dS^T @ Q * scale
 
 这样 forward/backward 都不需要保存或读取完整 `scores/probs`。
 
+## Dropout
+
+attention dropout 作用在 softmax 概率之后、乘 `V` 之前：
+
+```text
+P = softmax(scores)
+M = Bernoulli(1 - dropout_p)
+P_drop = M * P / (1 - dropout_p)
+O = P_drop @ V
+```
+
+当前实现不保存 `M`，而是在 forward/backward 中用同一组 deterministic offset 重建：
+
+```text
+dropout_offset = bh * S * S + q_index * S + k_index
+M = tl.rand(dropout_seed, dropout_offset) > dropout_p
+```
+
+forward 中：
+
+```text
+acc = acc * alpha[:, None] + P_drop @ V_block
+```
+
+注意 online softmax 的 `m/l` 仍然来自原始 `P`，dropout 不参与 softmax 归一化。
+
+backward 中同样重建 `M`：
+
+```text
+dV = P_drop^T @ dO
+dP = (dO @ V^T) * M / (1 - dropout_p)
+dS = P * (dP - delta[:, None])
+```
+
+`delta = rowsum(O * dO)` 仍然成立，因为：
+
+```text
+O = P_drop @ V
+delta_i = sum_j P_drop[i, j] * dot(dO[i], V[j])
+```
+
 ## 运行
 
 Correctness：
@@ -285,6 +326,7 @@ Benchmark：
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --dropout-p 0.1 --dropout-seed 123
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 

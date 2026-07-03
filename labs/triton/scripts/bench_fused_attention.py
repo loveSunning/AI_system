@@ -94,17 +94,42 @@ def make_inputs(args: argparse.Namespace) -> tuple[torch.Tensor, torch.Tensor, t
 
     if not args.skip_correctness:
         if args.mode == "forward":
-            expected = torch_fused_attention_reference(q, k, v, causal=args.causal)
-            actual = triton_fused_attention(
-                q,
-                k,
-                v,
-                causal=args.causal,
-                block_m=args.block_m,
-                block_n=args.block_n,
-                block_d=args.block_d,
-            )
-            assert_close(actual, expected)
+            if args.dropout_p == 0.0:
+                expected = torch_fused_attention_reference(q, k, v, causal=args.causal)
+                actual = triton_fused_attention(
+                    q,
+                    k,
+                    v,
+                    causal=args.causal,
+                    block_m=args.block_m,
+                    block_n=args.block_n,
+                    block_d=args.block_d,
+                )
+                assert_close(actual, expected)
+            else:
+                actual_a = triton_fused_attention(
+                    q,
+                    k,
+                    v,
+                    causal=args.causal,
+                    block_m=args.block_m,
+                    block_n=args.block_n,
+                    block_d=args.block_d,
+                    dropout_p=args.dropout_p,
+                    dropout_seed=args.dropout_seed,
+                )
+                actual_b = triton_fused_attention(
+                    q,
+                    k,
+                    v,
+                    causal=args.causal,
+                    block_m=args.block_m,
+                    block_n=args.block_n,
+                    block_d=args.block_d,
+                    dropout_p=args.dropout_p,
+                    dropout_seed=args.dropout_seed,
+                )
+                assert_close(actual_a, actual_b)
         else:
             q_ref = q.detach().clone().requires_grad_(True)
             k_ref = k.detach().clone().requires_grad_(True)
@@ -113,19 +138,20 @@ def make_inputs(args: argparse.Namespace) -> tuple[torch.Tensor, torch.Tensor, t
             k_tri = k.detach().clone().requires_grad_(True)
             v_tri = v.detach().clone().requires_grad_(True)
             dout = torch.randn_like(q)
-            torch_fused_attention_reference(q_ref, k_ref, v_ref, causal=args.causal).backward(dout)
-            flash_attention(
-                q_tri,
-                k_tri,
-                v_tri,
-                causal=args.causal,
-                block_m=args.block_m,
-                block_n=args.block_n,
-                block_d=args.block_d,
-            ).backward(dout)
-            torch.testing.assert_close(q_tri.grad.float(), q_ref.grad.float(), rtol=5e-2, atol=5e-2)
-            torch.testing.assert_close(k_tri.grad.float(), k_ref.grad.float(), rtol=5e-2, atol=5e-2)
-            torch.testing.assert_close(v_tri.grad.float(), v_ref.grad.float(), rtol=5e-2, atol=5e-2)
+            if args.dropout_p == 0.0:
+                torch_fused_attention_reference(q_ref, k_ref, v_ref, causal=args.causal).backward(dout)
+                flash_attention(
+                    q_tri,
+                    k_tri,
+                    v_tri,
+                    causal=args.causal,
+                    block_m=args.block_m,
+                    block_n=args.block_n,
+                    block_d=args.block_d,
+                ).backward(dout)
+                torch.testing.assert_close(q_tri.grad.float(), q_ref.grad.float(), rtol=5e-2, atol=5e-2)
+                torch.testing.assert_close(k_tri.grad.float(), k_ref.grad.float(), rtol=5e-2, atol=5e-2)
+                torch.testing.assert_close(v_tri.grad.float(), v_ref.grad.float(), rtol=5e-2, atol=5e-2)
 
     return q, k, v
 
@@ -157,6 +183,8 @@ def benchmark_provider(
                         block_m=args.block_m,
                         block_n=args.block_n,
                         block_d=args.block_d,
+                        dropout_p=args.dropout_p,
+                        dropout_seed=args.dropout_seed,
                     )
                 ),
                 args.warmup,
@@ -180,6 +208,8 @@ def benchmark_provider(
                 block_m=args.block_m,
                 block_n=args.block_n,
                 block_d=args.block_d,
+                dropout_p=args.dropout_p,
+                dropout_seed=args.dropout_seed,
             ),
             args.warmup,
             args.iters,
@@ -194,6 +224,8 @@ def benchmark_provider(
                 block_m=args.block_m,
                 block_n=args.block_n,
                 block_d=args.block_d,
+                dropout_p=args.dropout_p,
+                dropout_seed=args.dropout_seed,
             ),
             args.warmup,
             args.iters,
@@ -219,7 +251,10 @@ def benchmark_provider(
 
 def config_text(provider: str, args: argparse.Namespace) -> str:
     if provider in {"flash_attention", "triton_fused"}:
-        return f"BLOCK_M={args.block_m};BLOCK_N={args.block_n};BLOCK_D={args.block_d or 'next_power_of_2(D)'};causal={args.causal}"
+        return (
+            f"BLOCK_M={args.block_m};BLOCK_N={args.block_n};BLOCK_D={args.block_d or 'next_power_of_2(D)'};"
+            f"causal={args.causal};dropout_p={args.dropout_p};dropout_seed={args.dropout_seed}"
+        )
     if provider == "triton_stepwise":
         return f"BLOCK_M={args.block_m};BLOCK_N={args.block_n};BLOCK_D={args.stepwise_block_d};materialized;causal={args.causal}"
     return f"torch_matmul_softmax_matmul;causal={args.causal}"
@@ -227,9 +262,9 @@ def config_text(provider: str, args: argparse.Namespace) -> str:
 
 def notes_text(provider: str, scores_mib: float, probs_mib: float) -> str:
     if provider == "flash_attention":
-        return "Triton FlashAttention-1 style forward/backward; no scores/probs materialization"
+        return "Triton FlashAttention-1 style forward/backward; no scores/probs/dropout-mask materialization"
     if provider == "triton_fused":
-        return "online softmax fused forward only; no scores/probs materialization"
+        return "online softmax fused forward only; no scores/probs/dropout-mask materialization"
     return f"materialized scores_fp32={scores_mib:.2f}MiB;probs={probs_mib:.2f}MiB"
 
 
@@ -305,6 +340,8 @@ def run_perf_report(args: argparse.Namespace) -> None:
                 "block_n": args.block_n,
                 "block_d": args.block_d,
                 "stepwise_block_d": args.stepwise_block_d,
+                "dropout_p": args.dropout_p,
+                "dropout_seed": args.dropout_seed,
                 "warmup": args.warmup,
                 "iters": args.iters,
                 "skip_correctness": args.skip_correctness,
@@ -323,6 +360,8 @@ def run_perf_report(args: argparse.Namespace) -> None:
         block_n: int,
         block_d: int | None,
         stepwise_block_d: int,
+        dropout_p: float,
+        dropout_seed: int,
         warmup: int,
         iters: int,
         skip_correctness: bool,
@@ -339,6 +378,8 @@ def run_perf_report(args: argparse.Namespace) -> None:
             block_n=block_n,
             block_d=block_d,
             stepwise_block_d=stepwise_block_d,
+            dropout_p=dropout_p,
+            dropout_seed=dropout_seed,
             warmup=warmup,
             iters=iters,
             skip_correctness=skip_correctness,
@@ -383,6 +424,8 @@ def main() -> None:
     parser.add_argument("--block-n", type=int, default=32)
     parser.add_argument("--block-d", type=int, default=None)
     parser.add_argument("--stepwise-block-d", type=int, default=32)
+    parser.add_argument("--dropout-p", type=float, default=0.0)
+    parser.add_argument("--dropout-seed", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
     parser.add_argument("--skip-correctness", action="store_true")
@@ -401,6 +444,8 @@ def main() -> None:
         raise ValueError("batch, heads, seq, and dim must be positive")
     if args.block_m <= 0 or args.block_n <= 0:
         raise ValueError("block_m and block_n must be positive")
+    if not 0.0 <= args.dropout_p < 1.0:
+        raise ValueError("dropout_p must satisfy 0 <= dropout_p < 1")
     if args.mode == "backward":
         args.providers = [provider for provider in args.providers if provider in {"flash_attention", "torch_attention"}]
     if not args.providers:

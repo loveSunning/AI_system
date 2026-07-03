@@ -12,6 +12,8 @@ def _fused_attention_fwd_kernel(
     v_ptr,
     out_ptr,
     lse_ptr,
+    dropout_p,
+    dropout_seed,
     S: tl.constexpr,
     D: tl.constexpr,
     SCALE: tl.constexpr,
@@ -19,6 +21,7 @@ def _fused_attention_fwd_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    ENABLE_DROPOUT: tl.constexpr,
 ):
     start_m = tl.program_id(axis=0)
     bh = tl.program_id(axis=1)
@@ -65,7 +68,16 @@ def _fused_attention_fwd_kernel(
         alpha = tl.exp(m_i - m_new)
         l_new = l_i * alpha + tl.sum(p, axis=1)
 
-        acc = acc * alpha[:, None] + tl.dot(p.to(tl.float32), v.to(tl.float32))
+        p_for_v = p
+        if ENABLE_DROPOUT:
+            dropout_offsets = bh * S * S + offs_m[:, None] * S + offs_kv[None, :]
+            keep = tl.rand(dropout_seed, dropout_offsets) > dropout_p
+            keep = keep & (offs_kv[None, :] < S)
+            if CAUSAL:
+                keep = keep & (offs_kv[None, :] <= offs_m[:, None])
+            p_for_v = tl.where(keep, p / (1.0 - dropout_p), 0.0)
+
+        acc = acc * alpha[:, None] + tl.dot(p_for_v.to(tl.float32), v.to(tl.float32))
         m_i = m_new
         l_i = l_new
 
@@ -118,6 +130,8 @@ def _fused_attention_bwd_dq_kernel(
     lse_ptr,
     delta_ptr,
     dq_ptr,
+    dropout_p,
+    dropout_seed,
     S: tl.constexpr,
     D: tl.constexpr,
     SCALE: tl.constexpr,
@@ -125,6 +139,7 @@ def _fused_attention_bwd_dq_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    ENABLE_DROPOUT: tl.constexpr,
 ):
     start_m = tl.program_id(axis=0)
     bh = tl.program_id(axis=1)
@@ -180,6 +195,10 @@ def _fused_attention_bwd_dq_kernel(
         p = tl.exp(qk - lse[:, None])
         p = tl.where(valid, p, 0.0)
         dp = tl.dot(do, v_t)
+        if ENABLE_DROPOUT:
+            dropout_offsets = bh * S * S + offs_m[:, None] * S + offs_kv[None, :]
+            keep = (tl.rand(dropout_seed, dropout_offsets) > dropout_p) & valid
+            dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
         ds = p * (dp - delta[:, None])
         dq += tl.dot(ds.to(tl.float32), k.to(tl.float32)) * SCALE
 
@@ -200,6 +219,8 @@ def _fused_attention_bwd_dkdv_kernel(
     delta_ptr,
     dk_ptr,
     dv_ptr,
+    dropout_p,
+    dropout_seed,
     S: tl.constexpr,
     D: tl.constexpr,
     SCALE: tl.constexpr,
@@ -207,6 +228,7 @@ def _fused_attention_bwd_dkdv_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    ENABLE_DROPOUT: tl.constexpr,
 ):
     start_n = tl.program_id(axis=0)
     bh = tl.program_id(axis=1)
@@ -258,9 +280,16 @@ def _fused_attention_bwd_dkdv_kernel(
 
         p = tl.exp(qk - lse[:, None])
         p = tl.where(valid, p, 0.0)
-        dv += tl.dot(tl.trans(p).to(tl.float32), do)
+        p_for_v = p
+        if ENABLE_DROPOUT:
+            dropout_offsets = bh * S * S + q_rows[:, None] * S + offs_n[None, :]
+            keep = (tl.rand(dropout_seed, dropout_offsets) > dropout_p) & valid
+            p_for_v = tl.where(keep, p / (1.0 - dropout_p), 0.0)
+        dv += tl.dot(tl.trans(p_for_v).to(tl.float32), do)
 
         dp = tl.dot(do, v_t)
+        if ENABLE_DROPOUT:
+            dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
         ds = p * (dp - delta[:, None])
         dk += tl.dot(tl.trans(ds).to(tl.float32), q.to(tl.float32)) * SCALE
 
@@ -300,6 +329,11 @@ def _validate_fused_attention_inputs(q: torch.Tensor, k: torch.Tensor, v: torch.
     return q.shape
 
 
+def _validate_dropout(dropout_p: float) -> None:
+    if not 0.0 <= dropout_p < 1.0:
+        raise ValueError(f"dropout_p must satisfy 0 <= dropout_p < 1, got {dropout_p}")
+
+
 def launch_fused_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -309,6 +343,8 @@ def launch_fused_attention(
     block_m: int = 16,
     block_n: int = 32,
     block_d: int | None = None,
+    dropout_p: float = 0.0,
+    dropout_seed: int = 0,
 ) -> torch.Tensor:
     out, _ = launch_fused_attention_with_lse(
         q,
@@ -319,6 +355,8 @@ def launch_fused_attention(
         block_m=block_m,
         block_n=block_n,
         block_d=block_d,
+        dropout_p=dropout_p,
+        dropout_seed=dropout_seed,
     )
     return out
 
@@ -332,8 +370,11 @@ def launch_fused_attention_with_lse(
     block_m: int = 16,
     block_n: int = 32,
     block_d: int | None = None,
+    dropout_p: float = 0.0,
+    dropout_seed: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     B, H, S, D = _validate_fused_attention_inputs(q, k, v)
+    _validate_dropout(dropout_p)
     if block_m <= 0 or block_n <= 0:
         raise ValueError("block_m and block_n must be positive")
     if block_d is None:
@@ -358,6 +399,8 @@ def launch_fused_attention_with_lse(
         v,
         out,
         lse,
+        float(dropout_p),
+        int(dropout_seed),
         S,
         D,
         float(scale),
@@ -365,6 +408,7 @@ def launch_fused_attention_with_lse(
         BLOCK_M=block_m,
         BLOCK_N=block_n,
         BLOCK_D=block_d,
+        ENABLE_DROPOUT=dropout_p > 0.0,
         num_warps=4,
         num_stages=4,
     )
@@ -383,8 +427,11 @@ def launch_fused_attention_backward(
     block_m: int = 16,
     block_n: int = 32,
     block_d: int | None = None,
+    dropout_p: float = 0.0,
+    dropout_seed: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     B, H, S, D = _validate_fused_attention_inputs(q, k, v)
+    _validate_dropout(dropout_p)
     if out.shape != q.shape or do.shape != q.shape:
         raise ValueError("out and do must have the same shape as q")
     if lse.shape != (B, H, S):
@@ -433,6 +480,8 @@ def launch_fused_attention_backward(
         lse,
         delta,
         dq,
+        float(dropout_p),
+        int(dropout_seed),
         S,
         D,
         float(scale),
@@ -440,6 +489,7 @@ def launch_fused_attention_backward(
         BLOCK_M=block_m,
         BLOCK_N=block_n,
         BLOCK_D=block_d,
+        ENABLE_DROPOUT=dropout_p > 0.0,
         num_warps=4,
         num_stages=4,
     )
@@ -452,6 +502,8 @@ def launch_fused_attention_backward(
         delta,
         dk,
         dv,
+        float(dropout_p),
+        int(dropout_seed),
         S,
         D,
         float(scale),
@@ -459,6 +511,7 @@ def launch_fused_attention_backward(
         BLOCK_M=block_m,
         BLOCK_N=block_n,
         BLOCK_D=block_d,
+        ENABLE_DROPOUT=dropout_p > 0.0,
         num_warps=4,
         num_stages=4,
     )

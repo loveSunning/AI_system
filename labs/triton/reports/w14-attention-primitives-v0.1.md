@@ -56,6 +56,15 @@ dQ = dS @ K * scale
 dK = dS^T @ Q * scale
 ```
 
+Attention dropout 作用在 softmax 概率之后：
+
+```text
+P_drop = Bernoulli(1 - dropout_p) * P / (1 - dropout_p)
+O = P_drop @ V
+```
+
+当前实现用 `dropout_seed + (bh, q, k)` offset 在 forward/backward 中重建 mask，不物化完整 dropout mask。
+
 ## Correctness
 
 ```bash
@@ -82,6 +91,7 @@ PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --ba
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --causal
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --dropout-p 0.1 --dropout-seed 123
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
@@ -113,7 +123,7 @@ probs = B * H * S * S * sizeof(dtype) bytes
 - `q/k/v` shape 必须相同，固定为 `[B, H, S, D]`。
 - softmax 当前要求 `softmax_block >= S`，适合教学版 materialized attention。
 - 没有做 online softmax + PV 融合，因此显存和 kernel launch 都不是 FlashAttention 路线。
-- Fused attention 当前是教学版 FlashAttention-1 forward/backward kernel，未实现 dropout、attention bias、autotune、官方教程中的 TensorDescriptor/FP8/架构特化路径。
+- Fused attention 当前是教学版 FlashAttention-1 forward/backward/dropout kernel，未实现 attention bias、autotune、官方教程中的 TensorDescriptor/FP8/架构特化路径。
 
 ## 下一步
 
