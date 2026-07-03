@@ -438,6 +438,42 @@ PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 -
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
+## W14 FlashAttention v2 入口
+
+当前已单独落地一个偏官方教程 06 风格的 FlashAttention v2/performance-engineering 版本：
+- Kernel: [python/triton_playground/kernels/flash_attention_v2.py](./python/triton_playground/kernels/flash_attention_v2.py)
+- API: [python/triton_playground/ops/flash_attention_v2.py](./python/triton_playground/ops/flash_attention_v2.py)
+- Test: [tests/test_flash_attention_v2.py](./tests/test_flash_attention_v2.py)
+- Benchmark: [scripts/bench_flash_attention_v2.py](./scripts/bench_flash_attention_v2.py)
+- Note: [notes/flash-attention-v2.md](./notes/flash-attention-v2.md)
+
+实现要点：
+- 保留官方教程的 `exp2/log2` 数值路径：`sm_scale` 先乘 `1 / ln(2)`，kernel 内使用 `tl.math.exp2`。
+- forward 使用 `STAGE` 拆分 causal：非 causal 一次扫全局，causal 分 off-band 与 on-band。
+- forward 加入 `@triton.autotune`，搜索 `BLOCK_M/BLOCK_N/num_warps/num_stages`，并按 `N_CTX/HEAD_DIM/STAGE` 剪枝。
+- 支持 Triton TensorDescriptor API；在 Hopper/Blackwell 可走 host descriptor/warp-specialize 相关路径。
+- backward 按官方教程结构分为 preprocess、`dK/dV`、`dQ`，保存 `lse` 并重建局部概率块。
+- 当前学习版约束：`float16`，`S` 必须是 128 的倍数；暂不包含 dropout、attention bias、FP8 输出路径。
+
+运行测试：
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python pytest tests/test_flash_attention_v2.py
+```
+
+运行单点 benchmark：
+```bash
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --mode backward --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
+```
+
+运行 sweep 和曲线图：
+```bash
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --sweep --plot --mode backward --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
 ## 证据要求
 
 每个 landed kernel 至少保存四类证据：

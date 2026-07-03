@@ -26,6 +26,7 @@ stage,op,impl,shape,dtype,config,warmup,iters,avg_ms,min_ms,max_ms,throughput,un
 - `w13_online_softmax.csv`
 - `w14_attention_forward.csv`
 - `w14_fused_attention.csv`
+- `w14_flash_attention_v2.csv`
 
 同一个 CSV 中保留 PyTorch、cuBLAS 或手写 CUDA reference 的结果，避免只看 Triton 单点数字。
 
@@ -198,3 +199,20 @@ Providers:
 - `triton_stepwise`: materialized Triton baseline from `scripts/bench_attention_forward.py`.
 - `torch_attention`: PyTorch materialized baseline.
 - Fused attention does not materialize `scores/probs/dropout_mask`; materialized baselines report estimated `scores/probs` memory in CSV `notes`.
+
+W14 FlashAttention v2 benchmark:
+
+```bash
+cd /workspace/AI_system/labs/triton
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16 --causal
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --mode backward --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+```
+
+Providers:
+
+- `flash_attention_v2`: official tutorial 06 style path with `exp2/log2`, `STAGE` causal split, autotune, and TensorDescriptor support.
+- `flash_attention_v1`: the project learning implementation from `ops/fused_attention.py`.
+- `torch_attention`: PyTorch materialized baseline.
+- This path currently supports `float16` and sequence lengths that are multiples of 128. It does not include dropout; use `bench_fused_attention.py` for the v1 dropout path.

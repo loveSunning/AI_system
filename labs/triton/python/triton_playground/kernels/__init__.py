@@ -7,6 +7,11 @@ from triton_playground.kernels.fused_attention import (
     launch_fused_attention_backward,
     launch_fused_attention_with_lse,
 )
+from triton_playground.kernels.flash_attention_v2 import (
+    launch_flash_attention_v2,
+    launch_flash_attention_v2_backward,
+    launch_flash_attention_v2_with_lse,
+)
 from triton_playground.kernels.fused_softmax import launch_fused_softmax
 from triton_playground.kernels.matmul import get_cuda_autotune_config, launch_matmul, launch_matmul_fixed
 from triton_playground.kernels.matmul_bias_silu import launch_matmul_bias_silu
@@ -19,6 +24,9 @@ __all__ = [
     "launch_fused_attention",
     "launch_fused_attention_backward",
     "launch_fused_attention_with_lse",
+    "launch_flash_attention_v2",
+    "launch_flash_attention_v2_backward",
+    "launch_flash_attention_v2_with_lse",
     "launch_fused_softmax",
     "launch_matmul",
     "launch_matmul_bias_silu",

@@ -30,6 +30,8 @@ PYTHONPATH=python python3 scripts/bench_attention_forward.py --batch 1 --heads 8
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --mode backward --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --batch 1 --heads 8 --seq 256 --dim 64 --dtype float16 --dropout-p 0.1 --dropout-seed 123
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --mode backward --batch 1 --heads 8 --seq 1024 --dim 64 --dtype float16
 ```
 
 生成 sweep 数据和 Triton `perf_report` 图：
@@ -48,6 +50,7 @@ PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --plot --min
 PYTHONPATH=python python3 scripts/bench_w12_fused_ops.py --sweep --plot --rows 4096 --cols 8192 --dtype float16 --mode backward
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --sweep --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
 生成 Triton `perf_report` 图：
@@ -65,6 +68,7 @@ PYTHONPATH=python python3 scripts/bench_rms_norm.py --plot --rows 4096 --min-col
 PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --plot --min-power 10 --max-power 13 --k 1024 --dtype float16
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --plot --batch 1 --heads 8 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --plot --batch 1 --heads 8 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --plot --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
 生成 sweep 数据：
@@ -82,6 +86,7 @@ PYTHONPATH=python python3 scripts/bench_rms_norm.py --sweep --rows 4096 --min-co
 PYTHONPATH=python python3 scripts/bench_matmul_bias_silu.py --sweep --min-power 10 --max-power 13 --k 1024 --dtype float16
 PYTHONPATH=python python3 scripts/bench_attention_forward.py --sweep --batch 1 --heads 8 --dim 64 --dtype float16
 PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --batch 1 --heads 8 --dim 64 --dtype float16
+PYTHONPATH=python python3 scripts/bench_flash_attention_v2.py --sweep --batch 1 --heads 8 --dim 64 --dtype float16
 ```
 
 默认输出位置：
@@ -98,6 +103,7 @@ PYTHONPATH=python python3 scripts/bench_fused_attention.py --sweep --batch 1 --h
 /workspace/AI_system/out/triton/benchmarks/w12_matmul_bias_silu.csv
 /workspace/AI_system/out/triton/benchmarks/w14_attention_forward.csv
 /workspace/AI_system/out/triton/benchmarks/w14_fused_attention.csv
+/workspace/AI_system/out/triton/benchmarks/w14_flash_attention_v2.csv
 /workspace/AI_system/out/triton/benchmarks/plots/
 ```
 

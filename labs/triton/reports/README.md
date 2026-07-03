@@ -11,6 +11,7 @@
 - `w12-triton-playground-v0.1.md`
 - `w13-online-softmax.md`
 - `w14-attention-primitives-v0.1.md`
+- `w14-flash-attention-v2.md`
 
 每份报告至少回答：
 
