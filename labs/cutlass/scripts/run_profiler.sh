@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROFILER=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+PROFILER="${REPO_ROOT}/3rdparty/cutlass/build/linux-4090d/tools/profiler/cutlass_profiler"
 OPERATION="Gemm"
 M="4096"
 N="4096"
@@ -41,8 +43,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${PROFILER}" || ! -x "${PROFILER}" ]]; then
-  echo "cutlass_profiler was not found or is not executable: ${PROFILER:-<unset>}" >&2
+if [[ ! -f "${PROFILER}" ]]; then
+  echo "cutlass_profiler was not found: ${PROFILER}" >&2
+  echo "Run: bash ./labs/cutlass/scripts/configure_official_cutlass.sh" >&2
+  echo "Then: bash ./labs/cutlass/scripts/build_official_cutlass.sh" >&2
+  exit 2
+fi
+
+if [[ ! -x "${PROFILER}" ]]; then
+  echo "cutlass_profiler exists but is not executable: ${PROFILER}" >&2
+  echo "Try: chmod +x ${PROFILER}" >&2
   exit 2
 fi
 

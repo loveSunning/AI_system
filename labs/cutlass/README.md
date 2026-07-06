@@ -1,96 +1,98 @@
 # CUTLASS Lab
 
-This lab starts after the CuTe basics. It focuses on CUTLASS Quickstart, CUTLASS Profiler, GEMM API 3.x, Efficient GEMM, parameter sweeps, and fused epilogues.
+This lab uses the local CUTLASS checkout at `3rdparty/cutlass`.
 
-## Structure
+For normal study work, build only this repo's small smoke target. Do not build
+the official CUTLASS profiler unless you explicitly need profiler sweeps.
 
-```text
-labs/cutlass/
-|-- CMakeLists.txt
-|-- README.md
-|-- examples/
-|   |-- README.md
-|   `-- cutlass_header_probe.cu
-|-- notes/
-|   |-- README.md
-|   |-- learning-plan.md
-|   |-- gpu-targets.md
-|   `-- windows-linux-build.md
-|-- scripts/
-|   |-- README.md
-|   |-- build.ps1
-|   |-- build.sh
-|   |-- check_env.ps1
-|   |-- check_env.sh
-|   |-- configure.ps1
-|   |-- configure.sh
-|   |-- run_profiler.ps1
-|   `-- run_profiler.sh
-|-- benchmarks/
-|   `-- README.md
-`-- reports/
-    `-- README.md
-```
+## Direct CMake Build
 
-## External Dependency
-
-This repository uses a local CUTLASS 4.5 checkout:
-
-```text
-3rdparty/cutlass
-```
-
-You can override it with `CUTLASS_ROOT`, `-CutlassRoot`, `--cutlass-root`, or `-DAI_SYSTEM_CUTLASS_ROOT=...` when testing another checkout.
-
-The local CMake targets include:
-
-- `3rdparty/cutlass/include`
-- `3rdparty/cutlass/tools/util/include`
-
-## Windows Support
-
-NVIDIA CUTLASS documentation states that Windows builds are supported with Visual Studio. The practical baseline for this lab is:
-
-- Windows 10 or 11
-- Visual Studio 2022
-- CUDA Toolkit new enough for the target architecture
-- CMake 3.18+
-- Long path support enabled on Windows
-
-For Windows, this lab targets RTX 5060. NVIDIA lists RTX 5060 under compute capability `12.0`, so the Windows preset uses `sm_120`.
-
-For Linux / WSL, this lab targets RTX 4090D. NVIDIA lists RTX 4090-class Ada GPUs under compute capability `8.9`, so the Linux preset uses `sm_89`.
-
-Official references:
-
-- https://docs.nvidia.com/cutlass/latest/media/docs/cpp/build/building_in_windows_with_visual_studio.html
-- https://docs.nvidia.com/cutlass/latest/media/docs/cpp/quickstart.html
-- https://developer.nvidia.com/cuda/gpus
-
-Before the first build, run `check_env.ps1` or `check_env.sh`. It checks the CUDA Toolkit, visible GPUs, `CUTLASS_ROOT`, whether CUTLASS/CuTe headers are present in the CUDA Toolkit include directory, and whether the installed `nvcc` lists the expected target SM.
-
-## Build
-
-Windows 10/11 + Visual Studio 2022 + RTX 5060:
+Windows 10/11 + RTX 5060:
 
 ```powershell
 cd D:\workspace\learing\AI_system
-.\labs\cutlass\scripts\configure.ps1
-.\labs\cutlass\scripts\build.ps1
-.\out\build\windows-vs2022-cuda-release\Release\cutlass_header_probe.exe
+cmake --preset windows-vs2022-cuda-release
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cutlass_header_probe
+.\out\build\windows-vs2022-cuda-release\labs\cutlass\Release\cutlass_header_probe.exe
 ```
 
 Linux / WSL + RTX 4090D:
 
 ```bash
 cd /workspace/AI_system
-labs/cutlass/scripts/configure.sh
-labs/cutlass/scripts/build.sh
+cmake --preset linux-make-cuda-release
+cmake --build --preset linux-make-cuda-release --target cutlass_header_probe
 ./out/build/linux-make-cuda-release/labs/cutlass/cutlass_header_probe
 ```
 
-The root presets intentionally avoid dual-architecture builds here: Windows is RTX 5060 / `sm_120`, Linux is RTX 4090D / `sm_89`.
+Expected Linux CMake line:
 
-## First Milestone
+```text
+AI_system CUDA architectures: 89 (RTX 4090D)
+```
 
-Build `cutlass_header_probe` first. It only verifies that headers, CUDA runtime, target architecture selection, and device detection are wired correctly. After that, move to official examples and `cutlass_profiler`.
+Expected Windows CMake line:
+
+```text
+AI_system CUDA architectures: 120 (RTX 5060)
+```
+
+## Optional Wrappers
+
+The wrapper scripts run the same commands with the repo defaults:
+
+```powershell
+.\labs\cutlass\scripts\configure.ps1
+.\labs\cutlass\scripts\build.ps1
+```
+
+```bash
+bash ./labs/cutlass/scripts/configure.sh
+bash ./labs/cutlass/scripts/build.sh
+```
+
+Use `bash script.sh` on Linux if the executable bit is not set.
+
+## Optional Profiler
+
+The official `cutlass_profiler` is separate from this repo's smoke target. It
+configures and builds a large generated CUTLASS kernel library, so it is much
+slower and much noisier.
+
+Linux / WSL + RTX 4090D:
+
+```bash
+bash ./labs/cutlass/scripts/configure_official_cutlass.sh
+bash ./labs/cutlass/scripts/build_official_cutlass.sh
+bash ./labs/cutlass/scripts/run_profiler.sh
+```
+
+Windows + RTX 5060:
+
+```powershell
+.\labs\cutlass\scripts\configure_official_cutlass.ps1
+.\labs\cutlass\scripts\build_official_cutlass.ps1
+.\labs\cutlass\scripts\run_profiler.ps1
+```
+
+## Dependency
+
+CUTLASS is not part of the CUDA Toolkit. CUDA provides `nvcc`, runtime headers,
+cuBLAS, etc. CUTLASS/CuTe headers come from this checkout:
+
+```text
+3rdparty/cutlass/include/cutlass
+3rdparty/cutlass/include/cute
+```
+
+Check the dependency:
+
+```bash
+test -f 3rdparty/cutlass/include/cutlass/cutlass.h
+test -f 3rdparty/cutlass/include/cute/tensor.hpp
+```
+
+```powershell
+Test-Path .\3rdparty\cutlass\include\cutlass\cutlass.h
+Test-Path .\3rdparty\cutlass\include\cute\tensor.hpp
+```

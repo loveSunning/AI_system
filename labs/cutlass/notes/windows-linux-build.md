@@ -1,67 +1,73 @@
-# CUTLASS Windows / Linux Build Notes
+# CUTLASS Build Notes
 
-## Official Support Boundary
+There are two different builds. Keep them separate.
 
-NVIDIA CUTLASS documentation includes a Windows + Visual Studio build path. The practical Windows baseline for this lab is:
+## 1. Local Smoke Target
 
-- Windows 10 or 11.
-- Visual Studio 2019 16.11.27 or Visual Studio 2022.
-- CUDA Toolkit at least 12.2 for CUTLASS Windows builds; use a toolkit that recognizes `sm_120` for RTX 5060.
-- CMake 3.18+.
-- Python 3.6+.
-- Long path support enabled on Windows before cloning/building large CUTLASS trees.
+This is the normal path for learning CuTe/CUTLASS integration in this repo.
 
-Linux / WSL remains the easier path for heavy profiler sweeps. This repository intentionally maps Windows to RTX 5060 / `sm_120` and Linux to RTX 4090D / `sm_89`.
-
-References:
-
-- https://docs.nvidia.com/cutlass/latest/media/docs/cpp/build/building_in_windows_with_visual_studio.html
-- https://docs.nvidia.com/cutlass/latest/media/docs/cpp/quickstart.html
-- https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html
-
-## Local Project Build
-
-The local AI_system examples only need CUTLASS headers:
-
-```text
-3rdparty/cutlass/include
-3rdparty/cutlass/tools/util/include
-```
-
-Windows:
+Windows + RTX 5060:
 
 ```powershell
-cd D:\workspace\learing\AI_system
-.\labs\cutlass\scripts\check_env.ps1
-.\labs\cutlass\scripts\configure.ps1
-.\labs\cutlass\scripts\build.ps1
-.\out\build\windows-vs2022-cuda-release\Release\cutlass_header_probe.exe
+cmake --preset windows-vs2022-cuda-release
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cutlass_header_probe
+.\out\build\windows-vs2022-cuda-release\labs\cutlass\Release\cutlass_header_probe.exe
 ```
 
-Linux / WSL:
+Linux / WSL + RTX 4090D:
 
 ```bash
-cd /workspace/AI_system
-labs/cutlass/scripts/check_env.sh
-labs/cutlass/scripts/configure.sh
-labs/cutlass/scripts/build.sh
+cmake --preset linux-make-cuda-release
+cmake --build --preset linux-make-cuda-release --target cutlass_header_probe
 ./out/build/linux-make-cuda-release/labs/cutlass/cutlass_header_probe
 ```
 
-## Official CUTLASS Profiler
+This only compiles `labs/cutlass/examples/cutlass_header_probe.cu`, and only
+checks that local CUTLASS headers, CUDA, and the target architecture are wired.
 
-Build profiler inside the CUTLASS checkout when you need full kernel generation:
+## 2. Official CUTLASS Profiler
 
-```powershell
-cd D:\workspace\learing\AI_system\3rdparty\cutlass
-D:\workspace\learing\AI_system\labs\cutlass\scripts\configure_official_cutlass.ps1
-cmake --build build\windows-vs2022-5060 --config Release --target cutlass_profiler -j 4
-.\build\windows-vs2022-5060\tools\profiler\Release\cutlass_profiler.exe --operation=Gemm --m=4096 --n=4096 --k=4096
-```
+This is optional. It configures the official CUTLASS build tree and generates a
+large operation library for `cutlass_profiler`.
+
+Linux / WSL + RTX 4090D:
 
 ```bash
-cd /workspace/AI_system/3rdparty/cutlass
-/workspace/AI_system/labs/cutlass/scripts/configure_official_cutlass.sh
-cmake --build build/linux-4090d --target cutlass_profiler -j
-./build/linux-4090d/tools/profiler/cutlass_profiler --operation=Gemm --m=4096 --n=4096 --k=4096
+bash ./labs/cutlass/scripts/configure_official_cutlass.sh
+bash ./labs/cutlass/scripts/build_official_cutlass.sh
+bash ./labs/cutlass/scripts/run_profiler.sh
 ```
+
+Windows + RTX 5060:
+
+```powershell
+.\labs\cutlass\scripts\configure_official_cutlass.ps1
+.\labs\cutlass\scripts\build_official_cutlass.ps1
+.\labs\cutlass\scripts\run_profiler.ps1
+```
+
+The configure step uses:
+
+```text
+Windows: CUTLASS_NVCC_ARCHS=120
+Linux:   CUTLASS_NVCC_ARCHS=89
+```
+
+## Common Errors
+
+`Permission denied` when running `./labs/cutlass/scripts/run_profiler.sh` means
+the script executable bit is not set. Run it through bash:
+
+```bash
+bash ./labs/cutlass/scripts/run_profiler.sh
+```
+
+`cutlass_profiler was not found` means the official profiler has been configured
+but not built yet. Run:
+
+```bash
+bash ./labs/cutlass/scripts/build_official_cutlass.sh
+```
+
+Seeing many `Generating ... cutlass_library_*.cu` lines is normal for the
+official profiler. It is not needed for the local smoke target.
