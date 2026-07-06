@@ -12,14 +12,27 @@ include(CTest)
 option(AI_SYSTEM_ENABLE_CUDA "Build CUDA kernels and runtime GPU utilities." ON)
 option(AI_SYSTEM_BUILD_LABS "Build hands-on learning lab executables." ON)
 option(AI_SYSTEM_ENABLE_TESTS "Build CTest smoke tests." ${BUILD_TESTING})
+set(
+    AI_SYSTEM_CUTLASS_ROOT
+    ""
+    CACHE PATH
+    "Path to a local CUTLASS checkout. CuTe headers are expected under this tree."
+)
+
+set(AI_SYSTEM_DEFAULT_GPU_PROFILE "native")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+    set(AI_SYSTEM_DEFAULT_GPU_PROFILE "5060")
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    set(AI_SYSTEM_DEFAULT_GPU_PROFILE "4090d")
+endif()
 
 set(
     AI_SYSTEM_GPU_PROFILE
-    "native"
+    "${AI_SYSTEM_DEFAULT_GPU_PROFILE}"
     CACHE STRING
-    "Target GPU profile: native, 4090, 5060, all, or a semicolon-separated SM list."
+    "Target GPU profile: native, 4090d, 5060, or a semicolon-separated SM list."
 )
-set_property(CACHE AI_SYSTEM_GPU_PROFILE PROPERTY STRINGS native 4090 5060 all)
+set_property(CACHE AI_SYSTEM_GPU_PROFILE PROPERTY STRINGS native 4090d 5060)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -98,6 +111,8 @@ target_compile_features(ai_system_cli PRIVATE cxx_std_20)
 ai_system_enable_warnings(ai_system_cli)
 
 if(AI_SYSTEM_BUILD_LABS)
+    add_subdirectory(labs/cute)
+    add_subdirectory(labs/cutlass)
     add_subdirectory(labs/gemm)
     add_subdirectory(labs/hgemm)
     add_subdirectory(labs/perf_engineering)

@@ -59,21 +59,24 @@ function(ai_system_resolve_cuda_architectures out_arches out_labels)
     if(normalized_profile STREQUAL "native")
         ai_system_detect_native_cuda_architectures(resolved_architectures resolved_labels)
         if(NOT resolved_architectures)
-            set(resolved_architectures "89;120")
-            set(resolved_labels "Fallback: RTX 4090 + RTX 5060")
+            if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+                set(resolved_architectures "120")
+                set(resolved_labels "Fallback: Windows RTX 5060")
+            elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+                set(resolved_architectures "89")
+                set(resolved_labels "Fallback: Linux RTX 4090D")
+            else()
+                set(resolved_architectures "89")
+                set(resolved_labels "Fallback: RTX 4090D")
+            endif()
         endif()
-    elseif(normalized_profile STREQUAL "4090" OR
-           normalized_profile STREQUAL "rtx4090" OR
-           normalized_profile STREQUAL "4090d" OR
+    elseif(normalized_profile STREQUAL "4090d" OR
            normalized_profile STREQUAL "rtx4090d")
         set(resolved_architectures "89")
-        set(resolved_labels "RTX 4090 / RTX 4090 D (Ada Lovelace)")
+        set(resolved_labels "RTX 4090D (Ada Lovelace)")
     elseif(normalized_profile STREQUAL "5060" OR normalized_profile STREQUAL "rtx5060")
         set(resolved_architectures "120")
         set(resolved_labels "RTX 5060 (Blackwell)")
-    elseif(normalized_profile STREQUAL "all")
-        set(resolved_architectures "89;120")
-        set(resolved_labels "RTX 4090 + RTX 5060")
     elseif(normalized_profile MATCHES "^[0-9]+(;[0-9]+)*$")
         set(resolved_architectures "${AI_SYSTEM_GPU_PROFILE}")
         set(resolved_labels "Custom SM list")
@@ -81,7 +84,7 @@ function(ai_system_resolve_cuda_architectures out_arches out_labels)
         message(
             FATAL_ERROR
             "Unsupported AI_SYSTEM_GPU_PROFILE='${AI_SYSTEM_GPU_PROFILE}'. "
-            "Use native, 4090, 4090d, 5060, all, or a semicolon-separated SM list such as 89;120."
+            "Use native, 4090d, 5060, or a semicolon-separated SM list such as 89;120."
         )
     endif()
 

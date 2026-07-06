@@ -18,6 +18,7 @@
     },
     {
       "name": "windows-base",
+      "hidden": true,
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -29,14 +30,16 @@
     },
     {
       "name": "windows-vs2022-cuda-release",
+      "displayName": "Windows VS2022 CUDA Release (RTX 5060 / sm_120)",
       "inherits": "windows-base",
       "cacheVariables": {
         "AI_SYSTEM_ENABLE_CUDA": "ON",
-        "AI_SYSTEM_GPU_PROFILE": "native"
+        "AI_SYSTEM_GPU_PROFILE": "5060"
       }
     },
     {
       "name": "windows-vs2022-cuda-release-lineinfo",
+      "displayName": "Windows VS2022 CUDA Release + lineinfo (RTX 5060 / sm_120)",
       "inherits": "windows-vs2022-cuda-release",
       "cacheVariables": {
         "CMAKE_CUDA_FLAGS": "-lineinfo"
@@ -44,6 +47,7 @@
     },
     {
       "name": "windows-vs2022-cpu-debug",
+      "displayName": "Windows VS2022 CPU Debug",
       "inherits": "windows-base",
       "cacheVariables": {
         "AI_SYSTEM_ENABLE_CUDA": "OFF"
@@ -51,6 +55,7 @@
     },
     {
       "name": "linux-base",
+      "hidden": true,
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -61,15 +66,7 @@
     },
     {
       "name": "linux-make-cuda-release",
-      "inherits": "linux-base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "AI_SYSTEM_ENABLE_CUDA": "ON",
-        "AI_SYSTEM_GPU_PROFILE": "native"
-      }
-    },
-    {
-      "name": "linux-make-cuda-release-4090d",
+      "displayName": "Linux Make CUDA Release (RTX 4090D / sm_89)",
       "inherits": "linux-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -78,14 +75,16 @@
       }
     },
     {
-      "name": "linux-make-cuda-release-4090d-lineinfo",
-      "inherits": "linux-make-cuda-release-4090d",
+      "name": "linux-make-cuda-release-lineinfo",
+      "displayName": "Linux Make CUDA Release + lineinfo (RTX 4090D / sm_89)",
+      "inherits": "linux-make-cuda-release",
       "cacheVariables": {
         "CMAKE_CUDA_FLAGS": "-lineinfo"
       }
     },
     {
       "name": "linux-make-cpu-debug",
+      "displayName": "Linux Make CPU Debug",
       "inherits": "linux-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -114,12 +113,8 @@
       "configurePreset": "linux-make-cuda-release"
     },
     {
-      "name": "linux-make-cuda-release-4090d",
-      "configurePreset": "linux-make-cuda-release-4090d"
-    },
-    {
-      "name": "linux-make-cuda-release-4090d-lineinfo",
-      "configurePreset": "linux-make-cuda-release-4090d-lineinfo"
+      "name": "linux-make-cuda-release-lineinfo",
+      "configurePreset": "linux-make-cuda-release-lineinfo"
     },
     {
       "name": "linux-make-cpu-debug",
@@ -159,15 +154,8 @@
       }
     },
     {
-      "name": "linux-make-cuda-release-4090d",
-      "configurePreset": "linux-make-cuda-release-4090d",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "linux-make-cuda-release-4090d-lineinfo",
-      "configurePreset": "linux-make-cuda-release-4090d-lineinfo",
+      "name": "linux-make-cuda-release-lineinfo",
+      "configurePreset": "linux-make-cuda-release-lineinfo",
       "output": {
         "outputOnFailure": true
       }
