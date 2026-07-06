@@ -2,10 +2,16 @@ param(
     [string]$CutlassRoot = $env:CUTLASS_ROOT
 )
 
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
 if (-not $CutlassRoot) {
-    throw "CUTLASS_ROOT is required. Pass -CutlassRoot D:\deps\cutlass or set the CUTLASS_ROOT environment variable."
+    $CutlassRoot = Join-Path $repoRoot "3rdparty\cutlass"
+}
+
+$cutlassHeader = Join-Path $CutlassRoot "include\cutlass\cutlass.h"
+if (-not (Test-Path $cutlassHeader)) {
+    throw "CUTLASS header was not found at $cutlassHeader"
 }
 
 $preset = "windows-vs2022-cuda-release"
 
-cmake --preset $preset -DAI_SYSTEM_CUTLASS_ROOT="$CutlassRoot"
+cmake -S $repoRoot --preset $preset -DAI_SYSTEM_CUTLASS_ROOT="$CutlassRoot"

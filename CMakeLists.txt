@@ -12,11 +12,17 @@ include(CTest)
 option(AI_SYSTEM_ENABLE_CUDA "Build CUDA kernels and runtime GPU utilities." ON)
 option(AI_SYSTEM_BUILD_LABS "Build hands-on learning lab executables." ON)
 option(AI_SYSTEM_ENABLE_TESTS "Build CTest smoke tests." ${BUILD_TESTING})
+
+set(AI_SYSTEM_DEFAULT_CUTLASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cutlass")
+if(DEFINED ENV{CUTLASS_ROOT})
+    set(AI_SYSTEM_DEFAULT_CUTLASS_ROOT "$ENV{CUTLASS_ROOT}")
+endif()
+
 set(
     AI_SYSTEM_CUTLASS_ROOT
-    ""
+    "${AI_SYSTEM_DEFAULT_CUTLASS_ROOT}"
     CACHE PATH
-    "Path to a local CUTLASS checkout. CuTe headers are expected under this tree."
+    "Path to a local CUTLASS checkout. Defaults to 3rdparty/cutlass; CuTe headers are expected under this tree."
 )
 
 set(AI_SYSTEM_DEFAULT_GPU_PROFILE "native")

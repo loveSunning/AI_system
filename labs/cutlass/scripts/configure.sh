@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PROFILE="4090d"
-CUTLASS_ROOT_ARG="${CUTLASS_ROOT:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+CUTLASS_ROOT_ARG="${CUTLASS_ROOT:-${REPO_ROOT}/3rdparty/cutlass}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,8 +32,13 @@ fi
 PRESET="linux-make-cuda-release"
 
 if [[ -z "${CUTLASS_ROOT_ARG}" ]]; then
-  echo "CUTLASS_ROOT is required. Pass --cutlass-root /path/to/cutlass or export CUTLASS_ROOT." >&2
+  echo "CUTLASS root path is empty." >&2
   exit 2
 fi
 
-cmake --preset "${PRESET}" -DAI_SYSTEM_CUTLASS_ROOT="${CUTLASS_ROOT_ARG}"
+if [[ ! -f "${CUTLASS_ROOT_ARG}/include/cutlass/cutlass.h" ]]; then
+  echo "CUTLASS header was not found at ${CUTLASS_ROOT_ARG}/include/cutlass/cutlass.h" >&2
+  exit 2
+fi
+
+cmake -S "${REPO_ROOT}" --preset "${PRESET}" -DAI_SYSTEM_CUTLASS_ROOT="${CUTLASS_ROOT_ARG}"

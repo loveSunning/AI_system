@@ -24,17 +24,16 @@ References:
 The local AI_system examples only need CUTLASS headers:
 
 ```text
-${CUTLASS_ROOT}/include
-${CUTLASS_ROOT}/tools/util/include
+3rdparty/cutlass/include
+3rdparty/cutlass/tools/util/include
 ```
 
 Windows:
 
 ```powershell
 cd D:\workspace\learing\AI_system
-$env:CUTLASS_ROOT = "D:\deps\cutlass"
 .\labs\cutlass\scripts\check_env.ps1
-.\labs\cutlass\scripts\configure.ps1 -CutlassRoot $env:CUTLASS_ROOT
+.\labs\cutlass\scripts\configure.ps1
 .\labs\cutlass\scripts\build.ps1
 .\out\build\windows-vs2022-cuda-release\Release\cutlass_header_probe.exe
 ```
@@ -43,9 +42,8 @@ Linux / WSL:
 
 ```bash
 cd /workspace/AI_system
-export CUTLASS_ROOT=/opt/cutlass
 labs/cutlass/scripts/check_env.sh
-labs/cutlass/scripts/configure.sh --cutlass-root "$CUTLASS_ROOT"
+labs/cutlass/scripts/configure.sh
 labs/cutlass/scripts/build.sh
 ./out/build/linux-make-cuda-release/labs/cutlass/cutlass_header_probe
 ```
@@ -55,15 +53,15 @@ labs/cutlass/scripts/build.sh
 Build profiler inside the CUTLASS checkout when you need full kernel generation:
 
 ```powershell
-cd D:\deps\cutlass
-cmake -S . -B build\windows-vs2022-5060 -G "Visual Studio 17 2022" -A x64 -DCUTLASS_NVCC_ARCHS=120 -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_UNITY_BUILD_ENABLED=ON
+cd D:\workspace\learing\AI_system\3rdparty\cutlass
+D:\workspace\learing\AI_system\labs\cutlass\scripts\configure_official_cutlass.ps1
 cmake --build build\windows-vs2022-5060 --config Release --target cutlass_profiler -j 4
 .\build\windows-vs2022-5060\tools\profiler\Release\cutlass_profiler.exe --operation=Gemm --m=4096 --n=4096 --k=4096
 ```
 
 ```bash
-cd /opt/cutlass
-cmake -S . -B build/linux-4090d -DCUTLASS_NVCC_ARCHS=89 -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_UNITY_BUILD_ENABLED=ON
+cd /workspace/AI_system/3rdparty/cutlass
+/workspace/AI_system/labs/cutlass/scripts/configure_official_cutlass.sh
 cmake --build build/linux-4090d --target cutlass_profiler -j
 ./build/linux-4090d/tools/profiler/cutlass_profiler --operation=Gemm --m=4096 --n=4096 --k=4096
 ```

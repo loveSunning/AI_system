@@ -1,5 +1,6 @@
 #include <cutlass/cutlass.h>
 #include <cutlass/numeric_types.h>
+#include <cutlass/version.h>
 
 #include <cuda_runtime_api.h>
 

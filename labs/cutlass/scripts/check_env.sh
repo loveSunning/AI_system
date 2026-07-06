@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CUTLASS_ROOT_ARG="${1:-${CUTLASS_ROOT:-}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+CUTLASS_ROOT_ARG="${1:-${CUTLASS_ROOT:-${REPO_ROOT}/3rdparty/cutlass}}"
 CUDA_ROOT="${CUDA_HOME:-${CUDA_PATH:-}}"
 
 echo "[CUTLASS] environment check"

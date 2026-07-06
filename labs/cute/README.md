@@ -29,23 +29,19 @@ labs/cute/
 
 ## External Dependency
 
-CuTe is header-only and lives inside a CUTLASS checkout:
+CuTe is header-only and lives inside the local CUTLASS 4.5 checkout:
 
 ```text
-${CUTLASS_ROOT}/include/cute
+3rdparty/cutlass/include/cute
 ```
 
-This repository does not vendor CUTLASS. Point the build to a local checkout:
+The default CMake value for `AI_SYSTEM_CUTLASS_ROOT` is:
 
-```bash
-export CUTLASS_ROOT=/opt/cutlass
+```text
+D:\workspace\learing\AI_system\3rdparty\cutlass
 ```
 
-```powershell
-$env:CUTLASS_ROOT = "D:\deps\cutlass"
-```
-
-You can also pass `AI_SYSTEM_CUTLASS_ROOT` through CMake.
+You can override it with `CUTLASS_ROOT`, `-CutlassRoot`, `--cutlass-root`, or `-DAI_SYSTEM_CUTLASS_ROOT=...` when testing another checkout.
 
 Official references:
 
@@ -58,7 +54,7 @@ Windows 10/11 + Visual Studio 2022 + RTX 5060 / `sm_120`:
 
 ```powershell
 cd D:\workspace\learing\AI_system
-.\labs\cute\scripts\configure.ps1 -CutlassRoot D:\deps\cutlass
+.\labs\cute\scripts\configure.ps1
 .\labs\cute\scripts\build.ps1
 .\out\build\windows-vs2022-cuda-release\Release\cute_layout_mapping.exe
 ```
@@ -67,7 +63,7 @@ Linux / WSL + RTX 4090D / `sm_89`:
 
 ```bash
 cd /workspace/AI_system
-labs/cute/scripts/configure.sh --cutlass-root /opt/cutlass
+labs/cute/scripts/configure.sh
 labs/cute/scripts/build.sh
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
 ```

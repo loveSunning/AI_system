@@ -2,6 +2,11 @@ param(
     [string]$CutlassRoot = $env:CUTLASS_ROOT
 )
 
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
+if (-not $CutlassRoot) {
+    $CutlassRoot = Join-Path $repoRoot "3rdparty\cutlass"
+}
+
 Write-Host "[CUTLASS] environment check"
 Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
 

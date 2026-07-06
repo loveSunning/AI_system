@@ -4,6 +4,8 @@ set -euo pipefail
 PROFILE="4090d"
 TARGET="cute_layout_mapping"
 CONFIGURATION="Release"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,4 +36,5 @@ fi
 
 PRESET="linux-make-cuda-release"
 
+cd "${REPO_ROOT}"
 cmake --build --preset "${PRESET}" --config "${CONFIGURATION}" --target "${TARGET}"

@@ -34,20 +34,18 @@ labs/cutlass/
 
 ## External Dependency
 
-This repository does not vendor CUTLASS. Use a local checkout:
+This repository uses a local CUTLASS 4.5 checkout:
 
-```bash
-export CUTLASS_ROOT=/opt/cutlass
+```text
+3rdparty/cutlass
 ```
 
-```powershell
-$env:CUTLASS_ROOT = "D:\deps\cutlass"
-```
+You can override it with `CUTLASS_ROOT`, `-CutlassRoot`, `--cutlass-root`, or `-DAI_SYSTEM_CUTLASS_ROOT=...` when testing another checkout.
 
 The local CMake targets include:
 
-- `${CUTLASS_ROOT}/include`
-- `${CUTLASS_ROOT}/tools/util/include`
+- `3rdparty/cutlass/include`
+- `3rdparty/cutlass/tools/util/include`
 
 ## Windows Support
 
@@ -77,7 +75,7 @@ Windows 10/11 + Visual Studio 2022 + RTX 5060:
 
 ```powershell
 cd D:\workspace\learing\AI_system
-.\labs\cutlass\scripts\configure.ps1 -CutlassRoot D:\deps\cutlass
+.\labs\cutlass\scripts\configure.ps1
 .\labs\cutlass\scripts\build.ps1
 .\out\build\windows-vs2022-cuda-release\Release\cutlass_header_probe.exe
 ```
@@ -86,7 +84,7 @@ Linux / WSL + RTX 4090D:
 
 ```bash
 cd /workspace/AI_system
-labs/cutlass/scripts/configure.sh --cutlass-root /opt/cutlass
+labs/cutlass/scripts/configure.sh
 labs/cutlass/scripts/build.sh
 ./out/build/linux-make-cuda-release/labs/cutlass/cutlass_header_probe
 ```

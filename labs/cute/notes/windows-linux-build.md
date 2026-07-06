@@ -9,7 +9,7 @@ Shared requirements:
 - CUDA Toolkit with `nvcc`.
 - CMake 3.18+.
 - C++17 host compiler.
-- Local CUTLASS checkout.
+- Local CUTLASS checkout under `3rdparty/cutlass`.
 
 Windows baseline:
 
@@ -39,9 +39,8 @@ For RTX 4090D, the Linux preset uses Ada Lovelace `sm_89`. If `nvcc` rejects the
 
 ```powershell
 cd D:\workspace\learing\AI_system
-$env:CUTLASS_ROOT = "D:\deps\cutlass"
 .\labs\cute\scripts\check_env.ps1
-.\labs\cute\scripts\configure.ps1 -CutlassRoot $env:CUTLASS_ROOT
+.\labs\cute\scripts\configure.ps1
 .\labs\cute\scripts\build.ps1
 .\out\build\windows-vs2022-cuda-release\Release\cute_layout_mapping.exe
 ```
@@ -50,9 +49,8 @@ $env:CUTLASS_ROOT = "D:\deps\cutlass"
 
 ```bash
 cd /workspace/AI_system
-export CUTLASS_ROOT=/opt/cutlass
 labs/cute/scripts/check_env.sh
-labs/cute/scripts/configure.sh --cutlass-root "$CUTLASS_ROOT"
+labs/cute/scripts/configure.sh
 labs/cute/scripts/build.sh
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
 ```
