@@ -1,8 +1,18 @@
 # CuTe Lab
 
-CuTe is the first step before reading CUTLASS 3.x deeply. This lab focuses on layout algebra, tensor tiling, copy partitioning, and MMA abstraction.
+CuTe 是深入阅读 CUTLASS 3.x/4.x 之前的第一站。本实验目录先从 `Layout -> offset` 的代数关系开始，再逐步扩展到 tensor tiling、copy partition、`TiledMMA` 和完整 HGEMM pipeline。
 
-## Structure
+当前可直接编译运行的 demo 是：
+
+```text
+cute_layout_mapping
+cute_tensor_tile_demo
+```
+
+- `cute_layout_mapping` 是 host-side `Layout` smoke test，用 CuTe `Layout` 验证 `(M,K)`、`(N,K)` 和 shared-memory stage layout 的 offset 计算。
+- `cute_tensor_tile_demo` 是 host-side `Tensor/local_tile/partition` smoke test，用同一个逻辑值串起 global tensor、shared tensor、register fragment 和 per-thread partition。
+
+## 目录结构
 
 ```text
 labs/cute/
@@ -10,7 +20,8 @@ labs/cute/
 |-- README.md
 |-- examples/
 |   |-- README.md
-|   `-- cute_layout_mapping.cu
+|   |-- cute_layout_mapping.cu
+|   `-- cute_tensor_tile_demo.cu
 |-- notes/
 |   |-- README.md
 |   |-- learning-plan.md
@@ -27,57 +38,259 @@ labs/cute/
     `-- README.md
 ```
 
-## External Dependency
+## 依赖
 
-CuTe is header-only and lives inside the local CUTLASS 4.5 checkout:
+CuTe 是 header-only，随 CUTLASS 一起分发。本仓库默认从下面的本地路径读取 CuTe 头文件：
 
 ```text
 3rdparty/cutlass/include/cute
 ```
 
-The default CMake value for `AI_SYSTEM_CUTLASS_ROOT` is:
+CMake cache 变量是：
 
 ```text
-D:\workspace\learing\AI_system\3rdparty\cutlass
+AI_SYSTEM_CUTLASS_ROOT=D:\workspace\learing\AI_system\3rdparty\cutlass
 ```
 
-You can override it with `CUTLASS_ROOT`, `-CutlassRoot`, `--cutlass-root`, or `-DAI_SYSTEM_CUTLASS_ROOT=...` when testing another checkout.
+如果你想临时使用另一份 CUTLASS checkout，可以用以下任意一种方式覆盖：
 
-Official references:
+```powershell
+$env:CUTLASS_ROOT="D:\path\to\cutlass"
+cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="$env:CUTLASS_ROOT"
+```
+
+```bash
+export CUTLASS_ROOT=/path/to/cutlass
+cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${CUTLASS_ROOT}"
+```
+
+最关键的检查项是这个文件必须存在：
+
+```text
+<CUTLASS_ROOT>/include/cute/tensor.hpp
+```
+
+官方参考：
 
 - https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/00_quickstart.html
 - https://docs.nvidia.com/cutlass/latest/media/docs/cpp/quickstart.html
 
-## Build
+## GPU 和 CMake preset
 
-Windows 10/11 + Visual Studio 2022 + RTX 5060 / `sm_120`:
+本仓库刻意为两个常用学习环境各保留一个 CUDA preset：
+
+| 环境 | CMake preset | GPU profile | CUDA arch |
+| --- | --- | --- | --- |
+| Windows 10/11 + Visual Studio 2022 | `windows-vs2022-cuda-release` | RTX 5060 | `sm_120` |
+| Linux / WSL + Make | `linux-make-cuda-release` | RTX 4090D | `sm_89` |
+
+如果 `nvcc` 不认识对应的架构，例如 `sm_120` 或 `sm_89`，优先升级 CUDA Toolkit。`check_env` 脚本会显示 `nvcc --list-gpu-code` 是否列出目标架构。
+
+## 直接使用 CMake
+
+下面是最直接、最透明的路径：从仓库根目录配置、编译、运行 demo。
+
+### Windows
+
+适用于 Windows 10/11、Visual Studio 2022、CUDA Toolkit 已安装且 `nvcc` 可用。
 
 ```powershell
 cd D:\workspace\learing\AI_system
-.\labs\cute\scripts\configure.ps1
-.\labs\cute\scripts\build.ps1
-.\out\build\windows-vs2022-cuda-release\Release\cute_layout_mapping.exe
+
+# 可选：确认工具链、GPU、CUTLASS/CuTe 头文件和 sm_120 支持。
+.\labs\cute\scripts\check_env.ps1
+
+# 配置：生成 VS2022 x64 Release build tree。
+cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\workspace\learing\AI_system\3rdparty\cutlass"
+
+# 编译：只编译当前 CuTe demo，避免顺手构建整个仓库。
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+
+# 运行。
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_mapping.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_tensor_tile_demo.exe
 ```
 
-Linux / WSL + RTX 4090D / `sm_89`:
+期望最后看到：
+
+```text
+layout mapping check passed
+```
+
+如果你已经设置了 `CUTLASS_ROOT`，配置命令也可以写成：
+
+```powershell
+cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="$env:CUTLASS_ROOT"
+```
+
+### Linux / WSL
+
+适用于 Linux 或 WSL，CUDA Toolkit、`nvcc`、GCC 和 Make 已可用。
 
 ```bash
 cd /workspace/AI_system
+
+# 可选：确认工具链、GPU、CUTLASS/CuTe 头文件和 sm_89 支持。
+labs/cute/scripts/check_env.sh
+
+# 配置：生成 Unix Makefiles Release build tree。
+cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rdparty/cutlass"
+
+# 编译：只编译当前 CuTe demo。
+cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+
+# 运行。
+./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
+./out/build/linux-make-cuda-release/labs/cute/cute_tensor_tile_demo
+```
+
+期望最后看到：
+
+```text
+layout mapping check passed
+```
+
+如果你已经设置了 `CUTLASS_ROOT`，配置命令也可以写成：
+
+```bash
+cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${CUTLASS_ROOT}"
+```
+
+## 使用封装脚本
+
+脚本只是对上面 CMake 命令的薄封装，适合日常快速使用。
+
+Windows：
+
+```powershell
+cd D:\workspace\learing\AI_system
+.\labs\cute\scripts\check_env.ps1
+.\labs\cute\scripts\configure.ps1
+.\labs\cute\scripts\build.ps1
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_mapping.exe
+```
+
+Linux / WSL：
+
+```bash
+cd /workspace/AI_system
+labs/cute/scripts/check_env.sh
 labs/cute/scripts/configure.sh
 labs/cute/scripts/build.sh
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
 ```
 
-This lab intentionally keeps one GPU target per OS: Windows uses RTX 5060 / `sm_120`, Linux uses RTX 4090D / `sm_89`.
+覆盖 CUTLASS 路径：
 
-Before the first build, run `check_env.ps1` or `check_env.sh`. It checks the CUDA Toolkit, visible GPUs, `CUTLASS_ROOT`, whether CUTLASS/CuTe headers are present in the CUDA Toolkit include directory, and whether the installed `nvcc` lists the expected target SM.
+```powershell
+.\labs\cute\scripts\configure.ps1 -CutlassRoot "D:\path\to\cutlass"
+```
 
-## First Milestone
+```bash
+labs/cute/scripts/configure.sh --cutlass-root /path/to/cutlass
+```
 
-Build and run `cute_layout_mapping`. It validates:
+指定 build target：
 
-- `(M,K)` row-major offset mapping.
-- `(N,K)` column-like offset mapping.
-- `(BM,BK,stage)` shared-memory stage offset mapping.
+```powershell
+.\labs\cute\scripts\build.ps1 -Target cute_layout_mapping -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_tensor_tile_demo -Configuration Release
+```
 
-The goal is to explain `Layout -> offset` by hand before moving to `TiledCopy` and `TiledMMA`.
+```bash
+labs/cute/scripts/build.sh --target cute_layout_mapping
+labs/cute/scripts/build.sh --target cute_tensor_tile_demo
+```
+
+## Demo 说明
+
+`examples/cute_layout_mapping.cu` 会构造三个 CuTe layout：
+
+| Layout | Shape | Stride | 验证内容 |
+| --- | --- | --- | --- |
+| `mk_row_major` | `(4,8)` | `(8,1)` | `mk_row_major(2,3) == 19` |
+| `nk_col_major` | `(8,4)` | `(1,8)` | `nk_col_major(2,3) == 26` |
+| `smem_bk_stage` | `(16,32,2)` | `(64,1,32)` | `smem_bk_stage(3,5,1) == 229` |
+
+这个 demo 不追求 GPU 性能；它的目标是把 CuTe 的 `make_shape`、`make_stride`、`make_layout` 和手写 offset 公式对齐。后续写 `TiledCopy` 和 `TiledMMA` 时，所有 tile/thread/value 映射都会回到这个基本问题：一个逻辑坐标最后对应哪一个线性地址。
+
+`examples/cute_tensor_tile_demo.cu` 会构造一条更接近 GEMM mainloop 的教学链：
+
+```text
+global tensor -> local_tile -> shared tensor -> register fragment -> local_partition
+```
+
+它验证同一个逻辑元素 `507` 在不同 memory space 和不同 layout 中的映射：
+
+| Tensor | Memory tag | Layout | 验证内容 |
+| --- | --- | --- | --- |
+| `gA` | `gmem_ptr` | `(_8,_12):(_12,_1)` | `gA(5,7) == 507` |
+| `tAgA` | `gmem_ptr` | `(_4,_3):(_12,_1)` | `local_tile` 后 `tAgA(1,1) == 507` |
+| `sA` | `smem_ptr` | `(_4,_3):(_1,_4)` | shared memory 改物理布局但保留逻辑坐标 |
+| `rA` | `ptr` | `(_4,_3):(_3,_1)` | register fragment 也有自己的 layout |
+| `tAsA` | `smem_ptr` | per-thread subtensor | `local_partition` 后 `tAsA(0,0) == 507` |
+
+配套笔记见 `notes/tensor-local-tile-partition.md`。
+
+## 常见问题
+
+`labs/cute examples` 被跳过：
+
+检查配置输出里是否出现 `include/cute/tensor.hpp not found`。如果出现，确认 `3rdparty/cutlass` 已存在，或者显式传入 `-DAI_SYSTEM_CUTLASS_ROOT=<CUTLASS_ROOT>`。
+
+`nvcc fatal : Unsupported gpu architecture`：
+
+当前 preset 绑定了固定 GPU profile。Windows preset 使用 `sm_120`，Linux preset 使用 `sm_89`。如果当前 CUDA Toolkit 不支持该架构，需要升级 CUDA Toolkit，或临时用根工程支持的 `AI_SYSTEM_GPU_PROFILE` 覆盖到你的机器支持的架构。
+
+Visual Studio generator 找不到：
+
+确认安装了 Visual Studio 2022 和 C++/CUDA 相关组件。也可以先运行：
+
+```powershell
+cmake --list-presets
+cmake --version
+nvcc --version
+```
+
+Linux 找不到 `nvcc`：
+
+确认 CUDA Toolkit 已安装，并且 `nvcc` 所在目录在 `PATH` 中：
+
+```bash
+which nvcc
+nvcc --version
+```
+
+修改了源码但运行结果没变：
+
+只重新编译当前目标即可：
+
+```powershell
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+```
+
+```bash
+cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+```
+
+## 里程碑
+
+第一个里程碑是能独立解释并运行 `cute_layout_mapping`：
+
+- 知道 CuTe `Layout` 是 shape + stride 的组合。
+- 能手算 `(i,j)` 或 `(i,j,k)` 到线性 offset 的映射。
+- 能用 CMake preset 单独构建一个 CuTe demo。
+- 能判断构建失败是 CUDA Toolkit、GPU arch、CMake preset，还是 CUTLASS/CuTe 头文件路径问题。
+
+第二个里程碑是能独立解释并运行 `cute_tensor_tile_demo`：
+
+- 知道 `Tensor = Engine + Layout`。
+- 能解释 `make_gmem_ptr`、`make_smem_ptr` 和 register owning tensor 的差异。
+- 能解释 `local_tile` 如何从 full tensor 得到 CTA tile。
+- 能解释 `local_partition` 如何从 tile 得到 per-thread subtensor。
+
+完成后再进入 `notes/learning-plan.md` 中的 `TiledCopy`、`TiledMMA` 和 HGEMM pipeline 阶段。

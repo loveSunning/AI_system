@@ -30,3 +30,8 @@ add_executable(cute_layout_mapping examples/cute_layout_mapping.cu)
 target_link_libraries(cute_layout_mapping PRIVATE ai_system_cute_headers CUDA::cudart)
 target_compile_features(cute_layout_mapping PRIVATE cxx_std_17)
 ai_system_configure_cuda_target(cute_layout_mapping)
+
+add_executable(cute_tensor_tile_demo examples/cute_tensor_tile_demo.cu)
+target_link_libraries(cute_tensor_tile_demo PRIVATE ai_system_cute_headers CUDA::cudart)
+target_compile_features(cute_tensor_tile_demo PRIVATE cxx_std_17)
+ai_system_configure_cuda_target(cute_tensor_tile_demo)

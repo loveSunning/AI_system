@@ -10,7 +10,9 @@ Goal:
 Deliverables:
 
 - `examples/cute_layout_mapping.cu`
-- A note explaining `(M,K)`, `(N,K)`, and `(BM,BK,stage)` offsets.
+- `examples/cute_tensor_tile_demo.cu`
+- `notes/tensor-local-tile-partition.md`
+- A note explaining `(M,K)`, `(N,K)`, `(BM,BK,stage)`, global tensor, shared tensor, register fragment, `local_tile`, and `local_partition` mappings.
 
 ## W16: TiledCopy
 
