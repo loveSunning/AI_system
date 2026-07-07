@@ -222,15 +222,17 @@ labs/cute/scripts/build.sh --target cute_tensor_tile_demo
 global tensor -> local_tile -> shared tensor -> register fragment -> local_partition
 ```
 
-它验证同一个逻辑元素 `507` 在不同 memory space 和不同 layout 中的映射：
+它使用 `M=N=K=2048`、CTA tile `128x128x32`、CTA coord `(3,5,7)`，验证同一个逻辑元素在不同 memory space 和不同 layout 中的映射：
 
 | Tensor | Memory tag | Layout | 验证内容 |
 | --- | --- | --- | --- |
-| `gA` | `gmem_ptr` | `(_8,_12):(_12,_1)` | `gA(5,7) == 507` |
-| `tAgA` | `gmem_ptr` | `(_4,_3):(_12,_1)` | `local_tile` 后 `tAgA(1,1) == 507` |
-| `sA` | `smem_ptr` | `(_4,_3):(_1,_4)` | shared memory 改物理布局但保留逻辑坐标 |
-| `rA` | `ptr` | `(_4,_3):(_3,_1)` | register fragment 也有自己的 layout |
-| `tAsA` | `smem_ptr` | per-thread subtensor | `local_partition` 后 `tAsA(0,0) == 507` |
+| `gA` | `gmem_ptr` | `(_2048,_2048):(_2048,_1)` | `gA(389,231) == 38900231` |
+| `tAgA` | `gmem_ptr` | `(_128,_32):(_2048,_1)` | `local_tile` 后 `tAgA(5,7) == 38900231` |
+| `sA` | `smem_ptr` | `(_128,_32):(_1,_128)` | shared memory 改物理布局但保留逻辑坐标 |
+| `rA` | `ptr` | `(_16,_16):(_16,_1)` | MMA A register fragment |
+| `rB` | `ptr` | `(_8,_16):(_16,_1)` | MMA B register fragment |
+| `rC` | `ptr` | `(_16,_8):(_8,_1)` | MMA C accumulator fragment |
+| `tAsA` | `smem_ptr` | per-thread subtensor | `local_partition` 后 `tAsA(0,0) == 38900229` |
 
 配套笔记见 `notes/tensor-local-tile-partition.md`。
 

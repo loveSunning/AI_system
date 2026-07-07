@@ -29,23 +29,23 @@ CuTe `Tensor = Engine + Layout`。
 GEMM kernel 入口拿到的是普通指针，例如 `A`、`B`、`C`。CuTe 会用 `make_gmem_ptr` 给指针加上 global memory tag，再用 `make_tensor` 配上 shape/stride：
 
 ```cpp
-auto gmem_layout = make_layout(make_shape(Int<8>{}, Int<12>{}),
-                               make_stride(Int<12>{}, Int<1>{}));
-auto gA = make_tensor(make_gmem_ptr(global_storage.data()), gmem_layout);
+auto gmem_a_layout = make_layout(make_shape(Int<2048>{}, Int<2048>{}),
+                                 make_stride(Int<2048>{}, Int<1>{}));
+auto gA = make_tensor(make_gmem_ptr(global_a.data()), gmem_a_layout);
 ```
 
 此时：
 
 ```text
-gA: gmem_ptr[...] o (_8,_12):(_12,_1)
+gA: gmem_ptr[...] o (_2048,_2048):(_2048,_1)
 ```
 
 解释：
 
-- `(_8,_12)` 是逻辑 shape，也就是 8 行、12 列。
-- `(_12,_1)` 是 row-major stride。
-- `gA(5,7)` 的 offset 是 `5 * 12 + 7 * 1 = 67`。
-- 如果测试数据写成 `value = m * 100 + k`，那么 `gA(5,7) == 507`。
+- `(_2048,_2048)` 是逻辑 shape，也就是 `A(M,K)`。
+- `(_2048,_1)` 是 row-major stride。
+- `gA(389,231)` 的 offset 是 `389 * 2048 + 231 = 796903`。
+- demo 把测试数据写成 `value = m * 100000 + k`，所以 `gA(389,231) == 38900231`。
 
 GEMM 中常见的 full tensor 语义是：
 
@@ -64,28 +64,30 @@ Tensor mC = make_tensor(make_gmem_ptr(C), select<0,1>(shape_MNK), dC);  // (M,N)
 示例：
 
 ```cpp
-auto cta_tiler = Shape<_4, _3>{};
-auto cta_coord = make_coord(1, 2);
-auto tAgA = local_tile(gA, cta_tiler, cta_coord);
+auto cta_tiler = Shape<Int<128>, Int<128>, Int<32>>{};
+auto cta_coord = make_coord(3, 5, 7);
+auto tAgA = local_tile(gA, cta_tiler, cta_coord, Step<_1, X, _1>{});
+auto tBgB = local_tile(gB, cta_tiler, cta_coord, Step<X, _1, _1>{});
+auto tCgC = local_tile(gC, cta_tiler, cta_coord, Step<_1, _1, X>{});
 ```
 
-对 `gA: (_8,_12):(_12,_1)` 来说：
+对 `gA: (_2048,_2048):(_2048,_1)` 来说：
 
-- `Shape<_4,_3>` 表示每个 tile 是 4 行、3 列。
-- `cta_coord = (1,2)` 表示选择第 1 个 M tile、第 2 个 K tile。
-- tile 起点是 `(m,k) = (1 * 4, 2 * 3) = (4,6)`。
-- `tAgA(1,1)` 对应 full tensor 的 `gA(5,7)`。
+- CTA tiler 是 `(BLK_M,BLK_N,BLK_K) = (128,128,32)`。
+- `cta_coord = (3,5,7)` 表示选择第 3 个 M block、第 5 个 N block、第 7 个 K block。
+- A tile 起点是 `(m,k) = (3 * 128, 7 * 32) = (384,224)`。
+- `tAgA(5,7)` 对应 full tensor 的 `gA(389,231)`。
 
 输出类似：
 
 ```text
-tAgA: gmem_ptr[...] o (_4,_3):(_12,_1)
+tAgA: gmem_ptr[...] o (_128,_32):(_2048,_1)
 ```
 
 关键点是：`tAgA` 的 data pointer 已经偏移到 tile 起点，layout 仍描述 tile 内坐标如何移动。也就是说：
 
 ```text
-tAgA(1,1) == gA(4 + 1, 6 + 1) == gA(5,7)
+tAgA(5,7) == gA(384 + 5, 224 + 7) == gA(389,231)
 ```
 
 在实现上，`local_tile` 是 `inner_partition` 的别名：它保留 tiler 内部的 tile mode，切掉外层 remainder mode。官方文档常把它用于 CTA 级别：
@@ -103,8 +105,8 @@ auto ctaC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1, X>{});  // (BLK_M,B
 shared memory tensor 通常来自静态 shared buffer：
 
 ```cpp
-auto smem_layout = make_layout(make_shape(Int<4>{}, Int<3>{}),
-                               make_stride(Int<1>{}, Int<4>{}));
+auto smem_layout = make_layout(make_shape(Int<128>{}, Int<32>{}),
+                               make_stride(Int<1>{}, Int<128>{}));
 std::array<int, decltype(cosize(smem_layout))::value> shared_storage{};
 auto sA = make_tensor(make_smem_ptr(shared_storage.data()), smem_layout);
 ```
@@ -112,14 +114,14 @@ auto sA = make_tensor(make_smem_ptr(shared_storage.data()), smem_layout);
 输出类似：
 
 ```text
-sA: smem_ptr[...] o (_4,_3):(_1,_4)
+sA: smem_ptr[...] o (_128,_32):(_1,_128)
 ```
 
 解释：
 
-- `sA` 的 shape 仍是 tile shape `(_4,_3)`。
-- stride 变成了 `(_1,_4)`，也就是 column-major 风格。
-- `sA(1,1)` 的 offset 是 `1 * 1 + 1 * 4 = 5`。
+- `sA` 的 shape 仍是 A tile shape `(_128,_32)`。
+- stride 变成了 `(_1,_128)`，也就是 column-major 风格。
+- `sA(5,7)` 的 offset 是 `5 * 1 + 7 * 128 = 901`。
 
 这正是 shared memory layout 要解决的问题：global tile 的逻辑元素可以被复制到 shared tile 的同一个逻辑坐标，但 shared memory 的物理布局可以不同，用来优化 vectorized copy、shared bank conflict、后续 MMA 读布局等。
 
@@ -136,13 +138,17 @@ for (int i = 0; i < size(sA); ++i) {
 register fragment 是线程私有的小 tensor，通常是 owning tensor：
 
 ```cpp
-auto rA = make_tensor<int>(Shape<_4, _3>{}, LayoutRight{});
+auto rA = make_tensor<int>(Shape<Int<16>, Int<16>>{}, LayoutRight{});
+auto rB = make_tensor<int>(Shape<Int<8>, Int<16>>{}, LayoutRight{});
+auto rC = make_tensor<int>(Shape<Int<16>, Int<8>>{}, LayoutRight{});
 ```
 
 输出类似：
 
 ```text
-rA: ptr[...] o (_4,_3):(_3,_1)
+rA: ptr[...] o (_16,_16):(_16,_1)
+rB: ptr[...] o (_8,_16):(_16,_1)
+rC: ptr[...] o (_16,_8):(_8,_1)
 ```
 
 解释：
@@ -160,25 +166,25 @@ rA: ptr[...] o (_4,_3):(_3,_1)
 示例：
 
 ```cpp
-auto thr_layout = make_layout(make_shape(Int<2>{}, Int<3>{}),
-                              make_stride(Int<3>{}, Int<1>{}));
-int thr_idx = 4;
+auto thr_layout = make_layout(make_shape(Int<16>{}, Int<8>{}),
+                              make_stride(Int<8>{}, Int<1>{}));
+int thr_idx = 45;
 auto tAsA = local_partition(sA, thr_layout, thr_idx);
 ```
 
 输出类似：
 
 ```text
-thr_layout: (_2,_3):(_3,_1)
-tAsA: smem_ptr[...] o (_2,_1):(_2,_0)
+thr_layout: (_16,_8):(_8,_1)
+tAsA: smem_ptr[...] o (_8,_4):(_16,_1024)
 ```
 
 解释：
 
-- `thr_layout` 把 6 个 thread 排成 `(2,3)` 的逻辑网格。
-- `thr_idx = 4` 在 row-major thread layout 里对应 thread 坐标 `(1,1)`。
-- `local_partition` 保留的是 tile 外剩下的 repetition mode，所以这个 thread 得到的 subtensor shape 是 `(_2,_1)`。
-- 在 demo 中，`tAsA(0,0)` 对应 `sA(1,1)`，值仍然是 `507`。
+- `thr_layout` 把 128 个 thread 排成 `(16,8)` 的逻辑网格。
+- `thr_idx = 45` 在 row-major thread layout 里对应 thread 坐标 `(5,5)`。
+- `local_partition` 保留的是 tile 外剩下的 repetition mode，所以这个 thread 得到的 subtensor shape 是 `(_8,_4)`。
+- 在 demo 中，`tAsA(0,0)` 对应 `sA(5,5)`，值是 `38900229`。
 
 和 `local_tile` 对比：
 
@@ -199,28 +205,28 @@ labs/cute/examples/cute_tensor_tile_demo.cu
 
 ```text
 gA full tensor
-  shape  = (_8,_12)
-  stride = (_12,_1)
-  value  = gA(5,7) = 507
+  shape  = (_2048,_2048)
+  stride = (_2048,_1)
+  value  = gA(389,231) = 38900231
 
-local_tile(gA, Shape<_4,_3>, make_coord(1,2))
-  tAgA shape  = (_4,_3)
-  tAgA origin = gA(4,6)
-  tAgA(1,1)  = gA(5,7) = 507
+local_tile(gA, Shape<128,128,32>, make_coord(3,5,7), Step<_1,X,_1>)
+  tAgA shape  = (_128,_32)
+  tAgA origin = gA(384,224)
+  tAgA(5,7)  = gA(389,231) = 38900231
 
 sA shared tensor
-  shape  = (_4,_3)
-  stride = (_1,_4)
-  sA(1,1) = 507
+  shape  = (_128,_32)
+  stride = (_1,_128)
+  sA(5,7) = 38900231
 
-rA register tensor
-  shape  = (_4,_3)
-  stride = (_3,_1)
-  rA(1,1) = 507
+MMA register tensors
+  rA shape = (_16,_16)
+  rB shape = (_8,_16)
+  rC shape = (_16,_8)
 
-local_partition(sA, thr_layout, 4)
-  thread 4 gets a subtensor
-  tAsA(0,0) = sA(1,1) = 507
+local_partition(sA, thr_layout, 45)
+  thread 45 gets a subtensor
+  tAsA(0,0) = sA(5,5) = 38900229
 ```
 
 运行：
@@ -247,8 +253,8 @@ tensor/local_tile/partition check passed
 
 - `Tensor` 的 `Engine` 和 `Layout` 分别负责什么？
 - 为什么 `make_gmem_ptr` 和 `make_smem_ptr` 只是给 pointer 加 memory-space 语义，而不是改变 shape/stride？
-- `local_tile(gA, Shape<_4,_3>{}, make_coord(1,2))` 的 tile 起点为什么是 `(4,6)`？
-- 为什么 `tAgA(1,1)`、`sA(1,1)`、`rA(1,1)` 可以读到同一个逻辑值，但它们的 stride 不一样？
+- `local_tile(gA, Shape<128,128,32>{}, make_coord(3,5,7), Step<_1,X,_1>{})` 的 A tile 起点为什么是 `(384,224)`？
+- 为什么 `tAgA(5,7)`、`sA(5,7)`、`rA(5,7)` 可以读到同一个逻辑值，但它们的 stride 不一样？
 - `local_tile` 和 `local_partition` 一个保留 tile，一个保留 per-thread subtensor，这句话能不能用 `zipped_divide + slice` 解释出来？
 
 下一步进入 `TiledCopy` 时，把这份笔记里的教学循环：
