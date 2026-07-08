@@ -14,6 +14,7 @@ labs/cute/notes/windows-linux-build.md
 - Preset: `windows-vs2022-cuda-release`
 - GPU profile: RTX 5060 / `sm_120`
 - Default target: `cute_layout_mapping`
+- Algebra target: `cute_layout_algebra_demo`
 - Tensor target: `cute_tensor_tile_demo`
 - Configuration: `Release`
 - CUTLASS root: `$env:CUTLASS_ROOT`，否则 `<repo>\3rdparty\cutlass`
@@ -37,6 +38,7 @@ cd D:\workspace\learing\AI_system
 
 ```powershell
 .\labs\cute\scripts\build.ps1 -Target cute_layout_mapping -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_layout_algebra_demo -Configuration Release
 .\labs\cute\scripts\build.ps1 -Target cute_tensor_tile_demo -Configuration Release
 ```
 
@@ -47,6 +49,7 @@ cd D:\workspace\learing\AI_system
 - Preset: `linux-make-cuda-release`
 - GPU profile: RTX 4090D / `sm_89`
 - Default target: `cute_layout_mapping`
+- Algebra target: `cute_layout_algebra_demo`
 - Tensor target: `cute_tensor_tile_demo`
 - CUTLASS root: `$CUTLASS_ROOT`，否则 `<repo>/3rdparty/cutlass`
 
@@ -69,6 +72,7 @@ labs/cute/scripts/configure.sh --cutlass-root /path/to/cutlass
 
 ```bash
 labs/cute/scripts/build.sh --target cute_layout_mapping
+labs/cute/scripts/build.sh --target cute_layout_algebra_demo
 labs/cute/scripts/build.sh --target cute_tensor_tile_demo
 ```
 
@@ -79,6 +83,7 @@ Windows:
 ```powershell
 cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\workspace\learing\AI_system\3rdparty\cutlass"
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
 ```
 
@@ -87,6 +92,7 @@ Linux / WSL:
 ```bash
 cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rdparty/cutlass"
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
 ```
 
@@ -97,6 +103,8 @@ cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j
 ```text
 CuTe layout mapping smoke test
 layout mapping check passed
+CuTe layout algebra demo
+layout algebra check passed
 CuTe tensor/local_tile/partition demo
 tensor/local_tile/partition check passed
 ```

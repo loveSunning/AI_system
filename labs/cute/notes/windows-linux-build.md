@@ -79,9 +79,11 @@ cd D:\workspace\learing\AI_system
 cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\workspace\learing\AI_system\3rdparty\cutlass"
 
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
 
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_mapping.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_algebra_demo.exe
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_tensor_tile_demo.exe
 ```
 
@@ -111,9 +113,11 @@ labs/cute/scripts/check_env.sh
 cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rdparty/cutlass"
 
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
 
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
+./out/build/linux-make-cuda-release/labs/cute/cute_layout_algebra_demo
 ./out/build/linux-make-cuda-release/labs/cute/cute_tensor_tile_demo
 ```
 
@@ -157,9 +161,11 @@ labs/cute/scripts/build.sh
 
 - `configure.ps1` 等价于 `cmake -S <repo> --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT=<path>`。
 - `build.ps1` 等价于 `cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping`。
+- `build.ps1 -Target cute_layout_algebra_demo` 会编译 Layout Algebra demo。
 - `build.ps1 -Target cute_tensor_tile_demo` 会编译 Tensor/local_tile/partition demo。
 - `configure.sh` 等价于 `cmake -S <repo> --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT=<path>`。
 - `build.sh` 等价于 `cmake --build --preset linux-make-cuda-release --target cute_layout_mapping`。
+- `build.sh --target cute_layout_algebra_demo` 会编译 Layout Algebra demo。
 - `build.sh --target cute_tensor_tile_demo` 会编译 Tensor/local_tile/partition demo。
 
 ## 清理和重新配置

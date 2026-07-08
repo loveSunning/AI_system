@@ -4,15 +4,16 @@
 
 Goal:
 
-- Understand `Shape`, `Stride`, `Layout`, `Tensor`, `local_tile`, and `compose`.
+- Understand `Shape`, `Stride`, `Layout`, layout algebra, `Tensor`, `local_tile`, and `compose`.
 - Manually explain coordinate-to-offset mapping.
 
 Deliverables:
 
 - `examples/cute_layout_mapping.cu`
+- `examples/cute_layout_algebra_demo.cu`
 - `examples/cute_tensor_tile_demo.cu`
 - `notes/tensor-local-tile-partition.md`
-- A note explaining `(M,K)`, `(N,K)`, `(BM,BK,stage)`, global tensor, shared tensor, register fragment, `local_tile`, and `local_partition` mappings.
+- A note explaining `(M,K)`, `(N,K)`, `(BM,BK,stage)`, layout algebra, global tensor, shared tensor, register fragment, `local_tile`, and `local_partition` mappings.
 
 ## W16: TiledCopy
 
