@@ -16,6 +16,7 @@ labs/cute/notes/windows-linux-build.md
 - Default target: `cute_layout_mapping`
 - Algebra target: `cute_layout_algebra_demo`
 - Tensor target: `cute_tensor_tile_demo`
+- W16 targets: `cute_copy_g2s_naive`, `cute_copy_g2s_cpasync`, `cute_copy_s2r`, `cute_smem_swizzle_demo`
 - Configuration: `Release`
 - CUTLASS root: `$env:CUTLASS_ROOT`，否则 `<repo>\3rdparty\cutlass`
 
@@ -40,6 +41,10 @@ cd D:\workspace\learing\AI_system
 .\labs\cute\scripts\build.ps1 -Target cute_layout_mapping -Configuration Release
 .\labs\cute\scripts\build.ps1 -Target cute_layout_algebra_demo -Configuration Release
 .\labs\cute\scripts\build.ps1 -Target cute_tensor_tile_demo -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_g2s_naive -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_g2s_cpasync -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_s2r -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_smem_swizzle_demo -Configuration Release
 ```
 
 ## Linux / WSL
@@ -51,6 +56,7 @@ cd D:\workspace\learing\AI_system
 - Default target: `cute_layout_mapping`
 - Algebra target: `cute_layout_algebra_demo`
 - Tensor target: `cute_tensor_tile_demo`
+- W16 targets: `cute_copy_g2s_naive`, `cute_copy_g2s_cpasync`, `cute_copy_s2r`, `cute_smem_swizzle_demo`
 - CUTLASS root: `$CUTLASS_ROOT`，否则 `<repo>/3rdparty/cutlass`
 
 ```bash
@@ -74,6 +80,10 @@ labs/cute/scripts/configure.sh --cutlass-root /path/to/cutlass
 labs/cute/scripts/build.sh --target cute_layout_mapping
 labs/cute/scripts/build.sh --target cute_layout_algebra_demo
 labs/cute/scripts/build.sh --target cute_tensor_tile_demo
+labs/cute/scripts/build.sh --target cute_copy_g2s_naive
+labs/cute/scripts/build.sh --target cute_copy_g2s_cpasync
+labs/cute/scripts/build.sh --target cute_copy_s2r
+labs/cute/scripts/build.sh --target cute_smem_swizzle_demo
 ```
 
 ## 等价 CMake 命令
@@ -85,6 +95,7 @@ cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\wor
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo
 ```
 
 Linux / WSL:
@@ -94,6 +105,7 @@ cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rd
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo -j"$(nproc)"
 ```
 
 ## 预期输出
@@ -107,4 +119,8 @@ CuTe layout algebra demo
 layout algebra check passed
 CuTe tensor/local_tile/partition demo
 tensor/local_tile/partition check passed
+W16 global-to-shared copy checks passed
+W16 cp.async checks passed
+W16 shared-to-register checks passed
+W16 shared-memory swizzle checks passed
 ```

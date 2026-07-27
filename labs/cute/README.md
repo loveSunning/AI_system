@@ -8,11 +8,19 @@ CuTe 是深入阅读 CUTLASS 3.x/4.x 之前的第一站。本实验目录先从 
 cute_layout_mapping
 cute_layout_algebra_demo
 cute_tensor_tile_demo
+cute_copy_g2s_naive
+cute_copy_g2s_cpasync
+cute_copy_s2r
+cute_smem_swizzle_demo
 ```
 
 - `cute_layout_mapping` 是 host-side `Layout` smoke test，用 CuTe `Layout` 验证 `(M,K)`、`(N,K)` 和 shared-memory stage layout 的 offset 计算。
 - `cute_layout_algebra_demo` 是 host-side `Layout Algebra` smoke test，对应 NVIDIA `02_layout_algebra`，验证 `coalesce`、`composition`、`complement`、divide 和 product。
 - `cute_tensor_tile_demo` 是 host-side `Tensor/local_tile/partition` smoke test，用同一个逻辑值串起 global tensor、shared tensor、register fragment 和 per-thread partition。
+- `cute_copy_g2s_naive` 比较 scalar `local_partition`、scalar `TiledCopy` 和 128-bit `TiledCopy`，并验证 TV mapping 与 ragged tile。
+- `cute_copy_g2s_cpasync` 演示 `cp.async` 的 cache policy、async group 和同步顺序。
+- `cute_copy_s2r` 验证 shared-memory partition 到 per-thread register fragment 的坐标和值。
+- `cute_smem_swizzle_demo` 对比普通、padding、swizzle shared layout 的 offset、bank 和实际访问耗时。
 
 ## 目录结构
 
@@ -24,10 +32,16 @@ labs/cute/
 |   |-- README.md
 |   |-- cute_layout_algebra_demo.cu
 |   |-- cute_layout_mapping.cu
-|   `-- cute_tensor_tile_demo.cu
+|   |-- cute_tensor_tile_demo.cu
+|   |-- cute_copy_g2s_naive.cu
+|   |-- cute_copy_g2s_cpasync.cu
+|   |-- cute_copy_s2r.cu
+|   `-- cute_smem_swizzle_demo.cu
 |-- notes/
 |   |-- README.md
 |   |-- learning-plan.md
+|   |-- tensor-local-tile-partition.md
+|   |-- tiled-copy.md
 |   `-- windows-linux-build.md
 |-- scripts/
 |   |-- README.md
@@ -38,7 +52,8 @@ labs/cute/
 |   |-- configure.ps1
 |   `-- configure.sh
 `-- reports/
-    `-- README.md
+    |-- README.md
+    `-- w16-copy-report.md
 ```
 
 ## 依赖
@@ -110,17 +125,28 @@ cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\wor
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo
 
 # 运行。
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_mapping.exe
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_algebra_demo.exe
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_tensor_tile_demo.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_g2s_naive.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_g2s_cpasync.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_s2r.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_smem_swizzle_demo.exe
 ```
 
 期望最后看到：
 
 ```text
 layout mapping check passed
+layout algebra check passed
+tensor/local_tile/partition check passed
+W16 global-to-shared copy checks passed
+W16 cp.async checks passed
+W16 shared-to-register checks passed
+W16 shared-memory swizzle checks passed
 ```
 
 如果你已经设置了 `CUTLASS_ROOT`，配置命令也可以写成：
@@ -146,17 +172,28 @@ cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rd
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo -j"$(nproc)"
 
 # 运行。
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_algebra_demo
 ./out/build/linux-make-cuda-release/labs/cute/cute_tensor_tile_demo
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_g2s_naive
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_g2s_cpasync
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_s2r
+./out/build/linux-make-cuda-release/labs/cute/cute_smem_swizzle_demo
 ```
 
 期望最后看到：
 
 ```text
 layout mapping check passed
+layout algebra check passed
+tensor/local_tile/partition check passed
+W16 global-to-shared copy checks passed
+W16 cp.async checks passed
+W16 shared-to-register checks passed
+W16 shared-memory swizzle checks passed
 ```
 
 如果你已经设置了 `CUTLASS_ROOT`，配置命令也可以写成：
@@ -205,12 +242,20 @@ labs/cute/scripts/configure.sh --cutlass-root /path/to/cutlass
 .\labs\cute\scripts\build.ps1 -Target cute_layout_mapping -Configuration Release
 .\labs\cute\scripts\build.ps1 -Target cute_layout_algebra_demo -Configuration Release
 .\labs\cute\scripts\build.ps1 -Target cute_tensor_tile_demo -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_g2s_naive -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_g2s_cpasync -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_copy_s2r -Configuration Release
+.\labs\cute\scripts\build.ps1 -Target cute_smem_swizzle_demo -Configuration Release
 ```
 
 ```bash
 labs/cute/scripts/build.sh --target cute_layout_mapping
 labs/cute/scripts/build.sh --target cute_layout_algebra_demo
 labs/cute/scripts/build.sh --target cute_tensor_tile_demo
+labs/cute/scripts/build.sh --target cute_copy_g2s_naive
+labs/cute/scripts/build.sh --target cute_copy_g2s_cpasync
+labs/cute/scripts/build.sh --target cute_copy_s2r
+labs/cute/scripts/build.sh --target cute_smem_swizzle_demo
 ```
 
 ## Demo 说明
@@ -264,6 +309,28 @@ global tensor -> local_tile -> shared tensor -> register fragment -> local_parti
 
 配套笔记见 `notes/tensor-local-tile-partition.md`。
 
+四个 W16 demo 共同实现：
+
+```text
+global tensor
+    -> local_tile
+    -> Copy_Atom / TiledCopy / ThrCopy
+    -> partition_S / partition_D
+    -> shared tensor
+    -> register fragment
+```
+
+| Target | 主要输出 |
+| --- | --- |
+| `cute_copy_g2s_naive` | 128-bit TV layout、thread 0/1/31/32/127 坐标、4096 元素覆盖、三种同步 copy、ragged `copy_if` |
+| `cute_copy_g2s_cpasync` | `CACHEALWAYS/CACHEGLOBAL`、`fence/wait/syncthreads`、aligned/ragged correctness |
+| `cute_copy_s2r` | 所有 register fragment 的坐标覆盖，以及 thread 45 的 shared offset/value |
+| `cute_smem_swizzle_demo` | plain/padded/swizzled offset 与 bank 表、bank conflict 和微基准 |
+
+W16 使用 `half` A tile `128x32`、128 个线程和 128-bit copy。每线程负责 32 个
+half，也就是 4 条 16-byte copy instruction。完整概念、代码映射和边界处理见
+`notes/tiled-copy.md`，本机验证记录见 `reports/w16-copy-report.md`。
+
 ## 常见问题
 
 `labs/cute examples` 被跳过：
@@ -301,12 +368,14 @@ nvcc --version
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo
 ```
 
 ```bash
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo -j"$(nproc)"
 ```
 
 ## 里程碑
@@ -333,4 +402,13 @@ cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j
 - 知道 `logical_divide`、`zipped_divide` 如何把 tile mode 和 rest mode 分开。
 - 知道 `logical_product`、`blocked_product`、`raked_product` 如何表达 tile 重复和排列。
 
-完成后再进入 `notes/learning-plan.md` 中的 `TiledCopy`、`TiledMMA` 和 HGEMM pipeline 阶段。
+W16 里程碑是能独立解释并运行四个 copy demo：
+
+- 能从 `ThrLayout + ValLayout` 手算 `(thread_id,value_id) -> tile coordinate`。
+- 能区分 `Copy_Atom`、`TiledCopy`、`ThrCopy`、`partition_S` 和 `partition_D`。
+- 能解释 128-bit vector copy 的连续性和 alignment 要求。
+- 能解释 `cp_async_fence`、`cp_async_wait` 和 `__syncthreads` 的不同作用域。
+- 能计算 shared-memory bank，并解释 padding 和 swizzle 的取舍。
+- 能使用 identity coordinate tensor 和 `copy_if` 处理 ragged tile。
+
+完成 W16 后进入 `notes/learning-plan.md` 中的 W17 `MMA_Atom/TiledMMA`。

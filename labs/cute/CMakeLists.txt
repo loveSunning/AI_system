@@ -40,3 +40,23 @@ add_executable(cute_tensor_tile_demo examples/cute_tensor_tile_demo.cu)
 target_link_libraries(cute_tensor_tile_demo PRIVATE ai_system_cute_headers CUDA::cudart)
 target_compile_features(cute_tensor_tile_demo PRIVATE cxx_std_17)
 ai_system_configure_cuda_target(cute_tensor_tile_demo)
+
+add_executable(cute_copy_g2s_naive examples/cute_copy_g2s_naive.cu)
+target_link_libraries(cute_copy_g2s_naive PRIVATE ai_system_cute_headers CUDA::cudart)
+target_compile_features(cute_copy_g2s_naive PRIVATE cxx_std_17)
+ai_system_configure_cuda_target(cute_copy_g2s_naive)
+
+add_executable(cute_copy_g2s_cpasync examples/cute_copy_g2s_cpasync.cu)
+target_link_libraries(cute_copy_g2s_cpasync PRIVATE ai_system_cute_headers CUDA::cudart)
+target_compile_features(cute_copy_g2s_cpasync PRIVATE cxx_std_17)
+ai_system_configure_cuda_target(cute_copy_g2s_cpasync)
+
+add_executable(cute_copy_s2r examples/cute_copy_s2r.cu)
+target_link_libraries(cute_copy_s2r PRIVATE ai_system_cute_headers CUDA::cudart)
+target_compile_features(cute_copy_s2r PRIVATE cxx_std_17)
+ai_system_configure_cuda_target(cute_copy_s2r)
+
+add_executable(cute_smem_swizzle_demo examples/cute_smem_swizzle_demo.cu)
+target_link_libraries(cute_smem_swizzle_demo PRIVATE ai_system_cute_headers CUDA::cudart)
+target_compile_features(cute_smem_swizzle_demo PRIVATE cxx_std_17)
+ai_system_configure_cuda_target(cute_smem_swizzle_demo)

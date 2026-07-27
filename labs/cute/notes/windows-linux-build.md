@@ -81,10 +81,15 @@ cmake -S . --preset windows-vs2022-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="D:\wor
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_algebra_demo
 cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_tensor_tile_demo
+cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo
 
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_mapping.exe
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_layout_algebra_demo.exe
 .\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_tensor_tile_demo.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_g2s_naive.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_g2s_cpasync.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_copy_s2r.exe
+.\out\build\windows-vs2022-cuda-release\labs\cute\Release\cute_smem_swizzle_demo.exe
 ```
 
 预期运行结果包含：
@@ -92,6 +97,10 @@ cmake --build --preset windows-vs2022-cuda-release --config Release --target cut
 ```text
 CuTe layout mapping smoke test
 layout mapping check passed
+W16 global-to-shared copy checks passed
+W16 cp.async checks passed
+W16 shared-to-register checks passed
+W16 shared-memory swizzle checks passed
 ```
 
 如果用环境变量指定 CUTLASS：
@@ -115,10 +124,15 @@ cmake -S . --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT="${PWD}/3rd
 cmake --build --preset linux-make-cuda-release --target cute_layout_mapping -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_layout_algebra_demo -j"$(nproc)"
 cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j"$(nproc)"
+cmake --build --preset linux-make-cuda-release --target cute_copy_g2s_naive cute_copy_g2s_cpasync cute_copy_s2r cute_smem_swizzle_demo -j"$(nproc)"
 
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_mapping
 ./out/build/linux-make-cuda-release/labs/cute/cute_layout_algebra_demo
 ./out/build/linux-make-cuda-release/labs/cute/cute_tensor_tile_demo
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_g2s_naive
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_g2s_cpasync
+./out/build/linux-make-cuda-release/labs/cute/cute_copy_s2r
+./out/build/linux-make-cuda-release/labs/cute/cute_smem_swizzle_demo
 ```
 
 预期运行结果包含：
@@ -126,6 +140,10 @@ cmake --build --preset linux-make-cuda-release --target cute_tensor_tile_demo -j
 ```text
 CuTe layout mapping smoke test
 layout mapping check passed
+W16 global-to-shared copy checks passed
+W16 cp.async checks passed
+W16 shared-to-register checks passed
+W16 shared-memory swizzle checks passed
 ```
 
 如果用环境变量指定 CUTLASS：
@@ -163,10 +181,18 @@ labs/cute/scripts/build.sh
 - `build.ps1` 等价于 `cmake --build --preset windows-vs2022-cuda-release --config Release --target cute_layout_mapping`。
 - `build.ps1 -Target cute_layout_algebra_demo` 会编译 Layout Algebra demo。
 - `build.ps1 -Target cute_tensor_tile_demo` 会编译 Tensor/local_tile/partition demo。
+- `build.ps1 -Target cute_copy_g2s_naive` 会编译同步 G2S/TiledCopy demo。
+- `build.ps1 -Target cute_copy_g2s_cpasync` 会编译 `cp.async` G2S demo。
+- `build.ps1 -Target cute_copy_s2r` 会编译 shared-to-register fragment demo。
+- `build.ps1 -Target cute_smem_swizzle_demo` 会编译 shared-memory bank/swizzle demo。
 - `configure.sh` 等价于 `cmake -S <repo> --preset linux-make-cuda-release -DAI_SYSTEM_CUTLASS_ROOT=<path>`。
 - `build.sh` 等价于 `cmake --build --preset linux-make-cuda-release --target cute_layout_mapping`。
 - `build.sh --target cute_layout_algebra_demo` 会编译 Layout Algebra demo。
 - `build.sh --target cute_tensor_tile_demo` 会编译 Tensor/local_tile/partition demo。
+- `build.sh --target cute_copy_g2s_naive` 会编译同步 G2S/TiledCopy demo。
+- `build.sh --target cute_copy_g2s_cpasync` 会编译 `cp.async` G2S demo。
+- `build.sh --target cute_copy_s2r` 会编译 shared-to-register fragment demo。
+- `build.sh --target cute_smem_swizzle_demo` 会编译 shared-memory bank/swizzle demo。
 
 ## 清理和重新配置
 
