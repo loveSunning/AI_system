@@ -60,3 +60,16 @@ add_executable(cute_smem_swizzle_demo examples/cute_smem_swizzle_demo.cu)
 target_link_libraries(cute_smem_swizzle_demo PRIVATE ai_system_cute_headers CUDA::cudart)
 target_compile_features(cute_smem_swizzle_demo PRIVATE cxx_std_17)
 ai_system_configure_cuda_target(cute_smem_swizzle_demo)
+
+foreach(
+    target
+    IN ITEMS
+        cute_gemm_sm80_demo
+        cute_gemm_sm70_demo
+        cute_gemm_v2_fma_demo
+)
+    add_executable(${target} "examples/${target}.cu")
+    target_link_libraries(${target} PRIVATE ai_system_cute_headers CUDA::cudart CUDA::cublas)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    ai_system_configure_cuda_target(${target})
+endforeach()
