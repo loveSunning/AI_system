@@ -6,9 +6,15 @@ if(AI_SYSTEM_ENABLE_CUDA)
         ai_system_hgemm_lab
         PRIVATE
             hgemm_lab.cu
+            cute_hgemm_tn_v01.cu
             hgemm_mma_basic.cu
             hgemm_mma_stage_tn_cute.cu
             hgemm_wmma_basic.cu
+    )
+    target_include_directories(
+        ai_system_hgemm_lab
+        PRIVATE
+            "${AI_SYSTEM_CUTLASS_ROOT}/include"
     )
     ai_system_configure_cuda_target(ai_system_hgemm_lab)
 endif()

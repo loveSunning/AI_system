@@ -325,6 +325,7 @@ bool is_ptx_mma_kernel(ai_system::labs::hgemm::HgemmKernel kernel) {
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemX4:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemRr:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn:
+        case HgemmKernel::CuteHgemmTnV01:
         case HgemmKernel::MmaStagesBlockSwizzleTnCute:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle:
@@ -379,6 +380,7 @@ bool uses_cublas_tn_reference(ai_system::labs::hgemm::HgemmKernel kernel) {
     switch(kernel) {
         case HgemmKernel::CublasTensorOpTn:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn:
+        case HgemmKernel::CuteHgemmTnV01:
         case HgemmKernel::MmaStagesBlockSwizzleTnCute:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle:
         case HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemTnSwizzleX2:

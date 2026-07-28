@@ -51,6 +51,7 @@ enum class HgemmKernel {
     MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemX4,
     MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemRr,
     MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn,
+    CuteHgemmTnV01,
     MmaStagesBlockSwizzleTnCute,
     MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle,
     MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle,
@@ -152,6 +153,7 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem(const half* a, const half*
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
+bool hgemm_cute_tn_v01(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
 bool hgemm_mma_stages_block_swizzle_tn_cute(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);
 bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle(const half* a, const half* b, half* c, int m, int n, int k, int stages, bool swizzle, int swizzle_stride, std::string& error);

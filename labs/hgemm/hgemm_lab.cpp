@@ -320,6 +320,21 @@ bool hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn(
     return cuda_disabled(error);
 }
 
+bool hgemm_cute_tn_v01(
+    const half*,
+    const half*,
+    half*,
+    int,
+    int,
+    int,
+    int,
+    bool,
+    int,
+    std::string& error
+) {
+    return cuda_disabled(error);
+}
+
 bool hgemm_mma_stages_block_swizzle_tn_cute(
     const half*,
     const half*,

@@ -133,6 +133,7 @@ $Kernels = @(
   @{ Name = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4"; Regex = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel" },
   @{ Name = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr"; Regex = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel" },
   @{ Name = "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn"; Regex = "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel" },
+  @{ Name = "hgemm_cute_tn_v01"; Regex = "cute_hgemm_tn_v01_kernel" },
   @{ Name = "hgemm_mma_stages_block_swizzle_tn_cute"; Regex = "hgemm_mma_stages_block_swizzle_tn_cute_kernel" },
   @{ Name = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle"; Regex = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel" },
   @{ Name = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4"; Regex = "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4_kernel" }

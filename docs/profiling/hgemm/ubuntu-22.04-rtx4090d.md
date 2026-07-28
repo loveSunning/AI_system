@@ -161,6 +161,7 @@ declare -a Kernels=(
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4:hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr:hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn:hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel"
+  "hgemm_cute_tn_v01:cute_hgemm_tn_v01_kernel"
   "hgemm_mma_stages_block_swizzle_tn_cute:hgemm_mma_stages_block_swizzle_tn_cute_kernel"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle:hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle_kernel"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle:hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel"
@@ -250,6 +251,7 @@ declare -a FocusKernels=(
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x2"
   "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_tn_swizzle_x4"
+  "hgemm_cute_tn_v01"
   "hgemm_mma_stages_block_swizzle_tn_cute"
 )
 
