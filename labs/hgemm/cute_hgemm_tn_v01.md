@@ -51,24 +51,26 @@ BLAS-facing description of the same storage contract.
 v0.1 uses:
 
 ```text
-CTA tile:       64 x 64 x 64
-threads/CTA:    128 = 4 warps
+CTA tile:       256 x 128 x 16
+threads/CTA:    256 = 8 warps
 MMA atom:       SM80 16x8x16 F16F16F16F16 TN
-TiledMMA:       2x2 MMA atoms, tiled as 32x32x16
+TiledMMA:       4x2 MMA atoms, tiled as 64x32x16
 G2S copy atom:  SM80 cp.async, 16 bytes per copy instruction
 pipeline:       2, 3, or 4 shared-memory stages
 ```
 
-The original design candidate was `128x128x32`. v0.1 instead uses the official
-CuTe `8x64` swizzle atom and a `64x64x64` CTA. This keeps the shared layout
-injective and limits four A+B stages to approximately 64 KiB:
+The CTA owns a large M dimension while keeping K equal to one native MMA K
+step. The shared layout uses a 32-byte K-major swizzle atom. Four A+B stages
+consume exactly 48 KiB:
 
 ```text
-4 * (64*64 + 64*64) * sizeof(half) = 65536 bytes
+4 * (256*16 + 128*16) * sizeof(half) = 49152 bytes
 ```
 
-This is a correctness-first learning configuration. NCU results should decide
-whether v0.2 changes the CTA tile rather than assuming that a larger tile wins.
+This is still a correctness-first learning configuration. The larger CTA uses
+eight warps and gives each K iteration exactly one `m16n8k16` reduction step.
+NCU should be used to check whether the larger accumulator fragments and 256
+threads reduce occupancy on the target GPU.
 
 ## Global To CTA Mapping
 
@@ -83,9 +85,9 @@ m_c: (M,N)
 For CTA coordinate `(cta_m,cta_n,_)`, `local_tile` produces:
 
 ```text
-g_a: (64,64,k_tile)
-g_b: (64,64,k_tile)
-g_c: (64,64)
+g_a: (256,16,k_tile)
+g_b: (128,16,k_tile)
+g_c: (256,128)
 ```
 
 The projections are important:
@@ -101,13 +103,16 @@ Step<_1, _1, X>  // keep M and N for C; ignore K
 The G2S thread and value layouts are:
 
 ```text
-ThrLayout: (16,8):(8,1)     128 threads, K-major thread numbering
+ThrLayout: (128,2):(2,1)    256 threads, K-major thread numbering
 ValLayout: (1,8)            eight adjacent half values per instruction
 ```
 
 Eight `half` values are 16 bytes. The copy atom therefore dispatches one
-`cp.async` instruction for each value group. `partition_S` and `partition_D`
-apply the same logical ownership to global and shared tensors:
+`cp.async` instruction for each value group. A B stage has `128*16 = 2048`
+elements, so its 256 threads each copy one 16-byte vector. An A stage is twice
+as large, so the tiled copy repeats along M and each thread copies two vectors.
+`partition_S` and `partition_D` apply the same logical ownership to global and
+shared tensors:
 
 ```text
 t_ag_a / t_bg_b: this thread's global source vectors
@@ -122,12 +127,13 @@ In SASS, the async copy normally appears as `LDGSTS`, not as the PTX spelling
 Each A/B stage uses a K-major swizzled layout built from:
 
 ```text
-Swizzle<3,3,3>
-Layout<Shape<8,Shape<8,8>>, Stride<8,Stride<1,64>>>
+Swizzle<1,4,3>
+Layout<Shape<8,16>, Stride<16,1>>
 ```
 
-The layout preserves 16-byte K-contiguous G2S vectors while permuting shared
-addresses to reduce bank conflicts for `ldmatrix`.
+This is the half-precision form of a 32-byte K-major swizzle atom. The layout
+preserves 16-byte K-contiguous G2S vectors while permuting shared addresses to
+reduce bank conflicts for `ldmatrix`.
 
 `make_tiled_copy_A/B` derives an S2R copy from the MMA layout. For each thread:
 
@@ -155,7 +161,7 @@ The prologue submits `Stages-1` global loads. The steady-state loop tracks:
 k_tile_next  next global K tile
 smem_write   ring-buffer stage receiving cp.async
 smem_read    ring-buffer stage consumed by ldmatrix
-k_block      one of four 16-wide MMA blocks in a 64-wide CTA K tile
+k_block      the single 16-wide MMA block in this CTA K tile
 ```
 
 `cp_async_fence()` commits a producer group. `cp_async_wait<Stages-2>()`
@@ -192,19 +198,19 @@ recovers the logical N coordinate with:
 cta_n = blockIdx.z * gridDim.x + blockIdx.x
 ```
 
-`--swizzle-stride` is measured in N elements. For a 64-column CTA,
-`--swizzle-stride 2048` groups up to 32 N tiles before advancing `grid.z`.
+`--swizzle-stride` is measured in N elements. For a 128-column CTA,
+`--swizzle-stride 2048` groups up to 16 N tiles before advancing `grid.z`.
 This is a CTA scheduling transform and is different from the shared-memory
 swizzle used to avoid bank conflicts.
 
 ## Boundary Policy
 
-The fast CuTe path runs on complete `64x64` output tiles when `K` is divisible
-by 64. A half-accumulate boundary kernel handles everything else:
+The fast CuTe path runs on complete `256x128` output tiles when `K` is
+divisible by 16. A half-accumulate boundary kernel handles everything else:
 
 - if only M or N has a tail, full tiles use CuTe and the edge kernel writes only
   the uncovered rows or columns;
-- if `K % 64 != 0`, v0.1 uses the boundary kernel for the whole result;
+- if `K % 16 != 0`, v0.1 uses the boundary kernel for the whole result;
 - all paths preserve the lab contract of FP16 accumulation and FP16 C.
 
 This makes arbitrary M/N/K correct, but the fallback is intentionally not a

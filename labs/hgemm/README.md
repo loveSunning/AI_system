@@ -227,7 +227,7 @@ $ComputeSanitizer = (Get-Command compute-sanitizer -ErrorAction Stop).Source
   --error-exitcode 1 `
   $Exe `
   --kernel hgemm_cute_tn_v01 `
-  --gemm-m 128 --gemm-n 128 --gemm-k 128 `
+  --gemm-m 256 --gemm-n 128 --gemm-k 128 `
   --stages 2 --no-swizzle `
   --no-correctness --warmup 1 --iters 1
 ```
@@ -237,7 +237,7 @@ Check barriers and asynchronous-copy synchronization separately:
 ```powershell
 & $ComputeSanitizer --tool synccheck --error-exitcode 1 `
   $Exe --kernel hgemm_cute_tn_v01 `
-  --gemm-m 128 --gemm-n 128 --gemm-k 256 `
+  --gemm-m 256 --gemm-n 128 --gemm-k 256 `
   --stages 4 --no-swizzle `
   --no-correctness --warmup 1 --iters 1
 ```

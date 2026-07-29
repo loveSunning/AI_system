@@ -1882,7 +1882,7 @@ const std::vector<HgemmKernelInfo>& hgemm_kernel_infos() {
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemX4, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_x4_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemRr, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_rr_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTn, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},
-        {HgemmKernel::CuteHgemmTnV01, "hgemm_cute_tn_v01", "cute_hgemm_tn_v01_kernel", "64x64x64", "CuTe TiledMMA", true},
+        {HgemmKernel::CuteHgemmTnV01, "hgemm_cute_tn_v01", "cute_hgemm_tn_v01_kernel", "256x128x16", "CuTe TiledMMA", true},
         {HgemmKernel::MmaStagesBlockSwizzleTnCute, "hgemm_mma_stages_block_swizzle_tn_cute", "hgemm_mma_stages_block_swizzle_tn_cute_kernel", "128x256x32", "4x4mma/warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4x2StagesDsmemSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4x2_stages_dsmem_kernel", "16x8x16", "warp", true},
         {HgemmKernel::MmaM16n8k16Mma2x4Warp4x4StagesDsmemTnSwizzle, "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_swizzle", "hgemm_mma_m16n8k16_mma2x4_warp4x4_stages_dsmem_tn_kernel", "16x8x16", "warp", true},

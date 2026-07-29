@@ -25,10 +25,10 @@ using cute::_8;
 using cute::_16;
 using cute::_32;
 
-constexpr int kBlockM = 64;
-constexpr int kBlockN = 64;
-constexpr int kBlockK = 64;
-constexpr int kThreads = 128;
+constexpr int kBlockM = 256;
+constexpr int kBlockN = 128;
+constexpr int kBlockK = 16;
+constexpr int kThreads = 256;
 
 template <class SmemLayoutA, class SmemLayoutB>
 struct CuteHgemmSharedStorage {
@@ -197,12 +197,14 @@ __global__ __launch_bounds__(kThreads) void cute_hgemm_tn_v01_kernel(
     cute::Tensor t_xs_b_pipe = t_xs_b(_, _, _, smem_read);
 
     constexpr int kRegisterBlocks = kBlockK / 16;
-    static_assert(kRegisterBlocks == 4);
+    static_assert(kRegisterBlocks == 1);
 
-    cute::cp_async_wait<Stages - 2>();
-    __syncthreads();
-    cute::copy(s2r_atom_a, t_xs_a_pipe(_, _, Int<0> {}), t_xr_a(_, _, Int<0> {}));
-    cute::copy(s2r_atom_b, t_xs_b_pipe(_, _, Int<0> {}), t_xr_b(_, _, Int<0> {}));
+    if constexpr(kRegisterBlocks > 1) {
+        cute::cp_async_wait<Stages - 2>();
+        __syncthreads();
+        cute::copy(s2r_atom_a, t_xs_a_pipe(_, _, Int<0> {}), t_xr_a(_, _, Int<0> {}));
+        cute::copy(s2r_atom_b, t_xs_b_pipe(_, _, Int<0> {}), t_xr_b(_, _, Int<0> {}));
+    }
 
     // Steady state overlaps G2S cp.async, S2R ldmatrix, and register MMA.
     CUTE_NO_UNROLL
@@ -292,11 +294,11 @@ bool launch_cute_hgemm_tn_v01_fast(
     auto d_b = make_stride(k, Int<1> {});
     auto d_c = make_stride(n, Int<1> {});
 
-    // K-major shared tensors keep each 16-byte cp.async vector contiguous.
-    // A 64x64x64 CTA keeps four A+B stages at approximately 64 KiB.
+    // This is the half-precision form of a 32-byte K-major swizzle atom:
+    // eight rows by sixteen half values. Four A+B stages use 48 KiB.
     auto smem_atom = composition(
-        Swizzle<3, 3, 3> {},
-        Layout<Shape<_8, Shape<_8, _8>>, Stride<_8, Stride<_1, cute::_64>>> {}
+        Swizzle<1, 4, 3> {},
+        Layout<Shape<_8, _16>, Stride<_16, _1>> {}
     );
     auto s_a = tile_to_shape(
         smem_atom,
@@ -309,7 +311,7 @@ bool launch_cute_hgemm_tn_v01_fast(
 
     auto copy_a = make_tiled_copy(
         Copy_Atom<SM80_CP_ASYNC_CACHEALWAYS<uint128_t>, half_t> {},
-        Layout<Shape<_16, _8>, Stride<_8, _1>> {},
+        Layout<Shape<cute::_128, _2>, Stride<_2, _1>> {},
         Layout<Shape<_1, _8>> {}
     );
     auto copy_b = copy_a;
@@ -318,9 +320,10 @@ bool launch_cute_hgemm_tn_v01_fast(
     auto s2r_atom_b = Copy_Atom<SM75_U32x4_LDSM_N, half_t> {};
     auto mma = make_tiled_mma(
         SM80_16x8x16_F16F16F16F16_TN {},
-        Layout<Shape<_2, _2>> {},
-        Tile<_32, _32, _16> {}
+        Layout<Shape<_4, _2>> {},
+        Tile<cute::_64, _32, _16> {}
     );
+    static_assert(decltype(size(mma))::value == kThreads);
 
     auto kernel = cute_hgemm_tn_v01_kernel<
         Stages,
