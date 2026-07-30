@@ -67,6 +67,12 @@ bash ./labs/cutlass/scripts/build_official_cutlass.sh
 bash ./labs/cutlass/scripts/run_profiler.sh
 ```
 
+The Linux wrapper compiles the SM80 `m16n8k16` FP16 Tensor Core GEMM family
+for `sm_89`. CUTLASS's optional host/device reference-operation library is
+disabled because its INT4 path is incompatible with the CUDA 12.8
+`__nv_atomic_load_n` compiler intrinsic unless thread scope is passed
+explicitly. The profiler uses cuBLAS for FP16 verification instead.
+
 Windows + RTX 5060:
 
 ```powershell

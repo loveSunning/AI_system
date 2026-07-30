@@ -64,4 +64,5 @@ fi
   --A="${DATA_TYPE}" \
   --B="${DATA_TYPE}" \
   --C="${DATA_TYPE}" \
-  --accumulator=f32
+  --accumulator=f32 \
+  --verification-providers=cublas
