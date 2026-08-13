@@ -1,5 +1,5 @@
 param(
-    [string]$Target = "cutlass_header_probe",
+    [string]$Target = "cutlass_gemm_examples",
     [string]$Configuration = "Release"
 )
 

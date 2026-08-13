@@ -1,7 +1,8 @@
 # CUTLASS Scripts
 
 These scripts are optional wrappers. Direct CMake commands are documented in
-`labs/cutlass/README.md`.
+`labs/cutlass/README.md`. The default build target is now
+`cutlass_gemm_examples`, which builds both the 2.x and 3.x learning programs.
 
 ## Windows
 

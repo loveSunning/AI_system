@@ -31,3 +31,28 @@ add_executable(cutlass_header_probe examples/cutlass_header_probe.cu)
 target_link_libraries(cutlass_header_probe PRIVATE ai_system_cutlass_headers CUDA::cudart)
 target_compile_features(cutlass_header_probe PRIVATE cxx_std_17)
 ai_system_configure_cuda_target(cutlass_header_probe)
+
+foreach(target IN ITEMS cutlass_2x_gemm cutlass_3x_gemm)
+    add_executable(${target} "examples/${target}.cu")
+    target_link_libraries(${target} PRIVATE ai_system_cutlass_headers CUDA::cudart)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+    if(MSVC)
+        target_compile_options(
+            ${target}
+            PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
+                $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>
+                $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>
+        )
+    endif()
+    ai_system_configure_cuda_target(${target})
+endforeach()
+
+add_custom_target(cutlass_gemm_examples DEPENDS cutlass_2x_gemm cutlass_3x_gemm)
+
+if(AI_SYSTEM_ENABLE_TESTS)
+    add_test(NAME cutlass_2x_gemm_smoke COMMAND cutlass_2x_gemm --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
+    add_test(NAME cutlass_3x_gemm_smoke COMMAND cutlass_3x_gemm --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
+    set_tests_properties(cutlass_2x_gemm_smoke cutlass_3x_gemm_smoke PROPERTIES LABELS "cuda;cutlass")
+endif()
