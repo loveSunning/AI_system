@@ -59,8 +59,7 @@ inline float parse_float(std::string const& text, char const* name) {
   }
 }
 
-inline Options parse_options(int argc, char const** argv) {
-  Options options;
+inline Options parse_options(int argc, char const** argv, Options options = Options{}) {
   for (int i = 1; i < argc; ++i) {
     std::string arg(argv[i]);
     auto value_after = [&](char const* prefix) -> std::string {
@@ -92,15 +91,18 @@ inline Options parse_options(int argc, char const** argv) {
   return options;
 }
 
-inline void print_usage(char const* executable, char const* api_name) {
+inline void print_usage(
+    char const* executable,
+    char const* api_name,
+    Options const& defaults = Options{}) {
   std::cout
       << api_name << " Tensor Core GEMM learning example\n\n"
       << "Usage: " << executable << " [options]\n\n"
-      << "  --m=<int>             logical M (default 4096)\n"
-      << "  --n=<int>             logical N (default 4096)\n"
-      << "  --k=<int>             logical K (default 4096)\n"
-      << "  --warmup=<int>        untimed launches (default 2)\n"
-      << "  --iterations=<int>    timed launches (default 10)\n"
+      << "  --m=<int>             logical M (default " << defaults.m << ")\n"
+      << "  --n=<int>             logical N (default " << defaults.n << ")\n"
+      << "  --k=<int>             logical K (default " << defaults.k << ")\n"
+      << "  --warmup=<int>        untimed launches (default " << defaults.warmup << ")\n"
+      << "  --iterations=<int>    timed launches (default " << defaults.iterations << ")\n"
       << "  --alpha=<float>       epilogue alpha (default 1)\n"
       << "  --beta=<float>        epilogue beta (default 0)\n"
       << "  --no-verify           skip full output verification\n"
@@ -171,18 +173,19 @@ inline int round_up(int value, int alignment) {
 }
 
 struct ProblemStorage {
-  explicit ProblemStorage(Options const& options)
+  explicit ProblemStorage(Options const& options, bool use_column_major_output = false)
       : padded_m(round_up(options.m, 128)),
         padded_n(round_up(options.n, 128)),
         padded_k(round_up(options.k, 32)),
         lda(padded_k),
         ldb(padded_k),
-        ldc(padded_n),
+        ldc(use_column_major_output ? padded_m : padded_n),
         ldd(ldc),
+        column_major_output(use_column_major_output),
         a(static_cast<std::size_t>(padded_m) * lda),
         b(static_cast<std::size_t>(padded_n) * ldb),
-        c(static_cast<std::size_t>(padded_m) * ldc),
-        d(static_cast<std::size_t>(padded_m) * ldd) {}
+        c(static_cast<std::size_t>(use_column_major_output ? padded_n : padded_m) * ldc),
+        d(static_cast<std::size_t>(use_column_major_output ? padded_n : padded_m) * ldd) {}
 
   int padded_m;
   int padded_n;
@@ -191,6 +194,7 @@ struct ProblemStorage {
   int ldb;
   int ldc;
   int ldd;
+  bool column_major_output;
   DeviceBuffer<cutlass::half_t> a;
   DeviceBuffer<cutlass::half_t> b;
   DeviceBuffer<float> c;
@@ -227,6 +231,16 @@ __global__ void fill_row_major_float(
   }
 }
 
+__global__ void fill_column_major_float(
+    float* data, int rows, int columns, int leading_dimension, float value) {
+  std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  std::size_t total = static_cast<std::size_t>(columns) * leading_dimension;
+  if (index < total) {
+    int row = static_cast<int>(index % leading_dimension);
+    data[index] = row < rows ? value : 0.0f;
+  }
+}
+
 __global__ void count_mismatches(
     float const* data,
     int rows,
@@ -247,6 +261,26 @@ __global__ void count_mismatches(
   }
 }
 
+__global__ void count_mismatches_column_major(
+    float const* data,
+    int rows,
+    int columns,
+    int leading_dimension,
+    float expected,
+    float tolerance,
+    unsigned long long* mismatch_count) {
+  std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  std::size_t total = static_cast<std::size_t>(rows) * columns;
+  if (index < total) {
+    int row = static_cast<int>(index / columns);
+    int column = static_cast<int>(index % columns);
+    float actual = data[static_cast<std::size_t>(column) * leading_dimension + row];
+    if (!isfinite(actual) || fabsf(actual - expected) > tolerance) {
+      atomicAdd(mismatch_count, 1ULL);
+    }
+  }
+}
+
 inline dim3 grid_for(std::size_t count, int threads = 256) {
   return dim3(static_cast<unsigned int>((count + threads - 1) / threads));
 }
@@ -257,10 +291,17 @@ inline void initialize_problem(ProblemStorage& storage, Options const& options) 
       storage.a.get(), storage.padded_m, options.k, storage.lda, 1.0f);
   fill_column_major_half<<<grid_for(storage.b.size()), threads>>>(
       storage.b.get(), options.k, storage.padded_n, storage.ldb, 1.0f);
-  fill_row_major_float<<<grid_for(storage.c.size()), threads>>>(
-      storage.c.get(), storage.padded_m, options.n, storage.ldc, 1.0f);
-  fill_row_major_float<<<grid_for(storage.d.size()), threads>>>(
-      storage.d.get(), storage.padded_m, options.n, storage.ldd, 0.0f);
+  if (storage.column_major_output) {
+    fill_column_major_float<<<grid_for(storage.c.size()), threads>>>(
+        storage.c.get(), options.m, storage.padded_n, storage.ldc, 1.0f);
+    fill_column_major_float<<<grid_for(storage.d.size()), threads>>>(
+        storage.d.get(), options.m, storage.padded_n, storage.ldd, 0.0f);
+  } else {
+    fill_row_major_float<<<grid_for(storage.c.size()), threads>>>(
+        storage.c.get(), storage.padded_m, options.n, storage.ldc, 1.0f);
+    fill_row_major_float<<<grid_for(storage.d.size()), threads>>>(
+        storage.d.get(), storage.padded_m, options.n, storage.ldd, 0.0f);
+  }
   check_cuda(cudaGetLastError(), "initialize kernels");
   check_cuda(cudaDeviceSynchronize(), "initialize synchronization");
 }
@@ -272,9 +313,15 @@ inline bool verify_result(ProblemStorage const& storage, Options const& options)
   float expected = options.alpha * static_cast<float>(options.k) + options.beta;
   float tolerance = std::max(1.0e-3f, std::abs(expected) * 1.0e-4f);
   std::size_t logical_elements = static_cast<std::size_t>(options.m) * options.n;
-  count_mismatches<<<grid_for(logical_elements), 256>>>(
-      storage.d.get(), options.m, options.n, storage.ldd,
-      expected, tolerance, mismatch_count.get());
+  if (storage.column_major_output) {
+    count_mismatches_column_major<<<grid_for(logical_elements), 256>>>(
+        storage.d.get(), options.m, options.n, storage.ldd,
+        expected, tolerance, mismatch_count.get());
+  } else {
+    count_mismatches<<<grid_for(logical_elements), 256>>>(
+        storage.d.get(), options.m, options.n, storage.ldd,
+        expected, tolerance, mismatch_count.get());
+  }
   check_cuda(cudaGetLastError(), "verification kernel");
 
   unsigned long long host_mismatches = 0;
@@ -308,6 +355,7 @@ inline cudaDeviceProp print_environment(char const* api_name, Options const& opt
             << " x " << storage.padded_k << (is_padded ? " (padded)\n" : " (no padding)\n")
             << "Physical strides   : lda=" << storage.lda << ", ldb=" << storage.ldb
             << ", ldc=" << storage.ldc << ", ldd=" << storage.ldd << '\n'
+            << "Output layout      : " << (storage.column_major_output ? "column-major" : "row-major") << '\n'
             << "Data path          : FP16 inputs -> FP32 Tensor Core accumulate -> FP32 output\n"
             << "Epilogue           : D = " << options.alpha << " * AB + " << options.beta << " * C\n";
   return properties;

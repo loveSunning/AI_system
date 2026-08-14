@@ -9,4 +9,6 @@ Recommended order:
 5. GEMM API 3.x notes
 6. Efficient GEMM notes
 7. `w21-profiler-sweep-step-by-step.md`
-8. Fused epilogue notes
+8. `profiler_find_bestparam.md`
+9. `profiler_find_bestparam_linux.md`
+10. Fused epilogue notes
