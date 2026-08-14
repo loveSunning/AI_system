@@ -34,6 +34,7 @@ cmake \
   -DCMAKE_BUILD_TYPE=Release \
   -DCUTLASS_NVCC_ARCHS=89 \
   -DCUTLASS_ENABLE_TESTS=OFF \
+  -DCUTLASS_ENABLE_CUBLAS=ON \
   -DCUTLASS_LIBRARY_OPERATIONS=gemm \
   "-DCUTLASS_LIBRARY_KERNELS=cutlass_tensorop_s16816gemm_f16_*" \
   "-DCUTLASS_LIBRARY_IGNORE_KERNELS=cutlass_tensorop_s16816gemm_f16_s8_*,cutlass_tensorop_s16816gemm_f16_u8_*" \

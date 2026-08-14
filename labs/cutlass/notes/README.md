@@ -8,5 +8,5 @@ Recommended order:
 4. CUTLASS Quickstart notes
 5. GEMM API 3.x notes
 6. Efficient GEMM notes
-7. Profiler sweep notes
+7. `w21-profiler-sweep-step-by-step.md`
 8. Fused epilogue notes

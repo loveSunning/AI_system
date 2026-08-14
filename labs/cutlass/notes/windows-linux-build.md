@@ -123,8 +123,8 @@ Use cuBLAS to verify FP16 profiler results:
 ./build/tools/profiler/cutlass_profiler \
   --operation=Gemm \
   --m=4096 --n=4096 --k=4096 \
-  --A=f16 --B=f16 --C=f16 \
-  --accumulator=f32 \
+  --A=f16:row --B=f16:column --C=f32:column --D=f32:column \
+  --accum=f32 \
   --verification-providers=cublas
 ```
 
