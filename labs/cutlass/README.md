@@ -34,6 +34,9 @@ labs/cutlass/
 ├── examples/
 │   ├── cutlass_2x_gemm.cu       # 2.x Device API
 │   ├── cutlass_3x_gemm.cu       # 3.x Kernel/Collective/CuTe API
+│   ├── cutlass_2x_gemm_bias_relu.cu  # 2.x fused bias+ReLU 与 unfused 对照
+│   ├── cutlass_3x_gemm_bias_relu.cu  # 3.x fused bias+ReLU 与 unfused 对照
+│   ├── bias_relu_lab_common.hpp      # bias+ReLU 初始化、独立 kernel、计时与校验
 │   ├── gemm_lab_common.hpp      # 公共 CLI、显存、初始化、计时与校验
 │   └── cutlass_header_probe.cu
 ├── notes/
@@ -53,7 +56,9 @@ labs/cutlass/
 | GMEM→SMEM | 专用 iterator，内部使用 `cp.async` | 显式 `GmemTiledCopy` + `Copy_Atom` |
 | SMEM→寄存器 | 专用 warp iterator | `SmemCopyAtom`，使用 `ldmatrix` |
 | Pipeline | `Stages=3` | `MainloopSm80CpAsync<3>` |
-| Epilogue | `thread::LinearCombination` | `collective::DefaultEpilogue` 包装同一操作 |
+| 普通 Epilogue | `thread::LinearCombination` | `collective::DefaultEpilogue` 包装同一操作 |
+| Fused Epilogue | `thread::LinearCombinationRelu` | `DefaultEpilogue<LinearCombinationRelu>` |
+| Bias 广播 | row-major `TensorRef(bias, 0)` | `StrideC{0, 1, 0}` |
 
 两个 kernel 都使用 `OpClassTensorOp` 和 `m16n8k16` FP16 Tensor Core MMA，
 都是 FP32 累加，不是 SIMT CUDA Core GEMM。
@@ -226,6 +231,8 @@ $bin = ".\out\build\windows-vs2022-cuda-release\labs\cutlass\Release"
 
 & "$bin\cutlass_2x_gemm.exe"
 & "$bin\cutlass_3x_gemm.exe"
+& "$bin\cutlass_2x_gemm_bias_relu.exe"
+& "$bin\cutlass_3x_gemm_bias_relu.exe"
 ```
 
 快速 smoke test：
@@ -233,6 +240,19 @@ $bin = ".\out\build\windows-vs2022-cuda-release\labs\cutlass\Release"
 ```powershell
 & "$bin\cutlass_2x_gemm.exe" --m=130 --n=130 --k=130 --warmup=1 --iterations=1
 & "$bin\cutlass_3x_gemm.exe" --m=130 --n=130 --k=130 --warmup=1 --iterations=1
+& "$bin\cutlass_2x_gemm_bias_relu.exe" --m=130 --n=130 --k=130 --warmup=1 --iterations=1
+& "$bin\cutlass_3x_gemm_bias_relu.exe" --m=130 --n=130 --k=130 --warmup=1 --iterations=1
+```
+
+W22 fused epilogue 性能对照：
+
+```powershell
+foreach ($k in 256, 1024, 4096) {
+  & "$bin\cutlass_2x_gemm_bias_relu.exe" `
+    --m=4096 --n=4096 --k=$k --warmup=5 --iterations=20
+  & "$bin\cutlass_3x_gemm_bias_relu.exe" `
+    --m=4096 --n=4096 --k=$k --warmup=5 --iterations=20
+}
 ```
 
 ## 9. Linux：RTX 4090D / SM89
@@ -263,6 +283,19 @@ bin=./out/build/linux-make-cuda-release/labs/cutlass
 
 "${bin}/cutlass_2x_gemm"
 "${bin}/cutlass_3x_gemm"
+"${bin}/cutlass_2x_gemm_bias_relu"
+"${bin}/cutlass_3x_gemm_bias_relu"
+```
+
+W22 fused epilogue 性能对照：
+
+```bash
+for k in 256 1024 4096; do
+  "${bin}/cutlass_2x_gemm_bias_relu" \
+    --m=4096 --n=4096 --k="${k}" --warmup=5 --iterations=20
+  "${bin}/cutlass_3x_gemm_bias_relu" \
+    --m=4096 --n=4096 --k="${k}" --warmup=5 --iterations=20
+done
 ```
 
 ## 10. CLI 参数
@@ -281,6 +314,17 @@ bin=./out/build/linux-make-cuda-release/labs/cutlass
 --help                显示帮助
 ```
 
+两个 bias+ReLU 程序也使用相同 CLI，但固定计算：
+
+```text
+unfused: T = alpha * A * B; D = ReLU(T + bias)
+fused:   D = ReLU(alpha * A * B + bias)
+```
+
+其中 `--beta` 必须保持为 `0`；bias 是不经过 beta 缩放的 epilogue source。
+每个程序一次运行会依次测量 unfused 和 fused 两条路径，因此不需要额外的
+`--mode` 参数。
+
 示例：
 
 ```powershell
@@ -298,7 +342,8 @@ expected = alpha * K + beta
 
 ## 11. CTest
 
-启用 `AI_SYSTEM_ENABLE_TESTS=ON` 时会注册两个 `130³` smoke test：
+启用 `AI_SYSTEM_ENABLE_TESTS=ON` 时会注册普通 GEMM 和 fused bias+ReLU 的
+`130³` smoke test：
 
 ```powershell
 ctest --test-dir .\out\build\windows-vs2022-cuda-release `
@@ -319,13 +364,23 @@ ctest --test-dir ./out/build/linux-make-cuda-release \
 - 默认 `4096³` 全输出校验；
 - FP16 Tensor Core、FP32 accumulate、FP32 output 路径。
 
+W22 新增的 2.x/3.x bias+ReLU 目标也已在相同环境通过：
+
+- `130³` 非整 tile 的 fused/unfused 全逻辑输出校验；
+- bias 使逻辑列交替得到 ReLU 输出 `0/1`，正负分支均被覆盖；
+- `4096×4096×{256,1024,4096}` 的端到端性能对照；
+- fused 路径单 kernel，unfused 路径为 GEMM 加独立 bias+ReLU kernel。
+
+完整数据与 traffic 推导见
+[`reports/w22-cutlass-fused-epilogue.md`](reports/w22-cutlass-fused-epilogue.md)。
+
 一次 5 次迭代的观察值约为 40–41 TFLOP/s。该数字会随温度、功耗、后台负载
 和时钟变化，只应当作构建与执行成功的证据。
 
 Linux/RTX 4090D 需要在对应机器上执行第 9 节命令完成实机验证；当前 Windows
 机器只能验证 SM120，不能替代 SM89 的运行测试。两套源码已额外通过
-`compute_89,sm_89` 交叉编译，确认 Ada 目标能够生成；Linux host 编译与运行仍需
-在 4090D 机器上完成。
+`compute_89,sm_89` 交叉编译，包括新增的 2.x/3.x bias+ReLU 目标，确认 Ada
+目标代码能够生成；Linux host 编译与运行仍需在 4090D 机器上完成。
 
 ## 13. 常见问题
 

@@ -32,7 +32,16 @@ target_link_libraries(cutlass_header_probe PRIVATE ai_system_cutlass_headers CUD
 target_compile_features(cutlass_header_probe PRIVATE cxx_std_17)
 ai_system_configure_cuda_target(cutlass_header_probe)
 
-foreach(target IN ITEMS cutlass_2x_gemm cutlass_3x_gemm cutlass_3x_gemm_best)
+set(
+    AI_SYSTEM_CUTLASS_GEMM_TARGETS
+    cutlass_2x_gemm
+    cutlass_3x_gemm
+    cutlass_3x_gemm_best
+    cutlass_2x_gemm_bias_relu
+    cutlass_3x_gemm_bias_relu
+)
+
+foreach(target IN LISTS AI_SYSTEM_CUTLASS_GEMM_TARGETS)
     add_executable(${target} "examples/${target}.cu")
     target_link_libraries(${target} PRIVATE ai_system_cutlass_headers CUDA::cudart)
     target_compile_features(${target} PRIVATE cxx_std_17)
@@ -49,16 +58,20 @@ foreach(target IN ITEMS cutlass_2x_gemm cutlass_3x_gemm cutlass_3x_gemm_best)
     ai_system_configure_cuda_target(${target})
 endforeach()
 
-add_custom_target(cutlass_gemm_examples DEPENDS cutlass_2x_gemm cutlass_3x_gemm cutlass_3x_gemm_best)
+add_custom_target(cutlass_gemm_examples DEPENDS ${AI_SYSTEM_CUTLASS_GEMM_TARGETS})
 
 if(AI_SYSTEM_ENABLE_TESTS)
     add_test(NAME cutlass_2x_gemm_smoke COMMAND cutlass_2x_gemm --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
     add_test(NAME cutlass_3x_gemm_smoke COMMAND cutlass_3x_gemm --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
     add_test(NAME cutlass_3x_gemm_best_smoke COMMAND cutlass_3x_gemm_best --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
+    add_test(NAME cutlass_2x_gemm_bias_relu_smoke COMMAND cutlass_2x_gemm_bias_relu --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
+    add_test(NAME cutlass_3x_gemm_bias_relu_smoke COMMAND cutlass_3x_gemm_bias_relu --m=130 --n=130 --k=130 --warmup=1 --iterations=1)
     set_tests_properties(
         cutlass_2x_gemm_smoke
         cutlass_3x_gemm_smoke
         cutlass_3x_gemm_best_smoke
+        cutlass_2x_gemm_bias_relu_smoke
+        cutlass_3x_gemm_bias_relu_smoke
         PROPERTIES LABELS "cuda;cutlass"
     )
 endif()
