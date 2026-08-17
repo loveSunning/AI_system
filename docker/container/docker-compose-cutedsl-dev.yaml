@@ -1,0 +1,41 @@
+name: ${COMPOSE_PROJECT_NAME:-cutedsl-dev}
+
+services:
+  cutedsl_dev:
+    build:
+      context: ../dockerfile
+      dockerfile: Dockerfile.cutedsl_dev
+      args:
+        USER_NAME: ${DOCKER_USER:-cutedsl}
+        USER_UID: ${USER_ID:-1000}
+        USER_GID: ${GROUP_ID:-1000}
+    image: ${CUTEDSL_IMAGE:-ai-system/cutedsl-dev:cuda12.9}
+    container_name: ${CUTEDSL_CONTAINER_NAME:-cutedsl_dev}
+    hostname: ${CUTEDSL_HOSTNAME:-cutedsl-dev}
+    restart: unless-stopped
+    init: true
+    stdin_open: true
+    tty: true
+    ipc: host
+    shm_size: ${SHM_SIZE:-16gb}
+    working_dir: /workspace
+    environment:
+      CUDA_HOME: /usr/local/cuda
+      DOCKER_USER: ${DOCKER_USER:-cutedsl}
+      HISTFILE: /workspace/.dev_bash_history
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      PYTHONUNBUFFERED: "1"
+      TORCH_CUDA_ARCH_LIST: "8.9"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_PATH:-../..}
+        target: /workspace
+
