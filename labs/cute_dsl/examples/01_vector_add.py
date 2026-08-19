@@ -8,6 +8,7 @@ the CuTe DSL compilation cache.
 """
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 
 import cuda.bindings.driver as cuda
 import torch
@@ -25,7 +26,7 @@ def vector_add_kernel(
     x: cute.Tensor,
     y: cute.Tensor,
     out: cute.Tensor,
-    num_elements: int,
+    num_elements: cutlass.Int32,
 ):
     """Device code: one CUDA thread computes one output element."""
     thread_idx, _, _ = cute.arch.thread_idx()
@@ -43,7 +44,7 @@ def launch_vector_add(
     x: cute.Tensor,
     y: cute.Tensor,
     out: cute.Tensor,
-    num_elements: int,
+    num_elements: cutlass.Int32,
 ):
     """Host-side JIT wrapper: calculate the grid and launch the kernel."""
     grid_size = (num_elements + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
@@ -65,7 +66,11 @@ def run(num_elements: int) -> None:
     print(f"GPU: {device_name}")
     print(f"Compute capability: {capability}")
     print(f"PyTorch: {torch.__version__}, PyTorch CUDA: {torch.version.cuda}")
-    print(f"CUTLASS DSL: {getattr(cutlass, 'version', 'unknown')}")
+    try:
+        dsl_version = version("nvidia-cutlass-dsl")
+    except PackageNotFoundError:
+        dsl_version = "unknown"
+    print(f"CUTLASS DSL: {dsl_version}")
 
     if capability != (8, 9):
         print("Warning: this tutorial targets RTX 4090 D / SM89, continuing anyway.")
