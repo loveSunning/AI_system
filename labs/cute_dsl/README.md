@@ -42,14 +42,31 @@ python labs/cute_dsl/examples/01_vector_add.py
 python labs/cute_dsl/examples/01_vector_add.py --num-elements 1048576
 ```
 
+指定预热和计时次数：
+
+```bash
+python labs/cute_dsl/examples/01_vector_add.py \
+    --num-elements 1048576 \
+    --warmup-iterations 20 \
+    --iterations 200
+```
+
+预热不会计入执行时间。正式计时使用与 CuTe DSL kernel 相同 CUDA stream 上的 CUDA Event，统计多次 kernel launch 的 GPU 总时间和平均时间，不包含 JIT 编译时间。
+
 预期关键输出：
 
 ```text
 GPU: NVIDIA GeForce RTX 4090 D
 Compute capability: (8, 9)
 Compiling CuTe DSL kernel (the first run can take a few seconds)...
-Launching kernel...
+Compilation time: 2.345 s
+Launching kernel for correctness check...
 Max absolute error: 0.000e+00
+Warming up: 10 iterations...
+Benchmark iterations: 100
+Total GPU time: 1.234 ms
+Average kernel time: 12.340 us (0.012340 ms)
+Effective memory throughput: 972.00 GB/s
 PASS
 ```
 

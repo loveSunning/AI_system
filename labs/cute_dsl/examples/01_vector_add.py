@@ -9,6 +9,7 @@ the CuTe DSL compilation cache.
 
 import argparse
 from importlib.metadata import PackageNotFoundError, version
+import time
 
 import cuda.bindings.driver as cuda
 import torch
@@ -55,11 +56,15 @@ def launch_vector_add(
     )
 
 
-def run(num_elements: int) -> None:
+def run(num_elements: int, warmup_iterations: int, iterations: int) -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable. Start the container with GPU access.")
     if num_elements <= 0:
         raise ValueError("--num-elements must be greater than zero")
+    if warmup_iterations < 0:
+        raise ValueError("--warmup-iterations must be zero or greater")
+    if iterations <= 0:
+        raise ValueError("--iterations must be greater than zero")
 
     device_name = torch.cuda.get_device_name(0)
     capability = torch.cuda.get_device_capability(0)
@@ -89,6 +94,7 @@ def run(num_elements: int) -> None:
     stream = cuda.CUstream(torch_stream.cuda_stream)
 
     print("Compiling CuTe DSL kernel (the first run can take a few seconds)...")
+    compile_start = time.perf_counter()
     compiled = cute.compile(
         launch_vector_add,
         stream,
@@ -97,8 +103,10 @@ def run(num_elements: int) -> None:
         out_cute,
         num_elements,
     )
+    compile_time_s = time.perf_counter() - compile_start
+    print(f"Compilation time: {compile_time_s:.3f} s")
 
-    print("Launching kernel...")
+    print("Launching kernel for correctness check...")
     compiled(stream, x_cute, y_cute, out_cute, num_elements)
     torch_stream.synchronize()
 
@@ -108,6 +116,34 @@ def run(num_elements: int) -> None:
     max_error = (out - reference).abs().max().item()
     print(f"First five outputs: {out[:5].tolist()}")
     print(f"Max absolute error: {max_error:.3e}")
+
+    print(f"Warming up: {warmup_iterations} iterations...")
+    for _ in range(warmup_iterations):
+        compiled(stream, x_cute, y_cute, out_cute, num_elements)
+    torch_stream.synchronize()
+
+    # CUDA events measure GPU elapsed time on the same stream used by CuTe DSL.
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
+    start_event.record(torch_stream)
+    for _ in range(iterations):
+        compiled(stream, x_cute, y_cute, out_cute, num_elements)
+    end_event.record(torch_stream)
+    end_event.synchronize()
+
+    total_time_ms = start_event.elapsed_time(end_event)
+    average_time_ms = total_time_ms / iterations
+    average_time_us = average_time_ms * 1_000.0
+
+    # Each invocation reads x and y, then writes out: 3 float32 values/element.
+    bytes_per_iteration = num_elements * 3 * out.element_size()
+    throughput_gbps = bytes_per_iteration / (average_time_ms / 1_000.0) / 1e9
+
+    print(f"Benchmark iterations: {iterations}")
+    print(f"Total GPU time: {total_time_ms:.3f} ms")
+    print(f"Average kernel time: {average_time_us:.3f} us ({average_time_ms:.6f} ms)")
+    print(f"Effective memory throughput: {throughput_gbps:.2f} GB/s")
     print("PASS")
 
 
@@ -119,4 +155,17 @@ if __name__ == "__main__":
         default=1_000_003,
         help="Vector length; the non-multiple default also tests the boundary predicate",
     )
-    run(parser.parse_args().num_elements)
+    parser.add_argument(
+        "--warmup-iterations",
+        type=int,
+        default=10,
+        help="Warmup launches excluded from timing",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=100,
+        help="Number of timed kernel launches",
+    )
+    args = parser.parse_args()
+    run(args.num_elements, args.warmup_iterations, args.iterations)
