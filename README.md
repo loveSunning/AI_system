@@ -1,6 +1,8 @@
 # AI_system
 
-`AI_system` 是一个围绕你这份 12 个月学习排期表搭出来的跨平台实验仓库：用一个统一的 CMake 工程，把 CUDA kernel、GEMM/Triton/CUTLASS/CuTe、FlashAttention、PyTorch custom op、TVM/MLIR、RK3588 和 TPU-MLIR 的学习路径串成一个可逐月扩展的项目。
+`AI_system` 是一个跨平台 AI 系统实验仓库，以 CUDA kernel、GEMM/Triton/CUTLASS/CuTe 和 FlashAttention 为基础。W29 起按 v3 表格转向 Qwen3-8B 量化与性能诊断、vLLM/SGLang 推理服务、FlashInfer 与训练优化、分布式训练和国产平台迁移；TVM/MLIR、RK3588、TPU-MLIR 延后至 W52 后按岗位需要学习。
+
+学习入口：[月度路线图](docs/learning-roadmap.md)、[W29–W52 每周计划与验收](docs/learning-plan-w29-w52.md)、[四案例任务](capstone/README.md)。
 
 ## 当前落地内容
 
