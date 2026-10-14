@@ -19,6 +19,8 @@ services:
     ipc: host
     shm_size: ${SHM_SIZE:-16gb}
     working_dir: /workspace
+    ports:
+      - "7001-7099:7001-7099"
     environment:
       CUDA_HOME: /usr/local/cuda
       DOCKER_USER: ${DOCKER_USER:-cutedsl}

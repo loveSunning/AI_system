@@ -90,6 +90,16 @@ docker compose -f docker-compose-cutedsl-dev.yaml build --pull --no-cache
 docker compose -f docker-compose-cutedsl-dev.yaml up -d
 ```
 
+默认将宿主机 TCP 端口 `7001–7099` 映射到容器的同号端口，绑定宿主机所有网络接口。容器内服务需监听 `0.0.0.0` 和范围内的端口，例如 `0.0.0.0:7001`；局域网设备通过 `http://192.168.88.91:7001` 访问（将 IP 替换为实际宿主机地址），宿主机防火墙需放行对应端口。`8000` 和 `8888` 不在默认映射范围内。
+
+已有 `cutedsl_dev` 容器时，更新端口配置后在 `docker/container` 目录执行以下命令，重新创建该服务以应用映射：
+
+```bash
+docker compose -f docker-compose-cutedsl-dev.yaml up -d --force-recreate cutedsl_dev
+```
+
+端口映射已包含在主 Compose 文件中，无需额外的端口覆盖文件。
+
 查看状态：
 
 ```bash
@@ -158,21 +168,10 @@ cd cutlass
 容器内执行：
 
 ```bash
-jupyter lab --ip=0.0.0.0 --port=8888 --no-browser
+jupyter lab --ip=0.0.0.0 --port=7001 --no-browser
 ```
 
-默认 compose 没有发布端口。需要从宿主机浏览器访问时，在 `cutedsl_dev` 服务中加入：
-
-```yaml
-ports:
-  - "8888:8888"
-```
-
-然后重新创建容器：
-
-```bash
-docker compose -f docker-compose-cutedsl-dev.yaml up -d --force-recreate
-```
+`7001` 已包含在默认端口映射中。宿主机浏览器访问 `http://localhost:7001`，局域网设备访问 `http://192.168.88.91:7001`（替换为实际宿主机 IP），并使用 Jupyter 启动日志提供的 token。若 `7001` 已被其他服务占用，可选择 `7002–7099` 中的空闲端口。
 
 ## 8. 停止、重启和删除容器
 
