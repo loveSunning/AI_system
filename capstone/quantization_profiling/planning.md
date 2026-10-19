@@ -10,7 +10,7 @@
 
 | 范围 | 本项目安排 |
 | --- | --- |
-| 模型与设备 | Qwen3-8B；RTX 4090D 单卡，用户给定约 20G 可用显存；仍需在目标机读取实际值，当前本地验证机不是目标实验机 |
+| 模型与设备 | Qwen3-8B；预训练模型统一位于 /workspace/weights_pub（按模型名建立子目录）；RTX 4090D 单卡，用户给定约 20G 可用显存；仍需在目标机读取实际值，当前本地验证机不是目标实验机 |
 | 服务框架 | 选定并锁定一个 vLLM 版本；读懂本项目所需的请求、调度、模型执行和量化 kernel 路径 |
 | 基线与量化 | BF16 为主基线；AWQ/W4A16 为首选量化路径，记录真实激活 dtype、KV dtype 和 kernel |
 | 性能诊断 | prefill/decode、CPU/调度/launch、权重与 KV 访问、热点 GEMM/attention；先抽样 3 个代表热点 |
@@ -194,7 +194,7 @@
 | configs/bf16.yaml | 模型/revision、BF16、tokenizer/模板/thinking、服务/生成参数、KV/Graph/后端 | 能还原 BF16 服务，默认值显式记录，无本机密钥 |
 | configs/awq.yaml | 量化权重/revision、基础模型关联、格式/位宽/group size、实际激活/KV dtype、校准来源 | AWQ 主路径可核验；格式与运行参数不混淆；GPTQ 替代使用单独明确命名的配置 |
 | configs/workloads.yaml | 五组长度、并发、预热、请求数、轮数、seed、缓存/到达模式、超时和输出规则 | 两种精度共享负载定义与请求顺序 |
-| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B；支持预览和失败重试；目标机真实下载待执行 |
+| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B，默认根目录 /workspace/weights_pub；支持预览和失败重试；目标机真实下载待执行 |
 | scripts/collect_environment.py | 已实现：当前 Python、依赖版本、GPU/驱动、PyTorch/CUDA、nvcc/Nsight 并行探测 | 终端打印，可选 environment.json；默认核对 4090D/20 GiB，缺失和超时有诊断；模型 revision/模板/hash 快照后续补充 |
 | scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
 | scripts/serve.sh | 已实现的配置和启动模式 | 启动命令、日志、就绪/失败状态；BF16/W4A16 分进程运行，profiling 与正常模式区分 |
@@ -226,7 +226,7 @@
 
 未来生成产物统一放仓库忽略的 `out/quantization_profiling/<run_id>/`：包括环境/manifest、请求快照、服务日志、显存采样、质量逐题结果、CSV 和 trace。该目录按运行创建，环境采集可通过 --output 显式写入 JSON；可再生成项目级跨 run 的 baseline.csv、量化对照 CSV 和 quality.csv，保留原计划交付口径。小型原始性能记录可进入指定 data/performance.jsonl，报告引用 run ID 和 manifest。
 
-大型权重与数据缓存放外部缓存/实验存储，不提交仓库。大型 trace 和日志若仅存在本机 out/ 并不足以支撑他人复现，正式交付时需另给可访问的归档位置、相对索引与 hash。报告中的截图不能替代原始证据。此处只约定保存规则，不生成这些产物。
+本项目使用的预训练模型统一存放在 /workspace/weights_pub，按模型仓库名末段建立子目录：BF16 使用 /workspace/weights_pub/Qwen3-8B，AWQ 使用 /workspace/weights_pub/Qwen3-8B-AWQ，FP8（选做）使用 /workspace/weights_pub/Qwen3-8B-FP8。已有模型从本地路径复用；固定不同 revision 时可使用该根目录内的独立版本子目录，后续配置与服务入口沿用相应路径。大型权重不提交仓库，其他数据缓存放外部缓存/实验存储。大型 trace 和日志若仅存在本机 out/ 并不足以支撑他人复现，正式交付时需另给可访问的归档位置、相对索引与 hash。报告中的截图不能替代原始证据。此处只约定保存规则，不生成这些产物。
 
 ## 8. 报告计划与最终验收
 

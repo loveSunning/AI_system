@@ -13,3 +13,5 @@ __cmake_systeminformation/
 3rdparty/cutlass/
 docker/container/.env
 /models/
+/.venv-quantization/
+/.venv-vllm/

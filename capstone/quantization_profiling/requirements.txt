@@ -1,0 +1,26 @@
+# Qwen3-8B: preserve the user's installed GPU and Transformers versions.
+# Target: Linux x86_64, glibc >= 2.28, Python 3.11/3.12 recommended.
+# CUDA driver / nvcc are system components, not pip requirements.
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+# Official vLLM 0.11.0 CUDA 12.9 variant, matching the installed torch build.
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.11.0/vllm-0.11.0%2Bcu129-cp38-abi3-manylinux1_x86_64.whl
+
+# Keep all six versions from the user's environment report unchanged.
+torch==2.8.0+cu129
+transformers==4.57.6
+tokenizers==0.22.2
+triton==3.4.0; sys_platform == "linux" and platform_machine == "x86_64"
+huggingface-hub==0.36.2
+safetensors==0.8.0
+
+# vLLM's matching PyTorch ecosystem dependencies.
+torchaudio==2.8.0+cu129
+torchvision==0.23.0+cu129
+xformers==0.0.32.post1; sys_platform == "linux" and platform_machine == "x86_64"
+
+# Missing utilities: model download CLI and Transformers device_map="auto".
+modelscope==1.31.0
+accelerate==1.11.0
+
+# SGLang is a later optional framework comparison and is not installed here.

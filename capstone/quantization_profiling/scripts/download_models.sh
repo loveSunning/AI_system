@@ -2,9 +2,7 @@
 set -Eeuo pipefail
 
 # Follow the reference script's ModelScope CLI and repo-name directory layout.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
-MODEL_ROOT="${MODEL_ROOT:-${PROJECT_ROOT}/models}"
+MODEL_ROOT="${MODEL_ROOT:-/workspace/weights_pub}"
 MODELS=()
 REVISION=""
 DRY_RUN=false
@@ -15,7 +13,7 @@ Usage: bash download_models.sh [options]
 
 Download complete model repositories with the ModelScope CLI.
 Default model: Qwen/Qwen3-8B (only).
-Default directory: <repository-root>/models/<repo-name>
+Default directory: /workspace/weights_pub/<repo-name>
 
 Options:
   --model OWNER/NAME  Select a model; repeat for multiple models.
@@ -28,9 +26,9 @@ Options:
 
 Examples:
   bash download_models.sh --dry-run
-  bash download_models.sh --model-root /data/models
-  bash download_models.sh --model Qwen/Qwen3-8B --revision <modelscope-revision>
-  MODEL_ROOT=/data/models bash download_models.sh --model Qwen/Qwen3-8B
+  bash download_models.sh --model-root /workspace/weights_pub
+  bash download_models.sh --model Qwen/Qwen3-8B --revision "<modelscope-revision>"
+  MODEL_ROOT=/workspace/weights_pub bash download_models.sh --model Qwen/Qwen3-8B
 
 Use a revision available on ModelScope; Hugging Face revisions need not match.
 A source marker prevents mixing owners or revisions in the same directory.
