@@ -194,7 +194,7 @@
 | configs/bf16.yaml | 模型/revision、BF16、tokenizer/模板/thinking、服务/生成参数、KV/Graph/后端 | 能还原 BF16 服务，默认值显式记录，无本机密钥 |
 | configs/awq.yaml | 量化权重/revision、基础模型关联、格式/位宽/group size、实际激活/KV dtype、校准来源 | AWQ 主路径可核验；格式与运行参数不混淆；GPTQ 替代使用单独明确命名的配置 |
 | configs/workloads.yaml | 五组长度、并发、预热、请求数、轮数、seed、缓存/到达模式、超时和输出规则 | 两种精度共享负载定义与请求顺序 |
-| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B，默认根目录 /workspace/weights_pub；支持预览和失败重试；目标机真实下载待执行 |
+| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B，默认根目录 /workspace/weights_pub；支持多模型批量、跳过已有模型、预览和失败重试；目标机真实下载待执行 |
 | scripts/collect_environment.py | 已实现：当前 Python、依赖版本、GPU/驱动、PyTorch/CUDA、nvcc/Nsight 并行探测 | 终端打印，可选 environment.json；默认核对 4090D/20 GiB，缺失和超时有诊断；模型 revision/模板/hash 快照后续补充 |
 | scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
 | scripts/serve.sh | 已实现的配置和启动模式 | 启动命令、日志、就绪/失败状态；BF16/W4A16 分进程运行，profiling 与正常模式区分 |

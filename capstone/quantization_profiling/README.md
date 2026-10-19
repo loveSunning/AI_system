@@ -37,14 +37,15 @@ capstone/quantization_profiling/
 │   └── workloads.yaml              # 待实现：负载、并发、重复次数与种子
 ├── scripts/
 │   ├── collect_environment.py      # 已实现：并行环境检测、打印与 JSON 快照
-│   ├── download_models.sh          # 已实现：ModelScope 模型下载与 revision 选择
+│   ├── download_models.sh          # 已实现：批量下载、跳过已有模型与失败重试
 │   ├── prepare_workloads.py        # 待实现：请求准备、token 校验与数据指纹
 │   ├── serve.sh                    # 待实现：按配置启动服务
 │   ├── benchmark.py                # 待实现：流式压测与逐请求记录
 │   ├── evaluate_quality.py         # 待实现：留出集推理、判分与逐题结果
 │   └── summarize.py                # 待实现：结果校验、汇总与报告素材
 ├── tests/
-│   └── test_collect_environment.py # 环境探针、并发与预检行为测试
+│   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
+│   └── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
 ├── data/
 │   ├── performance.jsonl           # 空占位：未来逐请求性能记录
 │   └── quality_holdout.jsonl       # 空占位：未来冻结的 100 条质量任务
@@ -130,6 +131,30 @@ source .venv-vllm/bin/activate
 
 requirements 固定直接依赖，传递依赖的实际解析结果仍需通过 pip freeze 和环境 JSON 保存。安装通过后检查六个版本是否与安装前一致，再执行真实模型 smoke test。当前已核验官方依赖声明与 wheel 资产，尚未在你的 4090D 上安装或运行模型。
 
+### vLLM 加速安装
+
+当官方 GitHub wheel 下载较慢时，可通过第三方 GitHub 下载代理获取同一版本的文件。先激活目标 Python 环境，并按上方流程保存安装前快照，再执行以下 **Bash** 命令。vLLM wheel 使用代理地址，普通 PyPI 依赖使用清华源，CUDA 12.9 的 PyTorch 配套包仍使用官方 cu129 源；六个已安装版本继续精确固定。
+
+```bash
+VLLM_WHEEL="https://ghfast.top/https://github.com/vllm-project/vllm/releases/download/v0.11.0/vllm-0.11.0%2Bcu129-cp38-abi3-manylinux1_x86_64.whl"
+VLLM_SHA256="8e223c3a00eccfbc5de26fe55c7b05b9affbee1ecc2a63ca3c13bb17c1e6bbf1"
+
+python -m pip install \
+  "${VLLM_WHEEL}#sha256=${VLLM_SHA256}" \
+  "torch==2.8.0+cu129" "transformers==4.57.6" \
+  "tokenizers==0.22.2" "triton==3.4.0" \
+  "huggingface-hub==0.36.2" "safetensors==0.8.0" \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple \
+  --extra-index-url https://download.pytorch.org/whl/cu129
+
+python -m pip check
+python -c "import torch, vllm, vllm._C; print('torch:', torch.__version__, 'CUDA build:', torch.version.cuda); print('vLLM:', vllm.__version__)"
+```
+
+`VLLM_SHA256` 取自 [vLLM 0.11.0 官方发布资产](https://github.com/vllm-project/vllm/releases/expanded_assets/v0.11.0)，pip 会校验下载的 wheel。若 `ghfast.top` 较慢，可将 `VLLM_WHEEL` 开头的 `https://ghfast.top/` 替换为 `https://gh-proxy.com/`，保留后面的官方文件路径和 SHA256。代理速度以目标机实际网络为准；包和扩展导入通过后，仍需执行真实模型生成验证。
+
+该命令用于单独安装 vLLM 及其依赖；ModelScope、Accelerate 等完整项目依赖仍以 [requirements.txt](requirements.txt) 为准。requirements 保留官方 wheel 直链，后续直接执行 `pip install -r` 时仍可能访问 GitHub。
+
 ## 模型下载与环境检测
 
 当前目标实验机为 **RTX 4090D，约 20G 可用显存**；脚本按实际运行机器检测，默认核对 4090D 和至少 20 GiB 空闲显存。20 GiB 是可调整的预检目标，不是启动模型的显存预留；若你说的 20G 是十进制容量或近似值，请按实际需求设置 `--min-free-gib`。
@@ -146,14 +171,35 @@ python capstone/quantization_profiling/scripts/collect_environment.py \
   --expected-gpu 4090D --min-free-gib 20 --strict \
   --output out/quantization_profiling/environment.json
 
-# 只预览下载命令：不需要安装 ModelScope，也不创建模型目录。
+# 只预览：已有模型显示 SKIP，缺失模型显示下载命令，不修改文件。
 bash capstone/quantization_profiling/scripts/download_models.sh --dry-run
 
 # 使用已安装且支持 modelscope download 的 CLI，默认仅下载 Qwen/Qwen3-8B。
 bash capstone/quantization_profiling/scripts/download_models.sh
 ```
 
-下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；配置与服务脚本仍待实现。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`。例如需要 AWQ 权重时显式指定 `--model Qwen/Qwen3-8B-AWQ`；不会自动下载所有精度的权重，也不会自动安装依赖。
+下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；配置与服务脚本仍待实现。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
+
+**一次下载多个模型**：重复传入 `--model`，按顺序处理；只列出需要的模型。下面以 BF16 和 AWQ 为例，已有 `Qwen3-8B` 非空目录时显示 `SKIP`，继续下载缺失的 `Qwen3-8B-AWQ`。
+
+```bash
+# 预览批量任务，不要求安装 ModelScope。
+bash capstone/quantization_profiling/scripts/download_models.sh \
+  --model Qwen/Qwen3-8B \
+  --model Qwen/Qwen3-8B-AWQ \
+  --dry-run
+
+# 实际执行；默认保存到 /workspace/weights_pub。
+bash capstone/quantization_profiling/scripts/download_models.sh \
+  --model Qwen/Qwen3-8B \
+  --model Qwen/Qwen3-8B-AWQ
+
+# 如需同时下载选做的 FP8，追加第三个 --model。
+bash capstone/quantization_profiling/scripts/download_models.sh \
+  --model Qwen/Qwen3-8B \
+  --model Qwen/Qwen3-8B-AWQ \
+  --model Qwen/Qwen3-8B-FP8
+```
 
 ```bash
 # 替换为 ModelScope 上可用的 revision；固定版本时不同 revision 使用不同目录。
@@ -165,7 +211,19 @@ bash capstone/quantization_profiling/scripts/download_models.sh \
 
 ModelScope 与 Hugging Face 的 revision 不必相同，不能直接混用两边的 commit。未指定 revision 时跟随源仓库默认版本，不能据此宣称完成不可变快照锁定。参数依据 [ModelScope CLI 官方源码](https://github.com/modelscope/modelscope/blob/v1.31.0/modelscope/cli/download.py)；使用前可通过 `modelscope download --help` 核对已安装版本。
 
-下载目标内的 `.modelscope-download-source` 保存请求的模型 ID 和 revision，用于避免不同来源混写。已有非空目录没有该标记，或同名目录的模型/revision 不匹配时，脚本会退出并提示另选目录。下载失败保留非零退出码，可用相同参数重试；标记不表示下载已完整，也不记录默认分支解析后的 commit。
+目录处理与重试规则：
+
+- 已有非空目录没有脚本标记时，视为已有模型，打印 `SKIP` 并继续后续模型；不添加标记或修改原文件，也不校验权重是否完整。所有模型都跳过时，无需安装 ModelScope。
+- 新目录或空目录正常下载。`.modelscope-download-source` 保存请求的模型 ID 和 revision；仅 ModelScope 成功返回后写入 `.modelscope-download-complete`。两份标记均匹配的模型下次直接跳过。
+- 来源标记匹配但缺少有效完成标记时，重新调用 ModelScope 重试/续传；旧版脚本留下的同来源目录也走这条路径。来源标记损坏、模型 ID 或 revision 不匹配的已有目录则跳过并提示另选 `--model-root`，不会覆盖已有内容。
+- 某个模型下载失败后仍继续处理后面的模型，最终输出下载、跳过、失败数量，并返回首个下载失败的非零退出码。重新运行同一命令即可重试未完成项，已完成项会跳过。
+- `--dry-run` 只展示跳过项与待下载/续传命令，不创建目录或写入标记。完成标记表示 CLI 成功返回，不代替权重校验，也不记录默认分支解析后的 commit；需要指定其他 revision 时使用不同根目录。
+
+无需 GPU、网络或真实权重即可运行脚本行为测试（需要 Bash；Windows 可使用 Git Bash）：
+
+```bash
+python -m unittest discover -s capstone/quantization_profiling/tests -p "test_download_models.py" -v
+```
 
 环境脚本使用标准库，通过线程池并行执行包元数据、GPU、PyTorch/CUDA、nvcc 和 Nsight 探针：
 

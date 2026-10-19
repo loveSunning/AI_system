@@ -21,18 +21,23 @@ Options:
   --revision VALUE    ModelScope revision for all selected models (optional).
                       Without it, ModelScope uses the repository default.
   --model-root PATH   Download root; overrides the MODEL_ROOT environment variable.
-  --dry-run           Print the commands without creating directories or downloading.
+  --dry-run           Show skipped models and pending commands without writing files.
   -h, --help          Show this help.
 
 Examples:
   bash download_models.sh --dry-run
   bash download_models.sh --model-root /workspace/weights_pub
+  bash download_models.sh --model Qwen/Qwen3-8B --model Qwen/Qwen3-8B-AWQ
   bash download_models.sh --model Qwen/Qwen3-8B --revision "<modelscope-revision>"
   MODEL_ROOT=/workspace/weights_pub bash download_models.sh --model Qwen/Qwen3-8B
 
+Existing nonempty directories are skipped without modifying their contents.
+Matching source markers without a completion marker are retried/resumed.
+A completion marker is written only after a successful ModelScope command.
+Existing external directories are not checked for complete model weights.
+Use a separate root to download another source or revision into the same name.
 Use a revision available on ModelScope; Hugging Face revisions need not match.
-A source marker prevents mixing owners or revisions in the same directory.
-An existing nonempty directory without a marker is refused; choose a new root.
+Downloads run sequentially; a failed download does not stop the remaining models.
 This script does not install dependencies or check GPU capacity.
 USAGE
 }
@@ -44,6 +49,14 @@ fail() {
 
 require_value() {
   [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || fail "$1 requires a value."
+}
+
+marker_matches() {
+  local marker="$1" expected_model="$2" expected_revision="$3"
+  local stored_model='' stored_revision=''
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  { IFS= read -r stored_model && IFS= read -r stored_revision; } < "$marker" || return 1
+  [[ "$stored_model" == "$expected_model" && "$stored_revision" == "$expected_revision" ]]
 }
 
 while (( $# > 0 )); do
@@ -82,8 +95,12 @@ fi
 [[ "$REVISION" != *$'\n'* && "$REVISION" != *$'\r'* ]] || fail 'Revision must be a single line.'
 REQUESTED_REVISION="${REVISION:-<default>}"
 MARKER_NAME='.modelscope-download-source'
+COMPLETE_MARKER_NAME='.modelscope-download-complete'
+ACTIONS=()
+REASONS=()
+pending_count=0
 
-# Validate every target before starting any download.
+# Classify all targets before writing; skipped directories are never modified.
 for (( i = 0; i < ${#MODELS[@]}; i++ )); do
   model_id="${MODELS[i]}"
   [[ "$model_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
@@ -97,36 +114,67 @@ for (( i = 0; i < ${#MODELS[@]}; i++ )); do
 
   local_dir="${MODEL_ROOT}/${model_name}"
   marker="${local_dir}/${MARKER_NAME}"
-  [[ ! -L "$local_dir" ]] || fail "Refusing a symlink target: $local_dir"
+  complete_marker="${local_dir}/${COMPLETE_MARKER_NAME}"
   [[ ! -e "$local_dir" || -d "$local_dir" ]] || fail "Target is not a directory: $local_dir"
-  if [[ -e "$marker" ]]; then
-    [[ -f "$marker" && ! -L "$marker" ]] || fail "Invalid source marker: $marker"
-    stored_model=''
-    stored_revision=''
-    { IFS= read -r stored_model && IFS= read -r stored_revision; } < "$marker" \
-      || fail "Cannot read source marker: $marker"
-    [[ "$stored_model" == "$model_id" && "$stored_revision" == "$REQUESTED_REVISION" ]] \
-      || fail "Target belongs to $stored_model (revision $stored_revision): $local_dir. Use a separate model root."
-  elif [[ -d "$local_dir" && -n "$(ls -A -- "$local_dir")" ]]; then
-    fail "Existing nonempty directory has no source marker: $local_dir. Use a new model root."
+  action=download
+  reason=''
+  if [[ -d "$local_dir" && -n "$(ls -A -- "$local_dir")" ]]; then
+    action=skip
+    reason='existing nonempty directory; completeness not verified'
+    if marker_matches "$marker" "$model_id" "$REQUESTED_REVISION"; then
+      if marker_matches "$complete_marker" "$model_id" "$REQUESTED_REVISION"; then
+        reason='previous download completed'
+      elif [[ ! -L "$local_dir" ]]; then
+        action=resume
+        reason='matching source without completion; retrying/resuming'
+      fi
+    elif [[ -e "$marker" || -L "$marker" ]]; then
+      reason='existing source/revision differs or is unverified; use another --model-root for the requested version'
+    fi
   fi
+
+  if [[ "$action" != skip ]]; then
+    [[ ! -L "$local_dir" ]] || fail "Refusing to write through a symlink target: $local_dir"
+    for metadata_path in "$marker" "$complete_marker"; do
+      [[ ! -L "$metadata_path" && ( ! -e "$metadata_path" || -f "$metadata_path" ) ]] \
+        || fail "Invalid download marker: $metadata_path"
+    done
+    pending_count=$((pending_count + 1))
+  fi
+  ACTIONS+=("$action")
+  REASONS+=("$reason")
 done
 
-if ! "$DRY_RUN" && ! command -v modelscope >/dev/null 2>&1; then
+# Reusing existing models requires neither ModelScope nor an internet connection.
+if (( pending_count > 0 )) && ! "$DRY_RUN" && ! command -v modelscope >/dev/null 2>&1; then
   printf 'ERROR: modelscope CLI not found in PATH.\n' >&2
   printf 'Provide an environment supporting: modelscope download --model ID --local_dir PATH [--revision VALUE].\n' >&2
   printf 'No dependencies were installed. Use --dry-run to preview without the CLI.\n' >&2
   exit 1
 fi
 
-for model_id in "${MODELS[@]}"; do
+downloaded_count=0
+skipped_count=0
+failed_count=0
+first_failure=0
+for (( i = 0; i < ${#MODELS[@]}; i++ )); do
+  model_id="${MODELS[i]}"
   model_name="${model_id##*/}"
   local_dir="${MODEL_ROOT}/${model_name}"
+  printf '\n==> Model: %s\n    Revision: %s\n    Target: %s\n' "$model_id" "$REQUESTED_REVISION" "$local_dir"
+  if [[ "${ACTIONS[i]}" == skip ]]; then
+    printf '    SKIP: %s\n' "${REASONS[i]}"
+    skipped_count=$((skipped_count + 1))
+    continue
+  fi
+  if [[ "${ACTIONS[i]}" == resume ]]; then
+    printf '    RESUME: %s\n' "${REASONS[i]}"
+  fi
+
   command_args=(modelscope download --model "$model_id" --local_dir "$local_dir")
   if [[ -n "$REVISION" ]]; then
     command_args+=(--revision "$REVISION")
   fi
-  printf '\n==> Model: %s\n    Revision: %s\n    Target: %s\n' "$model_id" "$REQUESTED_REVISION" "$local_dir"
   if "$DRY_RUN"; then
     printf '    Command: '
     printf '%q ' "${command_args[@]}"
@@ -137,17 +185,25 @@ for model_id in "${MODELS[@]}"; do
   mkdir -p -- "$local_dir"
   printf '%s\n%s\n' "$model_id" "$REQUESTED_REVISION" > "${local_dir}/${MARKER_NAME}"
   if "${command_args[@]}"; then
+    printf '%s\n%s\n' "$model_id" "$REQUESTED_REVISION" > "${local_dir}/${COMPLETE_MARKER_NAME}"
     printf 'Downloaded: %s\n' "$model_id"
+    downloaded_count=$((downloaded_count + 1))
   else
     download_status=$?
-    printf 'ERROR: download failed for %s (exit %s). Rerun with the same arguments to retry.\n' \
+    failed_count=$((failed_count + 1))
+    if (( first_failure == 0 )); then
+      first_failure="$download_status"
+    fi
+    printf 'ERROR: download failed for %s (exit %s). Continuing with remaining models; rerun the same arguments to retry.\n' \
       "$model_id" "$download_status" >&2
-    exit "$download_status"
   fi
 done
 
 if "$DRY_RUN"; then
-  printf '\nDry run complete; no directories or model weights were created.\n'
+  printf '\nDry run complete: %s to download/resume, %s skipped; no files were created.\n' \
+    "$pending_count" "$skipped_count"
 else
-  printf '\nAll requested models were downloaded under %s.\n' "$MODEL_ROOT"
+  printf '\nSummary: downloaded=%s skipped=%s failed=%s; root=%s\n' \
+    "$downloaded_count" "$skipped_count" "$failed_count" "$MODEL_ROOT"
 fi
+exit "$first_failure"

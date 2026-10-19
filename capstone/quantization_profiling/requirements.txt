@@ -4,7 +4,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu129
 
 # Official vLLM 0.11.0 CUDA 12.9 variant, matching the installed torch build.
-vllm @ https://github.com/vllm-project/vllm/releases/download/v0.11.0/vllm-0.11.0%2Bcu129-cp38-abi3-manylinux1_x86_64.whl
+# vllm @ https://github.com/vllm-project/vllm/releases/download/v0.11.0/vllm-0.11.0%2Bcu129-cp38-abi3-manylinux1_x86_64.whl
 
 # Keep all six versions from the user's environment report unchanged.
 torch==2.8.0+cu129
