@@ -1,6 +1,6 @@
 # P1：Qwen3-8B 量化与性能诊断学习规划
 
-更新日期：2026-10-19。当前只完成规划和文件骨架，所有实验任务均未开始。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
+更新日期：2026-10-19。已完成规划、文件骨架、ModelScope 下载脚本和并行环境检测脚本；P1-01 工具实现中，目标机验证及模型实验待执行。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
 
 ## 1. 项目目标与范围
 
@@ -10,14 +10,14 @@
 
 | 范围 | 本项目安排 |
 | --- | --- |
-| 模型与设备 | Qwen3-8B；4090 单卡优先，读取实际设备和显存，不假定当前机器就是目标实验机 |
+| 模型与设备 | Qwen3-8B；RTX 4090D 单卡，用户给定约 20G 可用显存；仍需在目标机读取实际值，当前本地验证机不是目标实验机 |
 | 服务框架 | 选定并锁定一个 vLLM 版本；读懂本项目所需的请求、调度、模型执行和量化 kernel 路径 |
 | 基线与量化 | BF16 为主基线；AWQ/W4A16 为首选量化路径，记录真实激活 dtype、KV dtype 和 kernel |
 | 性能诊断 | prefill/decode、CPU/调度/launch、权重与 KV 访问、热点 GEMM/attention；先抽样 3 个代表热点 |
 | 质量 | 100 条固定留出任务、逐题判分；独立语料 PPL 选做 |
 | 暂缓 | 多框架完整对比、训练/微调、自写量化 kernel、INT8/FP8 全矩阵、多卡和跨平台迁移；分别留给后续案例或选做 |
 
-本次只编辑 README 与 planning.md，并创建指定目录及空文件；不填写 YAML、不编写脚本、不准备真实数据、不运行模型、不生成实验报告。
+首轮已完成规划与空文件骨架。现阶段按用户要求实现 download_models.sh 与 collect_environment.py，并同步使用说明；其余 YAML、服务/评测脚本、真实数据和报告保持待实现。下载脚本尚未实际拉取权重，目标 4090D 机器待执行环境检测，不能据此标记 S0 完成。
 
 ## 2. 学习内容与依赖路径
 
@@ -187,14 +187,15 @@
 
 ## 6. 文件职责与后续实现顺序
 
-以下均为将来实现的接口约定，不表示文件已有内容。先打通一条短请求闭环，再扩展矩阵，不一次实现全部选做功能。
+下载与环境采集已有初版；其余行仍为后续接口约定。当前实现与目标能力的差异在对应行标明。先打通一条短请求闭环，再扩展矩阵，不一次实现全部选做功能。
 
 | 文件 | 后续职责 / 输入 | 后续输出与验收 |
 | --- | --- | --- |
 | configs/bf16.yaml | 模型/revision、BF16、tokenizer/模板/thinking、服务/生成参数、KV/Graph/后端 | 能还原 BF16 服务，默认值显式记录，无本机密钥 |
 | configs/awq.yaml | 量化权重/revision、基础模型关联、格式/位宽/group size、实际激活/KV dtype、校准来源 | AWQ 主路径可核验；格式与运行参数不混淆；GPTQ 替代使用单独明确命名的配置 |
 | configs/workloads.yaml | 五组长度、并发、预热、请求数、轮数、seed、缓存/到达模式、超时和输出规则 | 两种精度共享负载定义与请求顺序 |
-| scripts/collect_environment.py | 本机环境、模型元数据、依赖与配置位置 | environment.json 等环境快照和 hash；缺失信息明确记录 |
+| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B；支持预览和失败重试；目标机真实下载待执行 |
+| scripts/collect_environment.py | 已实现：当前 Python、依赖版本、GPU/驱动、PyTorch/CUDA、nvcc/Nsight 并行探测 | 终端打印，可选 environment.json；默认核对 4090D/20 GiB，缺失和超时有诊断；模型 revision/模板/hash 快照后续补充 |
 | scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
 | scripts/serve.sh | 已实现的配置和启动模式 | 启动命令、日志、就绪/失败状态；BF16/W4A16 分进程运行，profiling 与正常模式区分 |
 | scripts/benchmark.py | 服务端点、请求快照、workload、run ID、环境/配置指纹 | 逐请求性能 JSONL、每轮 manifest、错误与显存观测；不丢失败请求 |
@@ -223,7 +224,7 @@
 
 实验 ID 建议形如“p1-日期时间-精度-workload-c并发-r轮次-唯一后缀”；原始记录只追加，同一请求用 (run_id, request_id) 去重校验。质量与 profiling 使用独立 run ID 并引用对应的性能配置。配置、数据或代码变更后创建新 run，不能覆盖旧结论。
 
-未来生成产物统一放仓库忽略的 `out/quantization_profiling/<run_id>/`：包括环境/manifest、请求快照、服务日志、显存采样、质量逐题结果、CSV 和 trace。该目录按运行创建，本次不创建；可再生成项目级跨 run 的 baseline.csv、量化对照 CSV 和 quality.csv，保留原计划交付口径。小型原始性能记录可进入指定 data/performance.jsonl，报告引用 run ID 和 manifest。
+未来生成产物统一放仓库忽略的 `out/quantization_profiling/<run_id>/`：包括环境/manifest、请求快照、服务日志、显存采样、质量逐题结果、CSV 和 trace。该目录按运行创建，环境采集可通过 --output 显式写入 JSON；可再生成项目级跨 run 的 baseline.csv、量化对照 CSV 和 quality.csv，保留原计划交付口径。小型原始性能记录可进入指定 data/performance.jsonl，报告引用 run ID 和 manifest。
 
 大型权重与数据缓存放外部缓存/实验存储，不提交仓库。大型 trace 和日志若仅存在本机 out/ 并不足以支撑他人复现，正式交付时需另给可访问的归档位置、相对索引与 hash。报告中的截图不能替代原始证据。此处只约定保存规则，不生成这些产物。
 
@@ -243,7 +244,7 @@ Project1_Report.md 在实验完成后填写以下内容，本次不写入报告�
 
 | 任务 | 核心通过标准 | 当前状态 |
 | --- | --- | --- |
-| P1-01 | revision、版本、模板/thinking/seed、环境/启动信息齐全；代表请求可复现 | 未开始 |
+| P1-01 | revision、版本、模板/thinking/seed、环境/启动信息齐全；代表请求可复现 | 进行中：下载与检测工具已实现，目标机/模型待验证 |
 | P1-02 | 5 组长度均有结果或失败证据；共同成功格预热后至少 3 轮，实际 token/中位数/p95/错误/显存齐全 | 未开始 |
 | P1-03 | nsys 能解释阶段；ncu 抽样 3 个代表热点；至少一个热点具备证据与优化假设 | 未开始 |
 | P1-04 | 至少一条 W4A16 路径稳定生成；量化来源/参数/kernel 明确；同输入和协议对照 | 未开始 |

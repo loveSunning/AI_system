@@ -12,3 +12,4 @@ compile_commands.json
 __cmake_systeminformation/
 3rdparty/cutlass/
 docker/container/.env
+/models/
