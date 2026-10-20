@@ -107,7 +107,7 @@ python capstone/quantization_profiling/scripts/run_model.py \
 | --repetition-penalty | 1.0 | 重复惩罚，1.0 不额外惩罚 |
 | --seed | 42 | 随机种子；不同引擎/硬件不保证逐 token 一致 |
 | --gpu-memory-utilization | 0.75 | vLLM 每张卡按总显存计算的预算比例 |
-| --max-num-seqs | 1 | vLLM 同时调度的序列数上限；不限制输入列表长度 |
+| --max-num-seqs / --concurrency | 1 | vLLM 同时调度的序列数上限；不限制输入列表长度，也不是 HTTP 连接数 |
 | --max-num-batched-tokens | 2048 | vLLM 每步调度 token 预算，含 prefill；配合 chunked prefill 控制单步工作量 |
 | --tensor-parallel-size | 1 | vLLM tensor parallel 卡数 |
 | --enforce-eager / --no-enforce-eager | eager | 控制 vLLM 是否禁用 CUDA Graph 捕获 |
@@ -259,7 +259,7 @@ CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.
   --backend vllm --serve \
   --model /workspace/weights_pub/Qwen3-8B \
   --dtype bfloat16 \
-  --max-model-len 2048 --gpu-memory-utilization 0.75 --max-num-seqs 1 \
+  --max-model-len 2048 --gpu-memory-utilization 0.75 --concurrency 4 \
   --host 0.0.0.0 --port 7081 --served-model-name local-model
 ```
 
@@ -311,7 +311,48 @@ python capstone/quantization_profiling/scripts/test_server.py --base-url http://
 
 如果服务配置了 API Key，脚本从客户端的 `VLLM_API_KEY` 环境变量读取，或用 `--api-key-env` 指定变量名。结果文件不写请求认证头。如果内网访问被环境代理接管，可加 `--no-proxy` 直接连接。
 
-成功返回退出码 0，网络/HTTP/响应协议错误返回 1，中断返回 130；指定 `--output` 时，失败也会保存已经完成的检查和错误信息。流式检查会处理角色片段、空 choices 的 usage 片段，并要求正常的 finish_reason 和 `[DONE]`，中途截断会判定失败。JSON 中的耗时与 text_chunks 是连通性观察，不是正式 TTFT、TPOT 或 GPU token 数。
+成功返回退出码 0，网络/HTTP/响应协议错误返回 1，中断返回 130。无论是否指定 `--output`，都自动将 `.log`、逐请求 `.jsonl` 和完整 `.json` 报告写入客户端项目的 `log/`，失败时也保留已完成的检查。`--output` 是额外导出，`--log-dir` 可覆盖日志目录。
+
+### 并发测试与推理统计
+
+服务端通过 `run_model.py --serve --concurrency 4`（等同于 `--max-num-seqs 4`）设置 vLLM 调度序列上限；该参数不增加 GPU 数，也不限制 HTTP 连接数量。Transformers 离线入口仍采用输入列表的一个静态 batch，`--concurrency` 仅控制 vLLM 调度。
+
+```bash
+# 非流式：最多同时发出 4 个请求，总共完成 20 次尝试，保存所有成功和失败。
+python capstone/quantization_profiling/scripts/test_server.py \
+  --base-url http://SERVER_IP:7081 --model local-model \
+  --concurrency 4 --requests 20 --require-server-metrics
+
+# 流式：同样的并发与请求数，逐请求接收 usage 和服务端 profiling。
+python capstone/quantization_profiling/scripts/test_server.py \
+  --base-url http://SERVER_IP:7081 --model local-model \
+  --stream-only --concurrency 4 --requests 20 --require-server-metrics
+```
+
+客户端每个工作线程使用独立 HTTP client；一个请求完成后再领取下一个，属于固定在途数量的闭环负载。`--requests` 未指定时等于并发数。原有 `--stream` 保持“先非流式、再流式”的行为，两个分组各发送指定次数，分别汇总。若客户端并发高于服务端调度上限，排队时间会进入耗时。
+
+`run_model.py` 使用 [vLLM 0.11.0 支持的 ASGI middleware 扩展](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/entrypoints/openai/cli_args.py) 自动加载 `profiling_middleware.py`。更新代码后需要重启服务。非流式响应新增如下字段；原有回答和 usage 保留：
+
+```json
+{
+  "profiling": {
+    "inference_seconds": 2.0,
+    "input_tokens": 30,
+    "output_tokens": 100,
+    "output_tokens_per_second": 50.0,
+    "time_to_first_text_seconds": null,
+    "timing_scope": "server_request_wall_time_including_queue_and_generation"
+  }
+}
+```
+
+数值仅为字段示例。`inference_seconds` 从请求进入中间件开始，到完整 JSON 或 SSE `[DONE]` 就绪为止，包含排队、请求准备和生成，流式发送还可能受到背压影响；模型已常驻，因此不包含加载模型的时间，也不能当作纯 GPU 执行时间。流式额外的 `choices=[]` 事件携带 `profiling`，位于 `[DONE]` 之前。`time_to_first_text_seconds` 在流式模式记录首个非空文本片段到达时间，可能与第一个模型 token 不完全一致；非流式为 `null`。
+
+客户端将响应中的 `profiling` 保存为 `server_metrics`，同时独立测量 `client_metrics.end_to_end_seconds`，其中包含网络开销。每次请求的 token 数取自 `usage.completion_tokens`；`text_chunks` 只是 SSE 文本片段数。缺少 token 计数时吞吐为 `null`，不会用片段数或最大输出长度代替。
+
+分组汇总计算成功请求的实际输出 token 总数除以整组墙钟时间，同时输出成功 req/s、失败率、成功请求延迟 p50/p95（nearest-rank）。失败请求仍占用整组时间，不会从统计中隐藏。每请求 tokens/s 不可直接相加作为总吞吐。未自动预热的首次请求可能含初始化开销，正式比较仍需按规划冻结数据、预热并重复测试。
+
+本地非 HTTP 推理在原有 `timings` 中补充 `inference_seconds`、`output_tokens_per_second` 和 `requests_per_second`，按实际整个 batch 输出计算，模型加载时间独立记录在 `load_seconds`。流式检查仍要求正常 finish_reason 和 `[DONE]`，中途截断判定失败。
 
 ### 标准库 Python 客户端
 

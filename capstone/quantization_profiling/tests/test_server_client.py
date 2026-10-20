@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +54,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         state = self.server.state
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        with state["lock"]:
+            state["post_count"] += 1
+            index = state["post_count"]
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        if state.get("delay"):
+            time.sleep(state["delay"])
+        with state["lock"]:
+            state["active"] -= 1
+        if state["mode"] == "mixed" and index % 2 == 0:
+            self.send_json({"error": "intentional failure"}, 503)
+            return
         state["calls"].append({"path": self.path, "payload": payload,
                                "auth": self.headers.get("Authorization")})
         if state["mode"] == "http_error":
@@ -68,6 +81,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({
                 "choices": [{"message": {"content": "你好"}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14},
+                **({"profiling": {"inference_seconds": 0.2, "output_tokens_per_second": 10}}
+                   if state["mode"] == "profiled" else {}),
             })
             return
         if state["mode"] == "wrong_stream_type":
@@ -81,6 +96,8 @@ class Handler(BaseHTTPRequestHandler):
             'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
             'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}',
         ]
+        if state["mode"] == "profiled":
+            events.append('data: {"choices":[],"profiling":{"inference_seconds":0.2,"output_tokens_per_second":10}}')
         if state["mode"] == "stream_error":
             events.append('data: {"error":{"message":"worker failed"}}')
         elif state["mode"] == "bad_stream_json":
@@ -108,7 +125,8 @@ class ServerClientTests(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self):
-        self.server.state = {"mode": "normal", "calls": []}
+        self.server.state = {"mode": "normal", "calls": [], "lock": threading.Lock(),
+                             "post_count": 0, "active": 0, "peak": 0}
         temporary = tempfile.TemporaryDirectory(prefix="vllm-client-test-")
         self.addCleanup(temporary.cleanup)
         self.output = Path(temporary.name) / "checks.json"
@@ -120,7 +138,8 @@ class ServerClientTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = client.main([
-                "--base-url", self.base_url, "--no-proxy", "--output", str(self.output), *args,
+                "--base-url", self.base_url, "--no-proxy", "--output", str(self.output),
+                "--log-dir", str(self.output.parent / "logs"), *args,
             ])
         report = json.loads(self.output.read_text(encoding="utf-8"))
         return code, report, stdout.getvalue(), stderr.getvalue()
@@ -215,6 +234,8 @@ class ServerClientTests(unittest.TestCase):
                             for call in self.server.state["calls"]))
         self.assertNotIn("fake-unit-test-secret", self.output.read_text(encoding="utf-8"))
         self.assertNotIn("fake-unit-test-secret", stdout + stderr)
+        for path in report["log_files"].values():
+            self.assertNotIn("fake-unit-test-secret", Path(path).read_text(encoding="utf-8"))
 
     def test_auto_thinking_omits_extension_and_greedy_normalizes_sampling(self):
         args = client.parse_args(["--thinking", "auto", "--temperature", "0", "--top-k", "0"])
@@ -230,6 +251,76 @@ class ServerClientTests(unittest.TestCase):
         ]
         self.assertEqual(list(client.iter_sse_data(lines)), ['{"choices":\n[]}', "[DONE]"])
 
+    def test_real_http_requests_overlap_and_all_are_logged(self):
+        self.server.state["delay"] = 0.05
+        code, report, stdout, stderr = self.invoke("--concurrency", "3", "--requests", "8")
+        self.assertEqual(code, 0, stderr)
+        self.assertGreater(self.server.state["peak"], 1)
+        self.assertLessEqual(self.server.state["peak"], 3)
+        summary = report["summaries"][0]
+        self.assertEqual(summary["successful_requests"], 8)
+        self.assertEqual(summary["output_tokens"], 16)
+        self.assertAlmostEqual(summary["output_tokens_per_second"], 16 / summary["wall_seconds"])
+        events = [json.loads(line) for line in Path(report["log_files"]["requests"]).read_text(
+            encoding="utf-8").splitlines()]
+        requests = [event["data"] for event in events if event["event"] == "request"]
+        self.assertEqual(sorted(entry["request_index"] for entry in requests), list(range(1, 9)))
+        self.assertTrue(all(Path(path).is_file() for path in report["log_files"].values()))
+        self.assertIn("Metrics:", Path(report["log_files"]["console"]).read_text(encoding="utf-8"))
+
+    def test_partial_failures_do_not_stop_remaining_requests(self):
+        self.server.state["mode"] = "mixed"
+        code, report, stdout, stderr = self.invoke("--concurrency", "2", "--requests", "6")
+        self.assertEqual(code, 1)
+        summary = report["summaries"][0]
+        self.assertEqual((summary["successful_requests"], summary["failed_requests"]), (3, 3))
+        self.assertEqual(summary["error_rate"], 0.5)
+        self.assertEqual(summary["output_tokens"], 6)
+        self.assertEqual(len(report["checks"]), 8)
+
+    def test_server_metrics_are_received_for_json_and_sse(self):
+        self.server.state["mode"] = "profiled"
+        code, report, stdout, stderr = self.invoke("--stream", "--require-server-metrics")
+        self.assertEqual(code, 0, stderr)
+        for entry in report["checks"][2:]:
+            self.assertEqual(entry["result"]["server_metrics"]["output_tokens_per_second"], 10)
+            self.assertGreater(entry["result"]["client_metrics"]["end_to_end_seconds"], 0)
+        self.assertEqual(len(report["summaries"]), 2)
+
+    def test_stream_only_load_sends_exactly_requested_streams(self):
+        self.server.state["delay"] = 0.02
+        code, report, stdout, stderr = self.invoke("--stream-only", "--concurrency", "2", "--requests", "4")
+        self.assertEqual(code, 0, stderr)
+        posts = [call for call in self.server.state["calls"] if "payload" in call]
+        self.assertEqual(len(posts), 4)
+        self.assertTrue(all(call["payload"]["stream"] for call in posts))
+        self.assertEqual(report["summaries"][0]["mode"], "stream")
+
+    def test_default_run_always_saves_logs_without_output(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = client.main(["--base-url", self.base_url, "--no-proxy", "--check-only",
+                                "--log-dir", str(self.output.parent / "automatic")])
+        self.assertEqual(code, 0)
+        files = list((self.output.parent / "automatic").iterdir())
+        self.assertEqual({path.suffix for path in files}, {".json", ".jsonl", ".log"})
+        report = json.loads(next(path for path in files if path.suffix == ".json").read_text(encoding="utf-8"))
+        self.assertTrue(report["ok"])
+
+    def test_missing_server_metrics_can_be_required(self):
+        code, report, stdout, stderr = self.invoke("--require-server-metrics")
+        self.assertEqual(code, 1)
+        self.assertIn("Missing server profiling", report["error"])
+        self.assertIn("result", report["checks"][-1])
+
+    def test_missing_usage_never_fabricates_zero_throughput(self):
+        entry = {"ok": True, "result": {"usage": None,
+                 "client_metrics": {"end_to_end_seconds": 2.0}}}
+        summary = client.summarize_requests([entry], 2.0, 1)
+        self.assertIsNone(summary["output_tokens"])
+        self.assertIsNone(summary["output_tokens_per_second"])
+        self.assertFalse(summary["usage_complete"])
+        self.assertEqual(client.percentile([1, 2, 3, 4], 0.95), 4)
+
     def test_invalid_target_and_numbers_fail_before_connecting(self):
         for arguments in (
             ["--base-url", "http://0.0.0.0:7081"],
@@ -238,7 +329,8 @@ class ServerClientTests(unittest.TestCase):
             ["--base-url", "http://user:password@server:7081"],
             ["--base-url", "http://server:invalid"],
             ["--timeout", "nan"], ["--timeout", "0"], ["--max-tokens", "0"],
-            ["--check-only", "--stream"],
+            ["--check-only", "--stream"], ["--concurrency", "0"], ["--requests", "-1"],
+            ["--stream", "--stream-only"],
         ):
             with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:

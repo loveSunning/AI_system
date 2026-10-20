@@ -3,7 +3,7 @@
 
 GPU libraries are imported only after CLI/path validation. --tokenize-only
 prepares requests without loading weights. --serve launches the versioned
-vLLM API entry point using this interpreter; it does not implement an HTTP server.
+vLLM API entry point with a small response-profiling middleware.
 """
 from __future__ import annotations
 
@@ -67,7 +67,8 @@ def parse_args(argv=None):
                         help="input + output token limit; also an engine setting for vLLM")
     parser.add_argument("--gpu-memory-utilization", type=finite_float, default=0.75,
                         help="vLLM: fraction of each GPU's total memory, not its free memory")
-    parser.add_argument("--max-num-seqs", type=int, default=1, help="vLLM scheduler sequence limit")
+    parser.add_argument("--max-num-seqs", "--concurrency", type=int, default=1,
+                        help="vLLM scheduler sequence limit (not the HTTP connection limit)")
     parser.add_argument("--max-num-batched-tokens", type=int, default=2048,
                         help="vLLM token budget per scheduler step, including prefill")
     parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM GPU count")
@@ -242,6 +243,20 @@ def sampling_kwargs(args):
     }
 
 
+def inference_metrics(requests, generation_seconds):
+    """Aggregate actual output tokens over the generation batch, excluding model load."""
+    output_tokens = sum(request["output_tokens"] for request in requests)
+    return {
+        "request_count": len(requests),
+        "input_tokens": sum(request["input_tokens"] for request in requests),
+        "output_tokens": output_tokens,
+        "inference_seconds": generation_seconds,
+        "output_tokens_per_second": output_tokens / generation_seconds if generation_seconds > 0 else None,
+        "requests_per_second": len(requests) / generation_seconds if generation_seconds > 0 else None,
+        "timing_scope": "generation_batch_wall_time_excluding_model_load",
+    }
+
+
 def run_vllm(args, requests):
     from vllm import LLM, SamplingParams
 
@@ -265,7 +280,8 @@ def run_vllm(args, requests):
             "output_tokens": len(completion.token_ids),
             "finish_reason": completion.finish_reason,
         })
-    return {"load_seconds": load_seconds, "generation_seconds": generation_seconds}
+    return {"load_seconds": load_seconds, "generation_seconds": generation_seconds,
+            **inference_metrics(requests, generation_seconds)}
 
 
 def generation_kwargs(args, tokenizer, model):
@@ -338,7 +354,8 @@ def run_transformers(args, tokenizer, requests):
             "output_token_ids": token_ids, "output_tokens": len(token_ids),
             "finish_reason": reason,
         })
-    return {"load_seconds": load_seconds, "generation_seconds": generation_seconds}
+    return {"load_seconds": load_seconds, "generation_seconds": generation_seconds,
+            **inference_metrics(requests, generation_seconds)}
 
 
 def server_command(args):
@@ -355,6 +372,8 @@ def server_command(args):
     for flag, value in flags.items():
         command.extend([flag, str(value)])
     command.extend(["--no-enable-prefix-caching", "--enable-chunked-prefill"])
+    command.extend(["--middleware", "profiling_middleware.ProfilingMiddleware",
+                    "--enable-force-include-usage"])
     if args.enforce_eager:
         command.append("--enforce-eager")
     if args.trust_remote_code:
@@ -384,7 +403,13 @@ def main(argv=None):
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
         if args.serve:
             command = server_command(args)
+            # Make the sibling middleware importable in the separate API process.
+            scripts_path = str(Path(__file__).resolve().parent)
+            python_path = os.environ.get("PYTHONPATH", "")
+            os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (scripts_path, python_path)))
             print("Starting:", shlex.join(command), flush=True)
+            print(f"Scheduler concurrency: {args.max_num_seqs}; API responses include profiling metrics.",
+                  flush=True)
             return subprocess.call(command)
 
         from transformers import AutoTokenizer
@@ -407,7 +432,7 @@ def main(argv=None):
                 print(f"\n--- Response {index} ---\n{request['generated_text']}")
                 print(f"input_tokens={request['input_tokens']} output_tokens={request['output_tokens']} "
                       f"finish_reason={request['finish_reason']}")
-            print("Wall times (smoke test, not a benchmark):", json.dumps(timings))
+            print("Inference metrics (model load reported separately):", json.dumps(timings))
         template = None if args.raw_prompt else tokenizer.get_chat_template()
         report = {
             "backend": args.backend, "model": args.model, "tokenizer": args.tokenizer,

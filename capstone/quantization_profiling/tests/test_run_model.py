@@ -251,6 +251,8 @@ class RunnerTests(unittest.TestCase):
         record = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(record["requests"][0]["generated_text"], "answer")
         self.assertEqual(record["requests"][0]["output_tokens"], 2)
+        metrics = record["timings"]
+        self.assertAlmostEqual(metrics["output_tokens_per_second"], 2 / metrics["generation_seconds"])
         self.assertEqual(engine.generate.call_args.args[0][0]["prompt_token_ids"],
                          record["requests"][0]["input_token_ids"])
         self.assertFalse(module.LLM.call_args.kwargs["enable_prefix_caching"])
@@ -288,6 +290,24 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(records[1]["output_token_ids"], [41, 42, 43])
         self.assertEqual(records[1]["finish_reason"], "length")
         self.assertEqual(self.tokenizer.padding_side, "left")
+
+    def test_generation_throughput_uses_actual_output_and_excludes_loading(self):
+        metrics = runner.inference_metrics([
+            {"input_tokens": 10, "output_tokens": 3},
+            {"input_tokens": 20, "output_tokens": 7},
+        ], 2.0)
+        self.assertEqual(metrics["output_tokens_per_second"], 5.0)
+        self.assertEqual(metrics["requests_per_second"], 1.0)
+        self.assertEqual(metrics["input_tokens"], 30)
+        self.assertEqual(metrics["inference_seconds"], 2.0)
+
+    def test_server_concurrency_alias_is_passed_to_vllm_scheduler(self):
+        args = self.args("--serve", "--concurrency", "4")
+        command = runner.server_command(args)
+        self.assertEqual(command[command.index("--max-num-seqs") + 1], "4")
+        self.assertEqual(command[command.index("--middleware") + 1],
+                         "profiling_middleware.ProfilingMiddleware")
+        self.assertIn("--enable-force-include-usage", command)
 
     def test_default_server_bind_address_and_port(self):
         args = self.args("--serve")

@@ -42,7 +42,8 @@ capstone/quantization_profiling/
 │   ├── collect_environment.py      # 已实现：并行环境检测、打印与 JSON 快照
 │   ├── download_models.sh          # 已实现：批量下载、跳过已有模型与失败重试
 │   ├── run_model.py                # 已实现：vLLM/Transformers、token 检查与 HTTP 服务
-│   ├── test_server.py              # 已实现：远程健康、模型、对话与 SSE 接口测试
+│   ├── test_server.py              # 已实现：远程接口、并发测试、指标和自动日志
+│   ├── profiling_middleware.py     # 已实现：服务端 JSON/SSE 耗时与吞吐量扩展
 │   ├── prepare_workloads.py        # 待实现：请求准备、token 校验与数据指纹
 │   ├── serve.sh                    # 待实现：按配置启动服务
 │   ├── benchmark.py                # 待实现：流式压测与逐请求记录
@@ -52,7 +53,9 @@ capstone/quantization_profiling/
 │   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
 │   ├── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
 │   ├── test_run_model.py           # 模板、token 预算、输出切片与入口行为
-│   └── test_server_client.py       # 本地模拟 HTTP，验证远程客户端与错误处理
+│   ├── test_server_client.py       # 本地 HTTP，验证并发、日志、指标与错误处理
+│   └── test_profiling_middleware.py # ASGI JSON/SSE 指标、并发隔离和流式转发
+├── log/                            # 自动生成 .log / .jsonl / .json；运行产物不提交 Git
 ├── data/
 │   ├── performance.jsonl           # 空占位：未来逐请求性能记录
 │   └── quality_holdout.jsonl       # 空占位：未来冻结的 100 条质量任务
@@ -293,18 +296,33 @@ CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.
 # 启动常驻服务；prompt、thinking、生成长度由客户端请求设置。
 CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
   --backend vllm --serve --model /workspace/weights_pub/Qwen3-8B \
-  --dtype bfloat16 --host 0.0.0.0 --port 7081 --served-model-name local-model
+  --dtype bfloat16 --host 0.0.0.0 --port 7081 --served-model-name local-model \
+  --concurrency 4
 ```
 
 从另一台机器执行远程接口测试（SERVER_IP 替换为服务器实际 IP）：
 
 ```bash
-python capstone/quantization_profiling/scripts/test_server.py --base-url http://SERVER_IP:7081 --model local-model --stream --output out/quantization_profiling/remote-api-check.json
+python capstone/quantization_profiling/scripts/test_server.py \
+  --base-url http://SERVER_IP:7081 --model local-model \
+  --concurrency 4 --requests 20 --require-server-metrics
 ```
 
-服务默认监听 `0.0.0.0:7081`；客户端访问 `http://SERVER_IP:7081`。测试脚本只使用 Python 标准库，默认检查 `GET /health`、`GET /v1/models` 和 `POST /v1/chat/completions`；`--stream` 会额外检查 SSE，`--check-only` 只检查前两项。接口说明和更多远程参数见 [教程第 5 节](docs/model_running.md#5-启动-http-服务并用-python-调用)。
+服务默认监听 `0.0.0.0:7081`；客户端访问 `http://SERVER_IP:7081`。测试脚本只使用 Python 标准库，默认检查 `GET /health`、`GET /v1/models` 和对话生成。服务端 `--concurrency 4` 是 `--max-num-seqs 4` 的别名，限制 vLLM 同时调度的序列数；客户端 `--concurrency 4` 是同时在途的 HTTP 请求数，`--requests 20` 是总请求数，空闲线程会继续领取后续请求。未传 `--requests` 时等于客户端并发数。客户端可以超过服务端调度上限，此时部分请求排队，延迟可能增加；4090D 初次运行也可先将两侧都设为 1，再逐步增加并观察显存。
 
-默认 vLLM 显存预算为物理总显存的 0.75，单步 token 预算为 2048，并启用 chunked prefill。实际能否运行需由目标机验证；本地生成耗时用于 smoke test，不作为正式性能结果。用户已确认模型下载完成，当前脚本验证覆盖命令与离线行为，尚未在目标 4090D 上运行真实模型。
+每次测试自动写入 **客户端所在项目的 `capstone/quantization_profiling/log/`**，与执行命令时的当前目录无关，文件名包含 UTC 时间与随机 ID：
+
+- `test_server_*.log`：检查结果、回答、逐请求指标与汇总信息。
+- `test_server_*.jsonl`：逐请求成功或失败记录、usage、服务端/客户端指标和分组汇总，运行中逐条刷新。
+- `test_server_*.json`：完整测试报告，包括参数、检查、错误与汇总。`--output` 可额外导出一份，`--log-dir` 可更改默认目录。
+
+**指标口径**：本地推理记录加载耗时、生成耗时和实际输出 token 吞吐量，加载时间单独统计；HTTP 服务在响应的 `profiling` 字段返回 `inference_seconds`、`input_tokens`、`output_tokens`、`output_tokens_per_second` 等指标。服务端耗时包含排队、模板/tokenizer 处理和生成，流式模式还可能受发送背压影响，不代表纯 GPU kernel 时间。客户端另行记录包含网络的端到端耗时。流式指标在 `[DONE]` 之前通过额外的 `choices=[]` SSE 事件返回，真实 token 数来自 `usage`，不使用文本片段数代替。
+
+汇总吞吐量为 **成功请求的实际输出 token 总数 ÷ 整组测试的墙钟时间**，不会把单请求的 tokens/s 相加；同时记录成功 req/s、失败率、成功请求延迟 p50/p95。缺少 usage 时吞吐量为 `null`。默认不自动预热，首次请求的初始化开销可能进入测量，这些探索性测试不能直接视为正式 BF16 基线。
+
+使用更新后的 `run_model.py --serve` 重启服务后，`--require-server-metrics` 会核验服务端指标是否存在。`--stream-only` 只测试流式请求；`--stream` 先测试非流式，再测试流式，每一组各执行 `--requests` 次；`--check-only` 只检查健康和模型列表。部分请求失败仍会继续完成其余请求并保存日志，最终返回非零退出码。更多说明见 [教程第 5 节](docs/model_running.md#5-启动-http-服务并用-python-调用)。
+
+默认 vLLM 显存预算为物理总显存的 0.75，单步 token 预算为 2048，并启用 chunked prefill。实际能否运行需由目标机验证；当前耗时和吞吐记录用于初步验证；固定负载、预热和重复轮次仍待正式评测脚本实现。用户已确认模型下载完成，当前脚本验证覆盖命令与离线行为，尚未在目标 4090D 上运行真实模型。
 
 完整说明见 [模型运行与 vLLM / Transformers 详细教程](docs/model_running.md)：包括 AWQ、批量和多轮输入、参数对照、两个库的独立 Python 示例、HTTP 客户端、流式输出与显存排错。
 
