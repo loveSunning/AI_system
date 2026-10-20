@@ -2,7 +2,9 @@
 
 围绕同一份 Qwen3-8B 模型与固定负载，建立 BF16 基线，运行一条 W4A16 量化路径，结合 Nsight 时间线、热点 kernel 和留出集质量回归，解释显存、吞吐、尾延迟与质量之间的取舍。
 
-**当前状态：模型下载已由用户在目标机完成；通用模型运行、并行环境检测与安装说明已实现。** 当前目标为 RTX 4090D、约 20G 可用显存；真实生成与 HTTP 服务待目标机验证。YAML、serve.sh、正式评测脚本、数据与报告保持空占位。
+**当前状态：远程流式生成已验证；本周数据准备与 BF16 benchmark 已实现，目标机正式实验待执行。** 已补固定负载/配置、100 条质量任务与判分器、自动服务管理、三轮测试、显存/失败记录及汇总入口。AWQ 配置与后续量化诊断仍待实施。
+
+**本周执行入口：[第一周完整运行与验收说明](docs/week1_execution.md)。** 原有短请求测试用于连通性检查；正式性能结果请使用新 benchmark 流程。
 
 ## 从哪里开始
 
@@ -17,11 +19,11 @@
 
 | 任务 | 原周次 | 目标与交付 | 验收重点 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| P1-01 | W29 | 环境、模型 revision、模板与生成参数锁定，启动入口 | 可重建环境，复现代表请求；读取实际显存 | 进行中：模型已下载，运行入口已实现，真实生成待验证 |
-| P1-02 | W29 | 五组 workload 的 BF16 原始记录和基线汇总 | 并发 1 起步；预热后至少 3 轮；OOM 如实记录 | 未开始 |
+| P1-01 | W29 | 环境、模型 revision、模板与生成参数锁定，启动入口 | 可重建环境，复现代表请求；读取实际显存 | 进行中：生成已验证；环境与 BF16 正式证据待目标机归档 |
+| P1-02 | W29 | 五组 workload 的 BF16 原始记录和基线汇总 | 并发 1 起步；预热后至少 3 轮；OOM 如实记录 | 工具与协议已实现，目标机矩阵待执行 |
 | P1-03 | W30 | nsys 时间线、3 个代表热点的 ncu 抽样与证据表 | 分清 prefill/decode；至少一个热点有证据和优化假设 | 未开始 |
 | P1-04 | W30 | AWQ 优先的 W4A16 配置、权重来源与对照结果 | 核验版本/硬件/kernel；相同输入与评测协议 | 未开始 |
-| P1-05 | W30/W32 | 固定 100 条留出任务的逐题质量回归 | 与校准集分离；固定判分；实验前锁定质量门槛 | 未开始 |
+| P1-05 | W30/W32 | 固定 100 条留出任务的逐题质量回归 | 与校准集分离；固定判分；实验前锁定质量门槛 | 数据与判分器已准备，配对回归待执行 |
 | P1-06 | W32 | 性能、显存、质量与诊断报告及复现入口 | 每项结论可追溯到实验 ID；不预设加速收益 | 未开始 |
 
 ## 目录与文件职责
@@ -33,22 +35,23 @@ capstone/quantization_profiling/
 ├── requirements.txt                # 固定基础/工具依赖；vLLM 另用加速入口安装
 ├── requirements-vllm.txt           # 兼容入口，引用 requirements.txt
 ├── docs/
-│   └── model_running.md            # 本地推理、HTTP 服务与两个库的详细教程
+│   ├── model_running.md            # 本地推理、HTTP 服务与两个库的详细教程
+│   └── week1_execution.md           # 第一周协议、目标机命令与验收
 ├── configs/
-│   ├── bf16.yaml                   # 待实现：BF16 服务与生成配置
+│   ├── bf16.yaml                   # 已实现：BF16 服务配置（JSON 格式的 YAML）
 │   ├── awq.yaml                    # 待实现：AWQ/W4A16 配置与权重信息
-│   └── workloads.yaml              # 待实现：负载、并发、重复次数与种子
+│   └── workloads.yaml              # 已实现：五组负载、预热、重复次数与种子
 ├── scripts/
 │   ├── collect_environment.py      # 已实现：并行环境检测、打印与 JSON 快照
 │   ├── download_models.sh          # 已实现：批量下载、跳过已有模型与失败重试
 │   ├── run_model.py                # 已实现：vLLM/Transformers、token 检查与 HTTP 服务
 │   ├── test_server.py              # 已实现：远程接口、并发测试、指标和自动日志
 │   ├── profiling_middleware.py     # 已实现：服务端 JSON/SSE 耗时与吞吐量扩展
-│   ├── prepare_workloads.py        # 待实现：请求准备、token 校验与数据指纹
-│   ├── serve.sh                    # 待实现：按配置启动服务
-│   ├── benchmark.py                # 待实现：流式压测与逐请求记录
-│   ├── evaluate_quality.py         # 待实现：留出集推理、判分与逐题结果
-│   └── summarize.py                # 待实现：结果校验、汇总与报告素材
+│   ├── prepare_workloads.py        # 已实现：请求准备、token 校验与数据指纹
+│   ├── serve.sh                    # 已实现：BF16 服务启动便捷入口
+│   ├── benchmark.py                # 已实现：自动服务管理、正式压测、显存与失败记录
+│   ├── evaluate_quality.py         # 已实现：留出集推理、严格判分与逐题结果
+│   └── summarize.py                # 已实现：单次实验汇总与报告
 ├── tests/
 │   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
 │   ├── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
@@ -57,10 +60,10 @@ capstone/quantization_profiling/
 │   └── test_profiling_middleware.py # ASGI JSON/SSE 指标、并发隔离和流式转发
 ├── log/                            # 自动生成 .log / .jsonl / .json；运行产物不提交 Git
 ├── data/
-│   ├── performance.jsonl           # 空占位：未来逐请求性能记录
-│   └── quality_holdout.jsonl       # 空占位：未来冻结的 100 条质量任务
+│   ├── performance.jsonl           # 保留占位；正式记录存于独立实验目录
+│   └── quality_holdout.jsonl       # 已准备：100 条自编合成质量任务
 └── reports/
-    └── Project1_Report.md          # 空占位：未来实验报告
+    └── Project1_Report.md          # 验收状态；真实实验结论待补
 ```
 
 文件的输入、输出、数据字段和后续生成产物约定见 [planning.md](planning.md)。模型权重、大型 trace 和运行日志的存放规则也在那里说明。
@@ -211,7 +214,7 @@ bash capstone/quantization_profiling/scripts/download_models.sh --dry-run
 bash capstone/quantization_profiling/scripts/download_models.sh
 ```
 
-下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；YAML 配置与 serve.sh 仍待实现；当前运行入口见后文。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
+下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；BF16/workload 配置与 serve.sh 已实现，AWQ 配置待后续阶段；当前运行入口见后文。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
 
 **一次下载多个模型**：重复传入 `--model`，按顺序处理；只列出需要的模型。下面以 BF16 和 AWQ 为例，已有 `Qwen3-8B` 非空目录时显示 `SKIP`，继续下载缺失的 `Qwen3-8B-AWQ`。
 

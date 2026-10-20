@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "source": "project-authored deterministic synthetic tasks, 2026-10-20",
+  "scope": "100 basic tasks, 25/category; educational regression only, not a broad model capability benchmark",
+  "calibration": "excluded; do not tune/calibrate on these tasks; no calibration dataset used in week 1",
+  "normalization": "strip surrounding whitespace only; no markdown stripping, case folding or answer extraction",
+  "json_scoring": "exact object keys/values/types; duplicate keys rejected; object key order ignored",
+  "truncation": "finish_reason length is incorrect",
+  "infrastructure": "record separately; no automatic retries; incomplete if any infrastructure failure",
+  "generation": {
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": -1,
+    "seed": 42,
+    "max_tokens": 128,
+    "ignore_eos": false,
+    "thinking": false
+  },
+  "quality_target_drop_percentage_points": 2,
+  "denominator": 100
+}

@@ -1,0 +1,100 @@
+{"id": "arithmetic-00", "category": "arithmetic", "prompt": "计算 (13 + 7) × 2。只输出十进制整数，不要解释。", "expected": "40", "scorer": "exact"}
+{"id": "extraction-00", "category": "extraction", "prompt": "记录：已取消订单 ORD-9100；已支付订单 ORD-8100；退款金额 20 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8100", "scorer": "exact"}
+{"id": "choice-00", "category": "choice", "prompt": "哪个选项的数字最大？A. 40 B. 7 C. 21 D. 14 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-00", "category": "json", "prompt": "将姓名 user_00、年龄 20、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_00", "age": 20, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-01", "category": "arithmetic", "prompt": "计算 (14 + 9) × 3。只输出十进制整数，不要解释。", "expected": "69", "scorer": "exact"}
+{"id": "extraction-01", "category": "extraction", "prompt": "记录：已取消订单 ORD-9101；已支付订单 ORD-8101；退款金额 21 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8101", "scorer": "exact"}
+{"id": "choice-01", "category": "choice", "prompt": "哪个选项的数字最大？A. 11 B. 41 C. 22 D. 15 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-01", "category": "json", "prompt": "将姓名 user_01、年龄 21、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_01", "age": 21, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-02", "category": "arithmetic", "prompt": "计算 (15 + 11) × 4。只输出十进制整数，不要解释。", "expected": "104", "scorer": "exact"}
+{"id": "extraction-02", "category": "extraction", "prompt": "记录：已取消订单 ORD-9102；已支付订单 ORD-8102；退款金额 22 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8102", "scorer": "exact"}
+{"id": "choice-02", "category": "choice", "prompt": "哪个选项的数字最大？A. 12 B. 9 C. 42 D. 16 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-02", "category": "json", "prompt": "将姓名 user_02、年龄 22、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_02", "age": 22, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-03", "category": "arithmetic", "prompt": "计算 (16 + 13) × 5。只输出十进制整数，不要解释。", "expected": "145", "scorer": "exact"}
+{"id": "extraction-03", "category": "extraction", "prompt": "记录：已取消订单 ORD-9103；已支付订单 ORD-8103；退款金额 23 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8103", "scorer": "exact"}
+{"id": "choice-03", "category": "choice", "prompt": "哪个选项的数字最大？A. 13 B. 10 C. 24 D. 43 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-03", "category": "json", "prompt": "将姓名 user_03、年龄 23、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_03", "age": 23, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-04", "category": "arithmetic", "prompt": "计算 (17 + 15) × 6。只输出十进制整数，不要解释。", "expected": "192", "scorer": "exact"}
+{"id": "extraction-04", "category": "extraction", "prompt": "记录：已取消订单 ORD-9104；已支付订单 ORD-8104；退款金额 24 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8104", "scorer": "exact"}
+{"id": "choice-04", "category": "choice", "prompt": "哪个选项的数字最大？A. 44 B. 11 C. 25 D. 18 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-04", "category": "json", "prompt": "将姓名 user_04、年龄 24、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_04", "age": 24, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-05", "category": "arithmetic", "prompt": "计算 (18 + 17) × 7。只输出十进制整数，不要解释。", "expected": "245", "scorer": "exact"}
+{"id": "extraction-05", "category": "extraction", "prompt": "记录：已取消订单 ORD-9105；已支付订单 ORD-8105；退款金额 25 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8105", "scorer": "exact"}
+{"id": "choice-05", "category": "choice", "prompt": "哪个选项的数字最大？A. 15 B. 45 C. 26 D. 19 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-05", "category": "json", "prompt": "将姓名 user_05、年龄 25、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_05", "age": 25, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-06", "category": "arithmetic", "prompt": "计算 (19 + 19) × 8。只输出十进制整数，不要解释。", "expected": "304", "scorer": "exact"}
+{"id": "extraction-06", "category": "extraction", "prompt": "记录：已取消订单 ORD-9106；已支付订单 ORD-8106；退款金额 26 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8106", "scorer": "exact"}
+{"id": "choice-06", "category": "choice", "prompt": "哪个选项的数字最大？A. 16 B. 13 C. 46 D. 20 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-06", "category": "json", "prompt": "将姓名 user_06、年龄 26、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_06", "age": 26, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-07", "category": "arithmetic", "prompt": "计算 (20 + 21) × 2。只输出十进制整数，不要解释。", "expected": "82", "scorer": "exact"}
+{"id": "extraction-07", "category": "extraction", "prompt": "记录：已取消订单 ORD-9107；已支付订单 ORD-8107；退款金额 27 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8107", "scorer": "exact"}
+{"id": "choice-07", "category": "choice", "prompt": "哪个选项的数字最大？A. 17 B. 14 C. 28 D. 47 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-07", "category": "json", "prompt": "将姓名 user_07、年龄 27、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_07", "age": 27, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-08", "category": "arithmetic", "prompt": "计算 (21 + 23) × 3。只输出十进制整数，不要解释。", "expected": "132", "scorer": "exact"}
+{"id": "extraction-08", "category": "extraction", "prompt": "记录：已取消订单 ORD-9108；已支付订单 ORD-8108；退款金额 28 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8108", "scorer": "exact"}
+{"id": "choice-08", "category": "choice", "prompt": "哪个选项的数字最大？A. 48 B. 15 C. 29 D. 22 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-08", "category": "json", "prompt": "将姓名 user_08、年龄 28、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_08", "age": 28, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-09", "category": "arithmetic", "prompt": "计算 (22 + 25) × 4。只输出十进制整数，不要解释。", "expected": "188", "scorer": "exact"}
+{"id": "extraction-09", "category": "extraction", "prompt": "记录：已取消订单 ORD-9109；已支付订单 ORD-8109；退款金额 29 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8109", "scorer": "exact"}
+{"id": "choice-09", "category": "choice", "prompt": "哪个选项的数字最大？A. 19 B. 49 C. 30 D. 23 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-09", "category": "json", "prompt": "将姓名 user_09、年龄 29、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_09", "age": 29, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-10", "category": "arithmetic", "prompt": "计算 (23 + 27) × 5。只输出十进制整数，不要解释。", "expected": "250", "scorer": "exact"}
+{"id": "extraction-10", "category": "extraction", "prompt": "记录：已取消订单 ORD-9110；已支付订单 ORD-8110；退款金额 30 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8110", "scorer": "exact"}
+{"id": "choice-10", "category": "choice", "prompt": "哪个选项的数字最大？A. 20 B. 17 C. 50 D. 24 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-10", "category": "json", "prompt": "将姓名 user_10、年龄 30、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_10", "age": 30, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-11", "category": "arithmetic", "prompt": "计算 (24 + 29) × 6。只输出十进制整数，不要解释。", "expected": "318", "scorer": "exact"}
+{"id": "extraction-11", "category": "extraction", "prompt": "记录：已取消订单 ORD-9111；已支付订单 ORD-8111；退款金额 31 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8111", "scorer": "exact"}
+{"id": "choice-11", "category": "choice", "prompt": "哪个选项的数字最大？A. 21 B. 18 C. 32 D. 51 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-11", "category": "json", "prompt": "将姓名 user_11、年龄 31、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_11", "age": 31, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-12", "category": "arithmetic", "prompt": "计算 (25 + 31) × 7。只输出十进制整数，不要解释。", "expected": "392", "scorer": "exact"}
+{"id": "extraction-12", "category": "extraction", "prompt": "记录：已取消订单 ORD-9112；已支付订单 ORD-8112；退款金额 32 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8112", "scorer": "exact"}
+{"id": "choice-12", "category": "choice", "prompt": "哪个选项的数字最大？A. 52 B. 19 C. 33 D. 26 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-12", "category": "json", "prompt": "将姓名 user_12、年龄 32、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_12", "age": 32, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-13", "category": "arithmetic", "prompt": "计算 (26 + 33) × 8。只输出十进制整数，不要解释。", "expected": "472", "scorer": "exact"}
+{"id": "extraction-13", "category": "extraction", "prompt": "记录：已取消订单 ORD-9113；已支付订单 ORD-8113；退款金额 33 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8113", "scorer": "exact"}
+{"id": "choice-13", "category": "choice", "prompt": "哪个选项的数字最大？A. 23 B. 53 C. 34 D. 27 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-13", "category": "json", "prompt": "将姓名 user_13、年龄 33、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_13", "age": 33, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-14", "category": "arithmetic", "prompt": "计算 (27 + 35) × 2。只输出十进制整数，不要解释。", "expected": "124", "scorer": "exact"}
+{"id": "extraction-14", "category": "extraction", "prompt": "记录：已取消订单 ORD-9114；已支付订单 ORD-8114；退款金额 34 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8114", "scorer": "exact"}
+{"id": "choice-14", "category": "choice", "prompt": "哪个选项的数字最大？A. 24 B. 21 C. 54 D. 28 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-14", "category": "json", "prompt": "将姓名 user_14、年龄 34、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_14", "age": 34, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-15", "category": "arithmetic", "prompt": "计算 (28 + 37) × 3。只输出十进制整数，不要解释。", "expected": "195", "scorer": "exact"}
+{"id": "extraction-15", "category": "extraction", "prompt": "记录：已取消订单 ORD-9115；已支付订单 ORD-8115；退款金额 35 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8115", "scorer": "exact"}
+{"id": "choice-15", "category": "choice", "prompt": "哪个选项的数字最大？A. 25 B. 22 C. 36 D. 55 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-15", "category": "json", "prompt": "将姓名 user_15、年龄 35、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_15", "age": 35, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-16", "category": "arithmetic", "prompt": "计算 (29 + 39) × 4。只输出十进制整数，不要解释。", "expected": "272", "scorer": "exact"}
+{"id": "extraction-16", "category": "extraction", "prompt": "记录：已取消订单 ORD-9116；已支付订单 ORD-8116；退款金额 36 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8116", "scorer": "exact"}
+{"id": "choice-16", "category": "choice", "prompt": "哪个选项的数字最大？A. 56 B. 23 C. 37 D. 30 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-16", "category": "json", "prompt": "将姓名 user_16、年龄 36、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_16", "age": 36, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-17", "category": "arithmetic", "prompt": "计算 (30 + 41) × 5。只输出十进制整数，不要解释。", "expected": "355", "scorer": "exact"}
+{"id": "extraction-17", "category": "extraction", "prompt": "记录：已取消订单 ORD-9117；已支付订单 ORD-8117；退款金额 37 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8117", "scorer": "exact"}
+{"id": "choice-17", "category": "choice", "prompt": "哪个选项的数字最大？A. 27 B. 57 C. 38 D. 31 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-17", "category": "json", "prompt": "将姓名 user_17、年龄 37、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_17", "age": 37, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-18", "category": "arithmetic", "prompt": "计算 (31 + 43) × 6。只输出十进制整数，不要解释。", "expected": "444", "scorer": "exact"}
+{"id": "extraction-18", "category": "extraction", "prompt": "记录：已取消订单 ORD-9118；已支付订单 ORD-8118；退款金额 38 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8118", "scorer": "exact"}
+{"id": "choice-18", "category": "choice", "prompt": "哪个选项的数字最大？A. 28 B. 25 C. 58 D. 32 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-18", "category": "json", "prompt": "将姓名 user_18、年龄 38、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_18", "age": 38, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-19", "category": "arithmetic", "prompt": "计算 (32 + 45) × 7。只输出十进制整数，不要解释。", "expected": "539", "scorer": "exact"}
+{"id": "extraction-19", "category": "extraction", "prompt": "记录：已取消订单 ORD-9119；已支付订单 ORD-8119；退款金额 39 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8119", "scorer": "exact"}
+{"id": "choice-19", "category": "choice", "prompt": "哪个选项的数字最大？A. 29 B. 26 C. 40 D. 59 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-19", "category": "json", "prompt": "将姓名 user_19、年龄 39、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_19", "age": 39, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-20", "category": "arithmetic", "prompt": "计算 (33 + 47) × 8。只输出十进制整数，不要解释。", "expected": "640", "scorer": "exact"}
+{"id": "extraction-20", "category": "extraction", "prompt": "记录：已取消订单 ORD-9120；已支付订单 ORD-8120；退款金额 40 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8120", "scorer": "exact"}
+{"id": "choice-20", "category": "choice", "prompt": "哪个选项的数字最大？A. 60 B. 27 C. 41 D. 34 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-20", "category": "json", "prompt": "将姓名 user_20、年龄 40、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_20", "age": 40, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-21", "category": "arithmetic", "prompt": "计算 (34 + 49) × 2。只输出十进制整数，不要解释。", "expected": "166", "scorer": "exact"}
+{"id": "extraction-21", "category": "extraction", "prompt": "记录：已取消订单 ORD-9121；已支付订单 ORD-8121；退款金额 41 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8121", "scorer": "exact"}
+{"id": "choice-21", "category": "choice", "prompt": "哪个选项的数字最大？A. 31 B. 61 C. 42 D. 35 只输出一个大写选项字母。", "expected": "B", "scorer": "exact"}
+{"id": "json-21", "category": "json", "prompt": "将姓名 user_21、年龄 41、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_21", "age": 41, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-22", "category": "arithmetic", "prompt": "计算 (35 + 51) × 3。只输出十进制整数，不要解释。", "expected": "258", "scorer": "exact"}
+{"id": "extraction-22", "category": "extraction", "prompt": "记录：已取消订单 ORD-9122；已支付订单 ORD-8122；退款金额 42 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8122", "scorer": "exact"}
+{"id": "choice-22", "category": "choice", "prompt": "哪个选项的数字最大？A. 32 B. 29 C. 62 D. 36 只输出一个大写选项字母。", "expected": "C", "scorer": "exact"}
+{"id": "json-22", "category": "json", "prompt": "将姓名 user_22、年龄 42、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_22", "age": 42, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-23", "category": "arithmetic", "prompt": "计算 (36 + 53) × 4。只输出十进制整数，不要解释。", "expected": "356", "scorer": "exact"}
+{"id": "extraction-23", "category": "extraction", "prompt": "记录：已取消订单 ORD-9123；已支付订单 ORD-8123；退款金额 43 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8123", "scorer": "exact"}
+{"id": "choice-23", "category": "choice", "prompt": "哪个选项的数字最大？A. 33 B. 30 C. 44 D. 63 只输出一个大写选项字母。", "expected": "D", "scorer": "exact"}
+{"id": "json-23", "category": "json", "prompt": "将姓名 user_23、年龄 43、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_23", "age": 43, "active": true}, "scorer": "json_exact"}
+{"id": "arithmetic-24", "category": "arithmetic", "prompt": "计算 (37 + 55) × 5。只输出十进制整数，不要解释。", "expected": "460", "scorer": "exact"}
+{"id": "extraction-24", "category": "extraction", "prompt": "记录：已取消订单 ORD-9124；已支付订单 ORD-8124；退款金额 44 元。只输出已支付订单的编号，不要其它文字。", "expected": "ORD-8124", "scorer": "exact"}
+{"id": "choice-24", "category": "choice", "prompt": "哪个选项的数字最大？A. 64 B. 31 C. 45 D. 38 只输出一个大写选项字母。", "expected": "A", "scorer": "exact"}
+{"id": "json-24", "category": "json", "prompt": "将姓名 user_24、年龄 44、是否启用 是 转成 JSON 对象。键必须恰好为 name、age、active；age 用整数，active 用布尔值。只输出 JSON，不要代码块。", "expected": {"name": "user_24", "age": 44, "active": true}, "scorer": "json_exact"}

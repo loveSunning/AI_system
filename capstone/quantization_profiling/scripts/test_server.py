@@ -200,16 +200,17 @@ class Client:
                 "server_metrics": data.get("profiling"),
                 "client_metrics": client_metrics(data.get("usage"), elapsed)}
 
-    def stream_chat(self, payload):
+    def stream_chat(self, payload, path="/v1/chat/completions"):
         streaming = dict(payload, stream=True, stream_options={"include_usage": True})
         started = time.perf_counter()
         first_text = None
+        last_text = None
         server_metrics = None
         content_parts, reasoning_parts = [], []
         usage, finish_reason = None, None
         done, seen_choice = False, False
         text_chunks = 0
-        with self.open("/v1/chat/completions", streaming, stream=True) as response:
+        with self.open(path, streaming, stream=True) as response:
             if "text/event-stream" not in response.headers.get("Content-Type", "").lower():
                 raise APIError("Expected Content-Type: text/event-stream")
             for event in iter_sse_data(response):
@@ -233,13 +234,15 @@ class Client:
                     if choice.get("index", 0) != 0:
                         continue
                     seen_choice = True
-                    content, reasoning = message_text(choice.get("delta", {}))
+                    content, reasoning = (message_text(choice.get("delta", {}))
+                        if path.endswith("chat/completions") else (choice.get("text") or "", ""))
                     if content or reasoning:
                         text_chunks += 1
                         content_parts.append(content)
                         reasoning_parts.append(reasoning)
+                        last_text = time.perf_counter()
                         if first_text is None:
-                            first_text = time.perf_counter()
+                            first_text = last_text
                     if choice.get("finish_reason") is not None:
                         finish_reason = choice["finish_reason"]
         elapsed = time.perf_counter() - started
@@ -251,7 +254,8 @@ class Client:
                 "finish_reason": finish_reason, "usage": usage, "text_chunks": text_chunks,
                 "server_metrics": server_metrics,
                 "client_metrics": client_metrics(usage, elapsed,
-                    first_text - started if first_text is not None else None)}
+                    first_text - started if first_text is not None else None,
+                    last_text - started if last_text is not None else None)}
 
 
 def request_payload(args, model):
@@ -295,12 +299,16 @@ def usage_tokens(usage, name):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def client_metrics(usage, elapsed, first_text=None):
+def client_metrics(usage, elapsed, first_text=None, last_text=None):
     tokens = usage_tokens(usage, "completion_tokens")
     return {
         "end_to_end_seconds": elapsed,
         "output_tokens_per_second": tokens / elapsed if tokens is not None and elapsed > 0 else None,
         "time_to_first_text_seconds": first_text,
+        "time_to_last_text_seconds": last_text,
+        "tpot_text_event_seconds": ((last_text - first_text) / (tokens - 1)
+            if tokens is not None and tokens > 1 and first_text is not None and last_text is not None else None),
+        "tpot_note": "text-event approximation; SSE chunks can contain multiple or buffered tokens",
         "timing_scope": "client_http_wall_time_including_network_and_server",
     }
 

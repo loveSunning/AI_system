@@ -1,6 +1,6 @@
 # P1：Qwen3-8B 量化与性能诊断学习规划
 
-更新日期：2026-10-20。已完成规划、文件骨架、下载与环境检测工具，并新增通用模型运行入口和库用法教程；用户已确认目标机模型下载成功，真实生成、服务与正式实验仍待验证。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
+更新日期：2026-10-20。远程流式生成已有真实日志；本周固定负载准备、100 条质量任务与判分规则、BF16 benchmark、显存/失败留档和汇总工具已实现。服务端指标经本地 HTTP 集成测试验证；目标机的环境归档、真实 tokenizer 快照、BF16 三轮矩阵及显存预算解释仍待实测，不能标为本周验收完成。执行步骤见 [第一周运行说明](docs/week1_execution.md)。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
 
 ## 1. 项目目标与范围
 
@@ -17,7 +17,7 @@
 | 质量 | 100 条固定留出任务、逐题判分；独立语料 PPL 选做 |
 | 暂缓 | 多框架完整对比、训练/微调、自写量化 kernel、INT8/FP8 全矩阵、多卡和跨平台迁移；分别留给后续案例或选做 |
 
-首轮已完成规划与空文件骨架。现阶段实现 download_models.sh、collect_environment.py 和 run_model.py，配套 [模型运行与库用法教程](docs/model_running.md)。run_model.py 提供不依赖 YAML 的本地生成与 vLLM HTTP 服务入口，默认监听 0.0.0.0:7081；test_server.py 提供远程接口 smoke test；其余 YAML、serve.sh、正式评测脚本、真实数据和报告保持待实现。用户已确认目标机模型下载成功，真实模型运行和快照仍需目标机验证，不能据此标记 S0 完成。
+当前阶段已提供 download_models.sh、collect_environment.py、run_model.py、test_server.py、prepare_workloads.py、benchmark.py、evaluate_quality.py、summarize.py 和 serve.sh。BF16/workload 配置与 100 条质量数据已落地；awq.yaml 留待后续量化阶段。性能快照必须使用目标机的真实 tokenizer 生成；实验结果保存在独立 log/benchmark_* 目录，不写入虚构的基线数字。
 
 ## 2. 学习内容与依赖路径
 
@@ -205,7 +205,7 @@
 | scripts/summarize.py | 原始性能/质量结果、manifest、证据索引 | 校验后生成 CSV/图表和报告素材；拒绝把不同协议的记录合并 |
 | data/performance.jsonl | 未来的正式逐请求性能记录入口 | 一行一个请求，包含失败记录；通过 run ID 关联各轮元数据 |
 | data/quality_holdout.jsonl | 未来的 100 条冻结质量任务 | 只存任务/参考答案/判分信息，不混入模型输出或校准数据 |
-| reports/Project1_Report.md | 人工审查后的汇总与诊断证据 | 实测结论、复现入口、失败与限制；现在保持空文件 |
+| reports/Project1_Report.md | 人工审查后的汇总与诊断证据 | 实测结论、复现入口、失败与限制；当前记录验收状态，真实结果待补 |
 
 实施顺序：配置与环境采集 → 数据/协议准备 → 服务短请求 → benchmark 单格与错误记录 → BF16 矩阵 → profiling → AWQ 主路径与同协议矩阵 → quality → summarize → 报告及 README 实测命令。
 
