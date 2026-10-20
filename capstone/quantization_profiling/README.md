@@ -2,13 +2,14 @@
 
 围绕同一份 Qwen3-8B 模型与固定负载，建立 BF16 基线，运行一条 W4A16 量化路径，结合 Nsight 时间线、热点 kernel 和留出集质量回归，解释显存、吞吐、尾延迟与质量之间的取舍。
 
-**当前状态：已实现模型下载、并行环境检测和依赖安装说明，模型实验尚未开始。** 当前目标为 RTX 4090D、约 20G 可用显存；下载与检测脚本可用，目标机待验证。服务/评测 YAML 配置、其余业务脚本、数据与报告保持空占位，未预填实验结果。
+**当前状态：模型下载已由用户在目标机完成；通用模型运行、并行环境检测与安装说明已实现。** 当前目标为 RTX 4090D、约 20G 可用显存；真实生成与 HTTP 服务待目标机验证。YAML、serve.sh、正式评测脚本、数据与报告保持空占位。
 
 ## 从哪里开始
 
 1. 阅读 [详细学习与实施规划](planning.md)，按“环境与显存预算 → 数据与口径 → BF16 → Profiling → W4A16 → 质量回归 → 报告”的顺序推进。
 2. 对照 [W29–W52 每周计划与验收](../../docs/learning-plan-w29-w52.md)，保留 P1-01～P1-06 的任务编号和验收要求。
-3. 复习 [Nsight 工具手册](../../docs/profiling/nsight-tools.md) 的时间线与热点分析方法；其中现有示例面向 kernel lab，本项目的模型服务采集流程将在后续实现。
+3. 模型已下载后，按 [模型运行与库用法教程](docs/model_running.md) 打通短请求、批量推理和 HTTP 调用。
+4. 复习 [Nsight 工具手册](../../docs/profiling/nsight-tools.md) 的时间线与热点分析方法；其中现有示例面向 kernel lab，本项目的模型服务采集流程将在后续实现。
 
 计划来源为 `00.AI-system-plan-optimized-v3.xlsx` 的“案例1_量化与Profiling”，此处依据仓库已有周计划与案例说明展开。W29、W30、W32 是原学习周编号；实际补做时间和完成状态以实验记录为准。
 
@@ -16,7 +17,7 @@
 
 | 任务 | 原周次 | 目标与交付 | 验收重点 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| P1-01 | W29 | 环境、模型 revision、模板与生成参数锁定，启动入口 | 可重建环境，复现代表请求；读取实际显存 | 进行中：工具已实现，目标机待验证 |
+| P1-01 | W29 | 环境、模型 revision、模板与生成参数锁定，启动入口 | 可重建环境，复现代表请求；读取实际显存 | 进行中：模型已下载，运行入口已实现，真实生成待验证 |
 | P1-02 | W29 | 五组 workload 的 BF16 原始记录和基线汇总 | 并发 1 起步；预热后至少 3 轮；OOM 如实记录 | 未开始 |
 | P1-03 | W30 | nsys 时间线、3 个代表热点的 ncu 抽样与证据表 | 分清 prefill/decode；至少一个热点有证据和优化假设 | 未开始 |
 | P1-04 | W30 | AWQ 优先的 W4A16 配置、权重来源与对照结果 | 核验版本/硬件/kernel；相同输入与评测协议 | 未开始 |
@@ -29,8 +30,10 @@
 capstone/quantization_profiling/
 ├── README.md                       # 项目入口与验收概览
 ├── planning.md                     # 学习路径、实施顺序与评测约定
-├── requirements.txt                # 保留现有版本，补 vLLM 0.11.0+cu129
+├── requirements.txt                # 固定基础/工具依赖；vLLM 另用加速入口安装
 ├── requirements-vllm.txt           # 兼容入口，引用 requirements.txt
+├── docs/
+│   └── model_running.md            # 本地推理、HTTP 服务与两个库的详细教程
 ├── configs/
 │   ├── bf16.yaml                   # 待实现：BF16 服务与生成配置
 │   ├── awq.yaml                    # 待实现：AWQ/W4A16 配置与权重信息
@@ -38,6 +41,8 @@ capstone/quantization_profiling/
 ├── scripts/
 │   ├── collect_environment.py      # 已实现：并行环境检测、打印与 JSON 快照
 │   ├── download_models.sh          # 已实现：批量下载、跳过已有模型与失败重试
+│   ├── run_model.py                # 已实现：vLLM/Transformers、token 检查与 HTTP 服务
+│   ├── test_server.py              # 已实现：远程健康、模型、对话与 SSE 接口测试
 │   ├── prepare_workloads.py        # 待实现：请求准备、token 校验与数据指纹
 │   ├── serve.sh                    # 待实现：按配置启动服务
 │   ├── benchmark.py                # 待实现：流式压测与逐请求记录
@@ -45,7 +50,9 @@ capstone/quantization_profiling/
 │   └── summarize.py                # 待实现：结果校验、汇总与报告素材
 ├── tests/
 │   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
-│   └── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
+│   ├── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
+│   ├── test_run_model.py           # 模板、token 预算、输出切片与入口行为
+│   └── test_server_client.py       # 本地模拟 HTTP，验证远程客户端与错误处理
 ├── data/
 │   ├── performance.jsonl           # 空占位：未来逐请求性能记录
 │   └── quality_holdout.jsonl       # 空占位：未来冻结的 100 条质量任务
@@ -57,7 +64,7 @@ capstone/quantization_profiling/
 
 ## Python 依赖说明与安装
 
-本项目统一使用 [requirements.txt](requirements.txt) 保留你回传的已安装版本，并补齐适配的 vLLM、ModelScope 和 Accelerate。下面列出的是安装前检测结果；六个已安装版本均已精确固定，安装后需复核一致性。SGLang 留给后续框架对照。
+本项目使用 [requirements.txt](requirements.txt) 固定你回传的已安装版本与 ModelScope、Accelerate 等工具依赖；当前 vLLM 行已注释，使用下方加速安装入口单独安装。下面列出的是安装前检测结果；六个已安装版本均已精确固定，安装后需复核一致性。SGLang 留给后续框架对照。
 
 | pip 包名 / 常见名称 | Python 导入名 | 安装前检测版本 | 在本项目中的用途 |
 | --- | --- | --- | --- |
@@ -78,10 +85,10 @@ CUDA 驱动、CUDA Toolkit/nvcc 属于系统环境，不能用一个名为“cud
 
 | 文件 | 用途 |
 | --- | --- |
-| [requirements.txt](requirements.txt) | 主安装入口：保留当前已安装版本，补齐兼容的 vLLM、模型下载和设备分配依赖 |
+| [requirements.txt](requirements.txt) | 固定当前版本、模型下载与设备分配依赖；vLLM 当前按加速入口单独安装 |
 | [requirements-vllm.txt](requirements-vllm.txt) | 兼容入口，仅通过 `-r requirements.txt` 引用同一份依赖，无需重复安装 |
 
-主文件使用官方 **vLLM 0.11.0+cu129** wheel，并精确固定你已安装的六个版本：
+本项目选择官方 **vLLM 0.11.0+cu129** wheel；requirements 保留其注释直链供参考，并精确固定你已安装的六个版本：
 
 ```text
 torch==2.8.0+cu129
@@ -110,6 +117,7 @@ python capstone/quantization_profiling/scripts/collect_environment.py \
   --output out/quantization_profiling/vllm-env/environment.before-install.json
 
 python -m pip install -r capstone/quantization_profiling/requirements.txt
+# 若尚未安装 vLLM，先执行下方“vLLM 加速安装”章节的命令，再继续验证。
 python -m pip check
 
 # 核验 Python 模块和 CUDA，不下载或加载模型。
@@ -122,7 +130,7 @@ python capstone/quantization_profiling/scripts/collect_environment.py \
   --output out/quantization_profiling/vllm-env/environment.json
 ```
 
-如需从零重建环境，可先运行下面两行，再执行上面的安装与验证流程；同一份 requirements 会安装相同的六个基础版本和 vLLM。
+如需从零重建环境，可先运行下面两行，再执行上面的安装与验证流程；同一份 requirements 会安装相同的六个基础版本，vLLM 再按加速入口单独安装。
 
 ```bash
 python3.11 -m venv .venv-vllm
@@ -153,7 +161,29 @@ python -c "import torch, vllm, vllm._C; print('torch:', torch.__version__, 'CUDA
 
 `VLLM_SHA256` 取自 [vLLM 0.11.0 官方发布资产](https://github.com/vllm-project/vllm/releases/expanded_assets/v0.11.0)，pip 会校验下载的 wheel。若 `ghfast.top` 较慢，可将 `VLLM_WHEEL` 开头的 `https://ghfast.top/` 替换为 `https://gh-proxy.com/`，保留后面的官方文件路径和 SHA256。代理速度以目标机实际网络为准；包和扩展导入通过后，仍需执行真实模型生成验证。
 
-该命令用于单独安装 vLLM 及其依赖；ModelScope、Accelerate 等完整项目依赖仍以 [requirements.txt](requirements.txt) 为准。requirements 保留官方 wheel 直链，后续直接执行 `pip install -r` 时仍可能访问 GitHub。
+该命令用于单独安装 vLLM 及其依赖；ModelScope、Accelerate 等完整项目依赖仍以 [requirements.txt](requirements.txt) 为准。requirements 中的官方 wheel 直链目前保持注释；若启用该行，`pip install -r` 会使用官方 GitHub 地址。
+
+### ModelScope 启动报错：缺少 pkg_resources
+
+当目标环境使用 `modelscope==1.31.0` 和 `setuptools==84.0.0` 时，执行 `modelscope download` 会在导入插件管理模块时出现 `ModuleNotFoundError: No module named 'pkg_resources'`。ModelScope 1.31.0 仍依赖该模块，而 [setuptools 从 82.0.0 起已移除它](https://setuptools.pypa.io/en/latest/history.html#v82-0-0)。本项目在 requirements 中固定 `setuptools==80.9.0`，提供该旧接口并避免后续安装再次选中不兼容版本。
+
+在目标机已激活的 `cutedsl-venv` 中执行下面的最小修复命令，再验证 CLI：
+
+```bash
+python -m pip install "setuptools==80.9.0" \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+python -c "import importlib.metadata as m; import pkg_resources; print('setuptools:', m.version('setuptools')); print('pkg_resources:', pkg_resources.__file__)"
+modelscope download --help
+python -m pip check
+
+# CLI 验证通过后，用相同参数重试；已完成的模型仍会跳过。
+bash capstone/quantization_profiling/scripts/download_models.sh \
+  --model Qwen/Qwen3-8B \
+  --model Qwen/Qwen3-8B-AWQ
+```
+
+`pkg_resources` 仍可能打印弃用警告；警告与模块缺失异常不同。下载失败留下的同来源目录缺少完成标记，脚本会重新调用 ModelScope 重试/续传，无需手动删除目录。
 
 ## 模型下载与环境检测
 
@@ -178,7 +208,7 @@ bash capstone/quantization_profiling/scripts/download_models.sh --dry-run
 bash capstone/quantization_profiling/scripts/download_models.sh
 ```
 
-下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；配置与服务脚本仍待实现。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
+下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，FP8（选做）为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用，后续模型配置和服务启动入口使用对应的本地路径；YAML 配置与 serve.sh 仍待实现；当前运行入口见后文。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
 
 **一次下载多个模型**：重复传入 `--model`，按顺序处理；只列出需要的模型。下面以 BF16 和 AWQ 为例，已有 `Qwen3-8B` 非空目录时显示 `SKIP`，继续下载缺失的 `Qwen3-8B-AWQ`。
 
@@ -236,6 +266,48 @@ python -m unittest discover -s capstone/quantization_profiling/tests -p "test_do
 
 本地验证环境为 Windows/RTX 5060，已验证只读采集与缺包诊断；目标 4090D 环境尚待运行以上命令。当前脚本不加载模型，也未执行真实权重下载。
 
+## 运行已下载的模型
+
+通用入口为 [scripts/run_model.py](scripts/run_model.py)，支持 Transformers、vLLM 本地生成，以及 vLLM HTTP 服务。先激活目标环境；vLLM 当前在 requirements 中保持注释，需要使用上面的加速安装命令单独安装。
+
+```bash
+# 先检查模板、thinking 开关和输入 token，不加载权重。
+python capstone/quantization_profiling/scripts/run_model.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --thinking off --tokenize-only --prompt "请解释 KV cache。"
+
+# 使用 vLLM 生成一条短回答；默认上下文 2048、调度序列上限 1、eager 执行。
+CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
+  --backend vllm --model /workspace/weights_pub/Qwen3-8B \
+  --dtype bfloat16 --thinking off --max-new-tokens 128 \
+  --prompt "请用三句话解释 prefill 和 decode。" \
+  --output out/quantization_profiling/vllm-smoke.json
+
+# 上一进程退出后，用 Transformers 跑同一问题。
+CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
+  --backend transformers --model /workspace/weights_pub/Qwen3-8B \
+  --dtype bfloat16 --thinking off --max-new-tokens 128 \
+  --prompt "请用三句话解释 prefill 和 decode。" \
+  --output out/quantization_profiling/transformers-smoke.json
+
+# 启动常驻服务；prompt、thinking、生成长度由客户端请求设置。
+CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
+  --backend vllm --serve --model /workspace/weights_pub/Qwen3-8B \
+  --dtype bfloat16 --host 0.0.0.0 --port 7081 --served-model-name local-model
+```
+
+从另一台机器执行远程接口测试（SERVER_IP 替换为服务器实际 IP）：
+
+```bash
+python capstone/quantization_profiling/scripts/test_server.py --base-url http://SERVER_IP:7081 --model local-model --stream --output out/quantization_profiling/remote-api-check.json
+```
+
+服务默认监听 `0.0.0.0:7081`；客户端访问 `http://SERVER_IP:7081`。测试脚本只使用 Python 标准库，默认检查 `GET /health`、`GET /v1/models` 和 `POST /v1/chat/completions`；`--stream` 会额外检查 SSE，`--check-only` 只检查前两项。接口说明和更多远程参数见 [教程第 5 节](docs/model_running.md#5-启动-http-服务并用-python-调用)。
+
+默认 vLLM 显存预算为物理总显存的 0.75，单步 token 预算为 2048，并启用 chunked prefill。实际能否运行需由目标机验证；本地生成耗时用于 smoke test，不作为正式性能结果。用户已确认模型下载完成，当前脚本验证覆盖命令与离线行为，尚未在目标 4090D 上运行真实模型。
+
+完整说明见 [模型运行与 vLLM / Transformers 详细教程](docs/model_running.md)：包括 AWQ、批量和多轮输入、参数对照、两个库的独立 Python 示例、HTTP 客户端、流式输出与显存排错。
+
 ## 核心实验约定
 
 - 模型固定为 Qwen3-8B；优先使用 4090D 单卡，其他设备独立记录。模型、tokenizer、chat template、thinking 开关、生成参数和 runtime 版本均需锁定。
@@ -249,4 +321,4 @@ python -m unittest discover -s capstone/quantization_profiling/tests -p "test_do
 
 能够从环境与数据指纹出发，复跑一个 BF16/W4A16 配对 case，并追溯到原始性能记录、质量逐题结果、trace 和最终结论。报告必须解释至少一个真实瓶颈，并说明量化为何在某些负载上有效或无效；性能与质量结论均以实测为准。
 
-官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型服务与基准测试的实测命令待后续实现时补充。
+官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型运行与服务调用见 [详细教程](docs/model_running.md)，固定 workload 的正式基准测试后续实现。

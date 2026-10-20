@@ -1,6 +1,6 @@
 # P1：Qwen3-8B 量化与性能诊断学习规划
 
-更新日期：2026-10-19。已完成规划、文件骨架、ModelScope 下载脚本和并行环境检测脚本；P1-01 工具实现中，目标机验证及模型实验待执行。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
+更新日期：2026-10-20。已完成规划、文件骨架、下载与环境检测工具，并新增通用模型运行入口和库用法教程；用户已确认目标机模型下载成功，真实生成、服务与正式实验仍待验证。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把计划日期经过、文件存在或阅读完成等同于实验通过。
 
 ## 1. 项目目标与范围
 
@@ -17,7 +17,7 @@
 | 质量 | 100 条固定留出任务、逐题判分；独立语料 PPL 选做 |
 | 暂缓 | 多框架完整对比、训练/微调、自写量化 kernel、INT8/FP8 全矩阵、多卡和跨平台迁移；分别留给后续案例或选做 |
 
-首轮已完成规划与空文件骨架。现阶段按用户要求实现 download_models.sh 与 collect_environment.py，并同步使用说明；其余 YAML、服务/评测脚本、真实数据和报告保持待实现。下载脚本尚未实际拉取权重，目标 4090D 机器待执行环境检测，不能据此标记 S0 完成。
+首轮已完成规划与空文件骨架。现阶段实现 download_models.sh、collect_environment.py 和 run_model.py，配套 [模型运行与库用法教程](docs/model_running.md)。run_model.py 提供不依赖 YAML 的本地生成与 vLLM HTTP 服务入口，默认监听 0.0.0.0:7081；test_server.py 提供远程接口 smoke test；其余 YAML、serve.sh、正式评测脚本、真实数据和报告保持待实现。用户已确认目标机模型下载成功，真实模型运行和快照仍需目标机验证，不能据此标记 S0 完成。
 
 ## 2. 学习内容与依赖路径
 
@@ -187,14 +187,16 @@
 
 ## 6. 文件职责与后续实现顺序
 
-下载与环境采集已有初版；其余行仍为后续接口约定。当前实现与目标能力的差异在对应行标明。先打通一条短请求闭环，再扩展矩阵，不一次实现全部选做功能。
+下载、环境采集与通用运行入口已有初版；其余行仍为后续接口约定。当前实现与目标能力的差异在对应行标明。先打通一条短请求闭环，再扩展矩阵，不一次实现全部选做功能。
 
 | 文件 | 后续职责 / 输入 | 后续输出与验收 |
 | --- | --- | --- |
 | configs/bf16.yaml | 模型/revision、BF16、tokenizer/模板/thinking、服务/生成参数、KV/Graph/后端 | 能还原 BF16 服务，默认值显式记录，无本机密钥 |
 | configs/awq.yaml | 量化权重/revision、基础模型关联、格式/位宽/group size、实际激活/KV dtype、校准来源 | AWQ 主路径可核验；格式与运行参数不混淆；GPTQ 替代使用单独明确命名的配置 |
 | configs/workloads.yaml | 五组长度、并发、预热、请求数、轮数、seed、缓存/到达模式、超时和输出规则 | 两种精度共享负载定义与请求顺序 |
-| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B，默认根目录 /workspace/weights_pub；支持多模型批量、跳过已有模型、预览和失败重试；目标机真实下载待执行 |
+| scripts/download_models.sh | 已实现：ModelScope 下载；模型 ID、可选 revision、下载目录 | 下载完整仓库；默认 Qwen3-8B，默认根目录 /workspace/weights_pub；支持多模型批量、跳过已有模型、预览和失败重试；用户已确认目标机下载成功 |
+| scripts/run_model.py | 已实现：本地模型路径、backend、prompt/messages、模板/thinking、生成与显存参数 | Transformers/vLLM 本地生成、token 检查、JSON 运行记录、vLLM HTTP 服务；尚未在目标 GPU 上验证，不作为正式 benchmark |
+| scripts/test_server.py | 已实现：远程 base URL、模型别名、请求参数与可选 API Key 环境变量 | 健康/模型列表、非流式与可选 SSE 检查、JSON 结果及失败退出码；客户端无 GPU 依赖，真实远程连通性待验证 |
 | scripts/collect_environment.py | 已实现：当前 Python、依赖版本、GPU/驱动、PyTorch/CUDA、nvcc/Nsight 并行探测 | 终端打印，可选 environment.json；默认核对 4090D/20 GiB，缺失和超时有诊断；模型 revision/模板/hash 快照后续补充 |
 | scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
 | scripts/serve.sh | 已实现的配置和启动模式 | 启动命令、日志、就绪/失败状态；BF16/W4A16 分进程运行，profiling 与正常模式区分 |
@@ -244,7 +246,7 @@ Project1_Report.md 在实验完成后填写以下内容，本次不写入报告�
 
 | 任务 | 核心通过标准 | 当前状态 |
 | --- | --- | --- |
-| P1-01 | revision、版本、模板/thinking/seed、环境/启动信息齐全；代表请求可复现 | 进行中：下载与检测工具已实现，目标机/模型待验证 |
+| P1-01 | revision、版本、模板/thinking/seed、环境/启动信息齐全；代表请求可复现 | 进行中：用户已确认下载完成；运行与服务入口已实现，目标机生成待验证 |
 | P1-02 | 5 组长度均有结果或失败证据；共同成功格预热后至少 3 轮，实际 token/中位数/p95/错误/显存齐全 | 未开始 |
 | P1-03 | nsys 能解释阶段；ncu 抽样 3 个代表热点；至少一个热点具备证据与优化假设 | 未开始 |
 | P1-04 | 至少一条 W4A16 路径稳定生成；量化来源/参数/kernel 明确；同输入和协议对照 | 未开始 |

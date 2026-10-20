@@ -20,6 +20,8 @@ torchvision==0.23.0+cu129
 xformers==0.0.32.post1; sys_platform == "linux" and platform_machine == "x86_64"
 
 # Missing utilities: model download CLI and Transformers device_map="auto".
+# ModelScope 1.31.0 imports pkg_resources; Setuptools 82+ removed it.
+setuptools==80.9.0
 modelscope==1.31.0
 accelerate==1.11.0
 
