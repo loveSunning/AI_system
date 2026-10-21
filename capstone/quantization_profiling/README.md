@@ -4,6 +4,8 @@
 
 **当前状态：远程流式生成已验证；本周数据准备与 BF16 benchmark 已实现，目标机正式实验待执行。** 已补固定负载/配置、100 条质量任务与判分器、自动服务管理、三轮测试、显存/失败记录及汇总入口。AWQ 配置与后续量化诊断仍待实施。
 
+**FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；量化依赖单独安装，原推理依赖保持不变。
+
 **本周执行入口：[第一周完整运行与验收说明](docs/week1_execution.md)。** 原有短请求测试用于连通性检查；正式性能结果请使用新 benchmark 流程。
 
 ## 从哪里开始
@@ -33,10 +35,12 @@ capstone/quantization_profiling/
 ├── README.md                       # 项目入口与验收概览
 ├── planning.md                     # 学习路径、实施顺序与评测约定
 ├── requirements.txt                # 固定基础/工具依赖；vLLM 另用加速入口安装
+├── requirements-quantization.txt   # 独立量化环境：LLM Compressor FP8_BLOCK
 ├── requirements-vllm.txt           # 兼容入口，引用 requirements.txt
 ├── docs/
 │   ├── model_running.md            # 本地推理、HTTP 服务与两个库的详细教程
-│   └── week1_execution.md           # 第一周协议、目标机命令与验收
+│   ├── week1_execution.md           # 第一周协议、目标机命令与验收
+│   └── fp8_quantization.md          # 自行制作分块 FP8、环境与产物验证
 ├── configs/
 │   ├── bf16.yaml                   # 已实现：BF16 服务配置（JSON 格式的 YAML）
 │   ├── awq.yaml                    # 待实现：AWQ/W4A16 配置与权重信息
@@ -47,6 +51,7 @@ capstone/quantization_profiling/
 │   ├── run_model.py                # 已实现：vLLM/Transformers、token 检查与 HTTP 服务
 │   ├── test_server.py              # 已实现：远程接口、并发测试、指标和自动日志
 │   ├── profiling_middleware.py     # 已实现：服务端 JSON/SSE 耗时与吞吐量扩展
+│   ├── quantize_fp8.py             # 已实现：FP8_BLOCK 转换、产物校验与指纹
 │   ├── prepare_workloads.py        # 已实现：请求准备、token 校验与数据指纹
 │   ├── serve.sh                    # 已实现：BF16 服务启动便捷入口
 │   ├── benchmark.py                # 已实现：自动服务管理、正式压测、显存与失败记录
@@ -57,6 +62,7 @@ capstone/quantization_profiling/
 │   ├── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
 │   ├── test_run_model.py           # 模板、token 预算、输出切片与入口行为
 │   ├── test_server_client.py       # 本地 HTTP，验证并发、日志、指标与错误处理
+│   ├── test_quantize_fp8.py         # FP8 源/产物校验、路径保护与失败留档
 │   └── test_profiling_middleware.py # ASGI JSON/SSE 指标、并发隔离和流式转发
 ├── log/                            # 自动生成 .log / .jsonl / .json；运行产物不提交 Git
 ├── data/
@@ -342,4 +348,19 @@ python capstone/quantization_profiling/scripts/test_server.py \
 
 能够从环境与数据指纹出发，复跑一个 BF16/W4A16 配对 case，并追溯到原始性能记录、质量逐题结果、trace 和最终结论。报告必须解释至少一个真实瓶颈，并说明量化为何在某些负载上有效或无效；性能与质量结论均以实测为准。
 
-官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型运行与服务调用见 [详细教程](docs/model_running.md)，固定 workload 的正式基准测试后续实现。
+官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型运行与服务调用见 [详细教程](docs/model_running.md)，固定 workload 的正式 BF16 基准测试见 [第一周执行说明](docs/week1_execution.md)。
+
+## 自行制作 Qwen3-8B 分块 FP8
+
+详见 [完整说明](docs/fp8_quantization.md)。先在独立量化环境安装 requirements-quantization.txt，再运行：
+
+```bash
+python capstone/quantization_profiling/scripts/quantize_fp8.py --dry-run
+python capstone/quantization_profiling/scripts/quantize_fp8.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --output /workspace/weights_pub/Qwen3-8B-FP8-local --device cpu
+python capstone/quantization_profiling/scripts/quantize_fp8.py \
+  --output /workspace/weights_pub/Qwen3-8B-FP8-local --verify-only
+```
+
+权重为 E4M3、128×128 分块；激活动态按每 token 的 128 通道分组。无需任务校准集。导出 quant_method 为 compressed-tensors，不手动改为官方原生 fp8。默认 CPU 转换以避免约20GiB空闲显存的峰值限制，仍需足够主存；可显式 --device cuda:0。输出目录必须不存在；失败留档后换新目录重试。转换完回到原 vLLM 环境，用 run_model.py 加载。真实8B转换、质量及目标GPU推理尚待验收。
