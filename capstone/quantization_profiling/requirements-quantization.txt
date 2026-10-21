@@ -1,10 +1,12 @@
-# Separate conversion environment only: do not install into the vLLM baseline venv.
+# CPU conversion environment only: do not install into the vLLM baseline venv.
 # llmcompressor 0.8.1 release declares Transformers <=4.56.2 and Accelerate <=1.10.1.
 # Keep the inference environment's Transformers 4.57.6 / Accelerate 1.11.0 unchanged.
---extra-index-url https://download.pytorch.org/whl/cu129
+# Pin +cpu explicitly: Linux PyPI mirrors may otherwise select a CUDA build.
+# Ordinary dependencies can use Tsinghua via pip -i; CPU torch comes from this index.
+--extra-index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
 llmcompressor==0.8.1
 compressed-tensors==0.12.2
-torch==2.8.0+cu129
+torch==2.8.0+cpu
 transformers==4.56.2
 accelerate==1.10.1
 tokenizers==0.22.2

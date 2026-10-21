@@ -40,7 +40,7 @@ scale 实际 dtype 以文件为准，BF16 加载时工具可能生成 BF16 scale
 
 - LLM Compressor 0.8.1。
 - compressed-tensors 0.12.2。
-- PyTorch 2.8.0+cu129。
+- PyTorch **2.8.0+cpu**，用于 CPU 离线转换，不下载 CUDA 运行库。
 - Transformers 4.56.2、Accelerate 1.10.1。
 
 原因是 LLM Compressor 0.8.1 的 release 依赖声明要求 Transformers ≤4.56.2、Accelerate ≤1.10.1。不能强制安装到原推理环境，不能使用 `--no-deps` 忽略冲突。本项目原 requirements.txt 不作修改。
@@ -55,9 +55,38 @@ python -m pip install \
   -r capstone/quantization_profiling/requirements-quantization.txt \
   -i https://pypi.tuna.tsinghua.edu.cn/simple
 python -m pip check
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
 ```
 
-requirements-quantization.txt 已配置 PyTorch 官方 cu129 附加源。清华源用于普通依赖。量化环境不需要安装 vLLM；完成转换后回到原来的推理环境加载。
+预期分别输出 `2.8.0+cpu`、`None`、`False`。即使机器安装了 4090D 和 NVIDIA 驱动，CPU 版环境也应显示 CUDA 不可用。这不影响量化产物随后在另一个 GPU 环境中运行。
+
+requirements-quantization.txt 已改为固定 `torch==2.8.0+cpu`，并配置上海交大 PyTorch CPU 镜像作为附加源；普通依赖可使用清华镜像。**不能只把版本改成 `torch==2.8.0` 并仅指定清华源，就认定下载的是 CPU 版**：Linux 上普通 PyPI 构建可能依赖 CUDA 库。显式 `+cpu` 可以避免误选。
+
+如果已经在独立量化环境装了旧的 CUDA 版 torch，激活该环境后重新执行上述 requirements 安装命令即可切换；旧 CUDA 依赖包可能仍保留，但不会被 CPU 版 torch 使用。不要在 `(cutedsl-venv)` 中执行这次切换。
+
+量化环境不需要安装 vLLM、torchvision 或 torchaudio；完成转换后回到原来的 GPU 推理环境加载。CPU wheel 使用单独的 [上海交大 PyTorch 镜像](https://mirror.sjtu.edu.cn/docs/pytorch-wheels)，普通包使用清华源：
+
+```text
+CPU torch: https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
+其它依赖:  https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+已核对该镜像包含 `torch-2.8.0+cpu` 的 Python 3.10/Linux x86_64 wheel，并通过小范围 HTTP 读取确认返回真实 wheel 数据；实际下载速度取决于网络。若镜像不可用，将 requirements-quantization.txt 中的附加源一行替换为官方 CPU 源后重试：
+
+```text
+--extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+也可以先单独安装 CPU torch，再执行 requirements 命令补其它依赖：
+
+```bash
+python -m pip install "torch==2.8.0+cpu" \
+  --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
+```
+
+切勿在 Linux 上仅使用清华 PyPI 源安装不带 `+cpu` 的 torch，然后认定它是 CPU 构建。
+
+CPU 构建和下载方式以 [PyTorch 2.8.0 官方安装说明](https://pytorch.org/get-started/previous-versions/#v280) 与 [CPU wheel 索引](https://download.pytorch.org/whl/cpu/torch/) 为依据。
 
 ## 3. 预检与正式转换
 
@@ -80,7 +109,9 @@ python capstone/quantization_profiling/scripts/quantize_fp8.py \
 
 默认就是 CPU。这一步只做权重统计、缩放、FP8 cast 和保存，不执行 FP8 模型前向，因此不需要 CPU 支持原生 FP8 MMA。需要足够的主机内存容纳源 BF16 模型、临时张量和保存过程副本；8.2B BF16 权重约 15GiB，实际峰值会更高。CPU 转换速度与主机内存占用须在你的目标机验证。
 
-CPU 内存不足或希望使用 GPU，可单独尝试：
+如果希望使用 GPU，必须另建安装了 **CUDA 版 PyTorch** 的量化环境。上面默认的 CPU 版环境不能使用 `--device cuda:0`，不要把此命令直接接在 CPU 安装流程后执行。
+
+在已有独立 CUDA 量化环境（LLM Compressor 0.8.1、compressed-tensors 0.12.2、Transformers 4.56.2、Accelerate 1.10.1、torch 2.8.0+cu129）中，才可单独尝试：
 
 ```bash
 python capstone/quantization_profiling/scripts/quantize_fp8.py \
@@ -178,7 +209,7 @@ python capstone/quantization_profiling/scripts/run_model.py \
 
 ## 6. 实现与验证边界
 
-本地验证使用标准库测试 safetensors 结构、路径/覆盖保护、完整层清单、scale 值和错误留档；当前本地没有 torch、LLM Compressor 或目标 4090D，尚未进行真实 8B 转换及 GPU 加载。这里的固定版本来自官方 release 依赖与代码核对，目标机仍需 pip check、实际转换和推理验收。
+本地验证使用标准库测试 safetensors 结构、路径/覆盖保护、完整层清单、scale 值和错误留档；CPU 默认依赖、镜像索引和 wheel 小范围数据已核对，未完整下载或安装 torch；当前本地没有 torch、LLM Compressor 或目标 4090D，尚未进行真实 8B 转换及 GPU 加载。这里的固定版本来自官方 release 依赖与代码核对，目标机仍需 pip check、实际转换和推理验收。
 
 参考固定版本资料：
 

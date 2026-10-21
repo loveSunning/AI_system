@@ -294,7 +294,7 @@ Project1_Report.md 在实验完成后填写以下内容，本次不写入报告�
 
 ## 新增实践：自行制作分块 FP8（2026-10-21）
 
-在保留 BF16/AWQ 主对照的基础上，增加 BF16→FP8_BLOCK 的独立扩展。已提供 scripts/quantize_fp8.py 与 [执行说明](docs/fp8_quantization.md)，量化环境使用 requirements-quantization.txt，避免改动已跑通的推理依赖。
+在保留 BF16/AWQ 主对照的基础上，增加 BF16→FP8_BLOCK 的独立扩展。已提供 scripts/quantize_fp8.py 与 [执行说明](docs/fp8_quantization.md)，量化环境使用 requirements-quantization.txt（默认 torch 2.8.0+cpu，普通依赖可用清华镜像，CPU wheel 使用专用源），避免改动已跑通的推理依赖。
 
 学习目标：理解静态128×128权重分块、动态每token/128通道激活缩放、scale精度、compressed-tensors导出与实际kernel的关系。先完成无数据RTN转换和静态产物校验，再在原vLLM0.11.0环境验证生成。将源模型revision/文件hash、配方、依赖、日志、目标权重hash关联保存。
 

@@ -4,7 +4,7 @@
 
 **当前状态：远程流式生成已验证；本周数据准备与 BF16 benchmark 已实现，目标机正式实验待执行。** 已补固定负载/配置、100 条质量任务与判分器、自动服务管理、三轮测试、显存/失败记录及汇总入口。AWQ 配置与后续量化诊断仍待实施。
 
-**FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；量化依赖单独安装，原推理依赖保持不变。
+**FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；量化依赖单独安装，默认使用 `torch==2.8.0+cpu`；原推理依赖保持不变。
 
 **本周执行入口：[第一周完整运行与验收说明](docs/week1_execution.md)。** 原有短请求测试用于连通性检查；正式性能结果请使用新 benchmark 流程。
 
@@ -352,7 +352,18 @@ python capstone/quantization_profiling/scripts/test_server.py \
 
 ## 自行制作 Qwen3-8B 分块 FP8
 
-详见 [完整说明](docs/fp8_quantization.md)。先在独立量化环境安装 requirements-quantization.txt，再运行：
+详见 [完整说明](docs/fp8_quantization.md)。默认使用 CPU 版 PyTorch 做离线转换；普通依赖用清华镜像，`2.8.0+cpu` wheel 使用 requirements 中的上海交大 PyTorch CPU 镜像（官方 CPU 源作为备用）。先建立独立环境：
+
+```bash
+python3 -m venv /workspace/venvs/qwen-fp8-quant
+source /workspace/venvs/qwen-fp8-quant/bin/activate
+python -m pip install \
+  -r capstone/quantization_profiling/requirements-quantization.txt \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip check
+```
+
+然后运行：
 
 ```bash
 python capstone/quantization_profiling/scripts/quantize_fp8.py --dry-run
@@ -363,4 +374,4 @@ python capstone/quantization_profiling/scripts/quantize_fp8.py \
   --output /workspace/weights_pub/Qwen3-8B-FP8-local --verify-only
 ```
 
-权重为 E4M3、128×128 分块；激活动态按每 token 的 128 通道分组。无需任务校准集。导出 quant_method 为 compressed-tensors，不手动改为官方原生 fp8。默认 CPU 转换以避免约20GiB空闲显存的峰值限制，仍需足够主存；可显式 --device cuda:0。输出目录必须不存在；失败留档后换新目录重试。转换完回到原 vLLM 环境，用 run_model.py 加载。真实8B转换、质量及目标GPU推理尚待验收。
+权重为 E4M3、128×128 分块；激活动态按每 token 的 128 通道分组。无需任务校准集。导出 quant_method 为 compressed-tensors，不手动改为官方原生 fp8。默认 CPU 转换以避免约20GiB空闲显存的峰值限制，仍需足够主存；`--device cuda:0` 仅适用于另建的 CUDA 量化环境，CPU 版环境不能使用。输出目录必须不存在；失败留档后换新目录重试。转换完回到原 vLLM 环境，用 run_model.py 加载。真实8B转换、质量及目标GPU推理尚待验收。
