@@ -28,13 +28,15 @@
 | 导出 | compressed-tensors，真实 `quant_method="compressed-tensors"` |
 | 输出路径 | `/workspace/weights_pub/Qwen3-8B-FP8-local` |
 
-官方原生权重使用 `weight_scale_inv` 等元数据；本工具使用 `weight_scale` 和 compressed-tensors 配置。两者数值方案接近，文件元数据不同。**不要把导出的 quant_method 手动改成 fp8，也不要擅自重命名 scale 或取倒数。** vLLM 0.11.0 已有 compressed-tensors BLOCK-FP8 加载路径，启动时让它自动识别。
+官方原生权重使用 `weight_scale_inv` 等元数据；本工具使用 `weight_scale` 和 compressed-tensors 配置。两者数值方案接近，文件元数据不同。**不要把导出的 quant_method 手动改成 fp8，也不要擅自重命名 scale 或取倒数。** vLLM 按保存的 compressed-tensors 配置选择加载器。旧 0.11.0 的这条分块 FP8 路径已遇到缺少 `orig_dtype` 的启动异常，推理验证使用 [README 中沿用 vllm-0112 目录的统一环境](../README.md#vllm-0112-统一量化与推理环境)。
 
 scale 实际 dtype 以文件为准，BF16 加载时工具可能生成 BF16 scale，不承诺与官方 FP32 scale 或舍入结果一致。官方公开的分块配置不足以保证逐位复现。质量需配对评测后判断。
 
-## 2. 独立量化环境
+## 2. 环境选择：统一环境与历史 CPU 配方
 
-你已跑通的推理环境保持 `torch 2.8.0+cu129 / Transformers 4.57.6 / vLLM 0.11.0`。下面的依赖只安装到独立量化环境。
+当前主线使用 [README 中的统一量化/推理环境](../README.md#vllm-0112-统一量化与推理环境)：vLLM 0.14.1、LLM Compressor 0.9.0.5、torch 2.9.1+cu128、Transformers 4.57.3、compressed-tensors 0.13.0；依赖文件为 [requirements-vllm-0112.txt](../requirements-vllm-0112.txt)。目录名 vllm-0112 沿用历史名称。完成该安装后可直接跳到第3节。
+
+以下保留旧的独立 CPU 方案，只安装到独立量化环境；不与统一环境混装。
 
 本脚本对应的固定版本为：
 
@@ -64,7 +66,7 @@ requirements-quantization.txt 已改为固定 `torch==2.8.0+cpu`，并配置上�
 
 如果已经在独立量化环境装了旧的 CUDA 版 torch，激活该环境后重新执行上述 requirements 安装命令即可切换；旧 CUDA 依赖包可能仍保留，但不会被 CPU 版 torch 使用。不要在 `(cutedsl-venv)` 中执行这次切换。
 
-量化环境不需要安装 vLLM、torchvision 或 torchaudio；完成转换后回到原来的 GPU 推理环境加载。CPU wheel 使用单独的 [上海交大 PyTorch 镜像](https://mirror.sjtu.edu.cn/docs/pytorch-wheels)，普通包使用清华源：
+量化环境不需要安装 vLLM、torchvision 或 torchaudio；完成转换后可切换到当前统一环境加载；安装命令见 [README](../README.md#vllm-0112-统一量化与推理环境)。CPU wheel 使用单独的 [上海交大 PyTorch 镜像](https://mirror.sjtu.edu.cn/docs/pytorch-wheels)，普通包使用清华源：
 
 ```text
 CPU torch: https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
@@ -109,9 +111,13 @@ python capstone/quantization_profiling/scripts/quantize_fp8.py \
 
 默认就是 CPU。这一步只做权重统计、缩放、FP8 cast 和保存，不执行 FP8 模型前向，因此不需要 CPU 支持原生 FP8 MMA。需要足够的主机内存容纳源 BF16 模型、临时张量和保存过程副本；8.2B BF16 权重约 15GiB，实际峰值会更高。CPU 转换速度与主机内存占用须在你的目标机验证。
 
-如果希望使用 GPU，必须另建安装了 **CUDA 版 PyTorch** 的量化环境。上面默认的 CPU 版环境不能使用 `--device cuda:0`，不要把此命令直接接在 CPU 安装流程后执行。
+如果希望使用 GPU，激活已按 README 升级完成的统一环境；它已经包含 CUDA torch 和 LLM Compressor。上面的独立 CPU 配方不能使用 `--device cuda:0`，不与该路线混用。
 
-在已有独立 CUDA 量化环境（LLM Compressor 0.8.1、compressed-tensors 0.12.2、Transformers 4.56.2、Accelerate 1.10.1、torch 2.8.0+cu129）中，才可单独尝试：
+```bash
+source /workspace/venvs/vllm-0112/bin/activate
+```
+
+在统一环境中执行：
 
 ```bash
 python capstone/quantization_profiling/scripts/quantize_fp8.py \
@@ -179,9 +185,15 @@ python capstone/quantization_profiling/scripts/quantize_fp8.py \
 
 这验证的是静态模型产物，不验证回答质量，也不等于目标 GPU 推理已通过。
 
-## 5. 回到原推理环境验证 vLLM
+## 5. 在统一环境中验证 vLLM
 
-转换进程结束后，激活你原先的 vLLM 环境，然后执行：
+依赖入口为 [requirements-vllm-0112.txt](../requirements-vllm-0112.txt)，已经同时包含量化和推理工具。实际版本是 vLLM 0.14.1、LLM Compressor 0.9.0.5、torch 2.9.1+cu128、Transformers 4.57.3 和 compressed-tensors 0.13.0；完整安装及切换命令见 [README](../README.md#vllm-0112-统一量化与推理环境)。
+
+转换进程结束后，已有本地 FP8 权重直接复用，无需因 `orig_dtype` 异常重新量化。从仓库根目录执行：
+
+```bash
+source /workspace/venvs/vllm-0112/bin/activate
+```
 
 ```bash
 python capstone/quantization_profiling/scripts/run_model.py \
@@ -205,7 +217,7 @@ python capstone/quantization_profiling/scripts/run_model.py \
 
 检查启动日志，确认 compressed-tensors 和引擎实际 dtype/量化方法；具体 GPU kernel 需要 Profiler 证据。随后复用 test_server.py 做连通性/指标检查。`run_model.py --model qwen3-8b-fp8-local` 是相同本地目录的别名。
 
-benchmark 现已支持本地产物，使用原推理环境和同一份 BF16 tokenizer 冻结请求：
+benchmark 已适配当前统一版本组合的预检，保留原 cutedsl 组合用于历史复现；不能混用新旧依赖。先完成短请求验证，再用同一新环境重测三模型，冻结请求继续共用 BF16 tokenizer。默认 FP8 配置指向 Qwen3-8B-FP8-local；GPU 转换输出到另一个目录时，需用修改了 model 路径的配置：
 
 ```bash
 # 五组负载，每组每轮5次预热、50次正式请求，默认1轮。
@@ -229,5 +241,7 @@ python capstone/quantization_profiling/scripts/benchmark.py --all-models --round
 - [LLM Compressor 0.8.1 的 Qwen3 FP8_BLOCK 示例](https://github.com/vllm-project/llm-compressor/blob/0.8.1/examples/quantization_w8a8_fp8/fp8_block_example.py)
 - [0.8.1 依赖约束](https://github.com/vllm-project/llm-compressor/blob/0.8.1/setup.py)
 - [compressed-tensors 0.12.2 的 FP8_BLOCK 定义](https://github.com/vllm-project/compressed-tensors/blob/0.12.2/src/compressed_tensors/quantization/quant_scheme.py)
-- [vLLM 0.11.0 的 compressed-tensors FP8 执行实现](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_fp8.py)
+- [vLLM 0.14.1 的 compressed-tensors FP8 加载实现](https://github.com/vllm-project/vllm/blob/v0.14.1/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_fp8.py)
 - [Qwen 官方 FP8 配置](https://huggingface.co/Qwen/Qwen3-8B-FP8/blob/main/config.json)
+
+当前统一环境还核对了 [LLM Compressor 0.9.0.5 官方发行元数据](https://pypi.org/pypi/llmcompressor/0.9.0.5/json) 与该 wheel 的 oneshot/QuantizationModifier API；真实8B转换及GPU推理仍需目标机验收。

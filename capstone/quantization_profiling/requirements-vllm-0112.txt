@@ -1,0 +1,33 @@
+# Unified quantization + inference environment at /workspace/venvs/vllm-0112.
+# The directory/file name is historical: the actual vLLM version is 0.14.1.
+# Target: Linux x86_64, Python 3.10-3.12, glibc >=2.31, NVIDIA driver supporting CUDA 12.9.
+# Install: python -m pip install --upgrade -r capstone/quantization_profiling/requirements-vllm-0112.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Intersection of official vLLM and LLM Compressor release requirements.
+vllm==0.14.1
+llmcompressor==0.9.0.5
+compressed-tensors==0.13.0
+torch==2.9.1+cu128
+transformers==4.57.3
+
+# Match torch and update packages left behind by vLLM 0.11.2.
+torchaudio==2.9.1+cu128
+torchvision==0.24.1+cu128
+xformers==0.0.33.post2; sys_platform == "linux" and platform_machine == "x86_64"
+triton==3.5.1; sys_platform == "linux" and platform_machine == "x86_64"
+
+# Preserve tokenizer/file-format versions where their constraints still match.
+tokenizers==0.22.2
+huggingface-hub==0.36.2
+safetensors==0.8.0
+
+# Quantization/model loading; numpy also satisfies vLLM's numba 0.61.2.
+accelerate==1.11.0
+datasets==4.4.1
+numpy==2.2.6
+
+# Do not combine with requirements.txt (old inference stack) or
+# requirements-quantization.txt (old CPU quantization stack).
+# No --no-deps or local vendor-source patch is needed for these declared versions.
+# Record the remaining transitive package versions with pip freeze.

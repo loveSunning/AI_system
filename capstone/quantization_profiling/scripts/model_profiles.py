@@ -87,7 +87,7 @@ def inspect_model_config(config):
 
 
 def resolve_runtime_options(config, dtype="auto", quantization="auto"):
-    """Choose matching vLLM 0.11 options for the supported weight formats.
+    """Choose matching options for the pinned legacy and unified vLLM stacks.
 
     AWQ-Marlin accepts BF16 on SM80+ (including 4090D); original ``awq`` only
     accepts FP16. Compressed-tensors FP8 retains its real loader metadata.

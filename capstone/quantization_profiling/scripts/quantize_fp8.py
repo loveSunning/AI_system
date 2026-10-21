@@ -350,7 +350,8 @@ def main(argv=None):
         missing = [p for p, v in plan["versions"].items() if v is None]
         if missing:
             raise RuntimeError("Missing quantization dependencies: " + ", ".join(missing)
-                               + ". Install requirements-quantization.txt in a separate environment")
+                               + ". In vllm-0112 install requirements-vllm-0112.txt (unified stack); "
+                               "the separate CPU recipe uses requirements-quantization.txt")
         args.log_dir.mkdir(parents=True, exist_ok=True)
         log_path = args.log_dir / ("quantize_fp8_" + run_id + ".log")
         file_handler = logging.FileHandler(log_path, encoding="utf-8")

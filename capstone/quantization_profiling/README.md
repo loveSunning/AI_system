@@ -4,7 +4,9 @@
 
 **当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
 
-**FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；量化依赖单独安装，默认使用 `torch==2.8.0+cpu`；原推理依赖保持不变。
+**FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；当前统一环境支持量化与推理；另保留 `torch==2.8.0+cpu` 的历史 CPU 量化方案。
+
+**统一量化与推理环境：** [沿用 vllm-0112 目录的安装方案](#vllm-0112-统一量化与推理环境)。目标组合为 vLLM 0.14.1、LLM Compressor 0.9.0.5；目标机安装、量化和推理仍需执行验收。
 
 **本周执行入口：[第一周完整运行与验收说明](docs/week1_execution.md)。** 原有短请求测试用于连通性检查；正式性能结果请使用新 benchmark 流程。
 
@@ -36,7 +38,7 @@ capstone/quantization_profiling/
 ├── planning.md                     # 学习路径、实施顺序与评测约定
 ├── requirements.txt                # 固定基础/工具依赖；vLLM 另用加速入口安装
 ├── requirements-quantization.txt   # 独立量化环境：LLM Compressor FP8_BLOCK
-├── requirements-vllm.txt           # 兼容入口，引用 requirements.txt
+├── requirements-vllm-0112.txt      # 统一量化/推理：vLLM 0.14.1 / LLM Compressor 0.9.0.5
 ├── docs/
 │   ├── model_running.md            # 本地推理、HTTP 服务与两个库的详细教程
 │   ├── week1_execution.md           # 第一周协议、目标机命令与验收
@@ -78,7 +80,7 @@ capstone/quantization_profiling/
 
 ## Python 依赖说明与安装
 
-本项目使用 [requirements.txt](requirements.txt) 固定你回传的已安装版本与 ModelScope、Accelerate 等工具依赖；当前 vLLM 行已注释，使用下方加速安装入口单独安装。下面列出的是安装前检测结果；六个已安装版本均已精确固定，安装后需复核一致性。SGLang 留给后续框架对照。
+本项目按环境使用独立的依赖入口：原 cutedsl-venv 使用 [requirements.txt](requirements.txt)，其中 vLLM 行保持注释，按旧版加速入口单独安装；新 vllm-0112 使用 [requirements-vllm-0112.txt](requirements-vllm-0112.txt)，已包含 vLLM 0.14.1、LLM Compressor 0.9.0.5 及固定的核心依赖。下面列出的是原环境安装前检测结果；新旧入口不要混用。SGLang 留给后续框架对照。
 
 | pip 包名 / 常见名称 | Python 导入名 | 安装前检测版本 | 在本项目中的用途 |
 | --- | --- | --- | --- |
@@ -95,14 +97,15 @@ capstone/quantization_profiling/
 
 CUDA 驱动、CUDA Toolkit/nvcc 属于系统环境，不能用一个名为“cuda”的 pip 包代替。环境采集脚本和它的 unittest 只用 Python 标准库，本身无需安装上述 GPU 依赖。
 
-### 统一依赖入口与版本
+### 原 cutedsl-venv 的依赖入口与版本
 
 | 文件 | 用途 |
 | --- | --- |
 | [requirements.txt](requirements.txt) | 固定当前版本、模型下载与设备分配依赖；vLLM 当前按加速入口单独安装 |
-| [requirements-vllm.txt](requirements-vllm.txt) | 兼容入口，仅通过 `-r requirements.txt` 引用同一份依赖，无需重复安装 |
 
-本项目选择官方 **vLLM 0.11.0+cu129** wheel；requirements 保留其注释直链供参考，并精确固定你已安装的六个版本：
+新环境另用 [requirements-vllm-0112.txt](requirements-vllm-0112.txt)，包含 vLLM 0.14.1 / torch 2.9.1+cu128 / LLM Compressor 0.9.0.5；安装方式见 [统一环境说明](#vllm-0112-统一量化与推理环境)。
+
+原 `cutedsl-venv` 环境选择官方 **vLLM 0.11.0+cu129** wheel；requirements 保留其注释直链供参考，并精确固定你已安装的六个版本：
 
 ```text
 torch==2.8.0+cu129
@@ -153,7 +156,7 @@ source .venv-vllm/bin/activate
 
 requirements 固定直接依赖，传递依赖的实际解析结果仍需通过 pip freeze 和环境 JSON 保存。安装通过后检查六个版本是否与安装前一致，再执行真实模型 smoke test。当前已核验官方依赖声明与 wheel 资产，尚未在你的 4090D 上安装或运行模型。
 
-### vLLM 加速安装
+### 原 vLLM 0.11.0 环境的加速安装
 
 当官方 GitHub wheel 下载较慢时，可通过第三方 GitHub 下载代理获取同一版本的文件。先激活目标 Python 环境，并按上方流程保存安装前快照，再执行以下 **Bash** 命令。vLLM wheel 使用代理地址，普通 PyPI 依赖使用清华源，CUDA 12.9 的 PyTorch 配套包仍使用官方 cu129 源；六个已安装版本继续精确固定。
 
@@ -176,6 +179,88 @@ python -c "import torch, vllm, vllm._C; print('torch:', torch.__version__, 'CUDA
 `VLLM_SHA256` 取自 [vLLM 0.11.0 官方发布资产](https://github.com/vllm-project/vllm/releases/expanded_assets/v0.11.0)，pip 会校验下载的 wheel。若 `ghfast.top` 较慢，可将 `VLLM_WHEEL` 开头的 `https://ghfast.top/` 替换为 `https://gh-proxy.com/`，保留后面的官方文件路径和 SHA256。代理速度以目标机实际网络为准；包和扩展导入通过后，仍需执行真实模型生成验证。
 
 该命令用于单独安装 vLLM 及其依赖；ModelScope、Accelerate 等完整项目依赖仍以 [requirements.txt](requirements.txt) 为准。requirements 中的官方 wheel 直链目前保持注释；若启用该行，`pip install -r` 会使用官方 GitHub 地址。
+
+### vllm-0112 统一量化与推理环境
+
+按用户选择，在同一环境中进行 BF16→FP8 量化和 vLLM 推理。沿用 `/workspace/venvs/vllm-0112` 目录及 requirements 文件名，执行下述安装后 **实际 vLLM 版本为 0.14.1**；目录名不再代表安装版本。原 `/opt/cutedsl-venv` 保留用于历史实验复现。
+
+固定版本的依据是两个工具的官方依赖交集，而不是强行忽略 pip 检查：
+
+| 包 | 原 vllm-0112 方案 | 统一环境 |
+| --- | --- | --- |
+| vllm | 0.11.2 | 0.14.1 |
+| llmcompressor | 未安装 | 0.9.0.5 |
+| torch | 2.9.0+cu128 | 2.9.1+cu128 |
+| compressed-tensors | 0.12.2 | 0.13.0 |
+| transformers | 4.57.6 | 4.57.3 |
+| tokenizers / huggingface-hub / safetensors | 0.22.2 / 0.36.2 / 0.8.0 | 保留 |
+| torchaudio / torchvision / xformers | 旧 torch 配套版本 | 2.9.1+cu128 / 0.24.1+cu128 / 0.0.33.post2 |
+| triton / accelerate / datasets / numpy | 按旧环境解析 | 3.5.1 / 1.11.0 / 4.4.1 / 2.2.6 |
+
+LLM Compressor 0.9.0.5 允许 torch 2.9.1 和 Transformers 4.57.3，并要求 compressed-tensors 0.13.0；vLLM 0.14.1 与其有交集。原 0.11.2 + 4.57.6 + compressed-tensors 0.12.2 无法直接补装该量化工具。新版仍使用 FP8_BLOCK 的 E4M3、128×128 权重分块和动态 128 通道激活；版本变化不保证产物逐位相同，源/产物 hash 与质量回归应重新记录。
+
+依赖入口为 [requirements-vllm-0112.txt](requirements-vllm-0112.txt)。普通依赖使用清华源，PyTorch CUDA wheel 使用文件内的官方 cu128 附加源。目标为 Linux x86_64、Python 3.10–3.12、glibc ≥2.31；官方 vLLM 默认 wheel 的 CUDA 构建为 12.9，torch 固定为官方 2.9.1+cu128，驱动需支持 vLLM 的 CUDA 构建。不要用 CPU torch 或另一个 CUDA 变体替换固定组合。
+
+在目标机仓库根目录执行；已有环境直接激活，没有该目录时先创建：
+
+```bash
+# 仅首次创建时执行
+python3 -m venv /workspace/venvs/vllm-0112
+source /workspace/venvs/vllm-0112/bin/activate
+cd /workspace/AI_system
+
+# 保存升级前依赖；升级命令会调整上表中的版本
+mkdir -p out/quantization_profiling/unified-env
+python -m pip freeze > out/quantization_profiling/unified-env/requirements.before.txt
+
+python -m pip install --upgrade pip \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip install --upgrade \
+  -r capstone/quantization_profiling/requirements-vllm-0112.txt \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+python -m pip check
+python -c "import torch, vllm, vllm._C, llmcompressor; print('torch:', torch.__version__); print('vllm:', vllm.__version__); print('llmcompressor:', llmcompressor.__version__); print('CUDA runtime:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
+python -c "from llmcompressor import oneshot; from llmcompressor.modifiers.quantization import QuantizationModifier; from compressed_tensors.quantization import preset_name_to_scheme; print(preset_name_to_scheme('FP8_BLOCK', ['Linear']).model_dump(mode='json'))"
+```
+
+本 requirements 包含量化工具，无需另建 GPU 量化环境。不要混装 requirements.txt（原推理环境）或 requirements-quantization.txt（原 CPU 量化配方），也不要使用 `--no-deps`。原环境留下的 xformers/torchvision/torchaudio 等包通过新文件中的配套 pins 一并更新。
+
+在同一环境中先量化、后推理，两个模型进程分别运行。输出目录必须尚不存在；先停止占显存的模型服务，约 20GiB 空闲显存仍需实际确认转换峰值：
+
+```bash
+python capstone/quantization_profiling/scripts/quantize_fp8.py --dry-run
+python capstone/quantization_profiling/scripts/quantize_fp8.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --output /workspace/weights_pub/Qwen3-8B-FP8-local-gpu \
+  --device cuda:0
+
+python capstone/quantization_profiling/scripts/run_model.py \
+  --model /workspace/weights_pub/Qwen3-8B-FP8-local-gpu \
+  --thinking off --prompt "请简要解释 KV cache。" --max-new-tokens 32
+
+python -m pip freeze > out/quantization_profiling/unified-env/requirements.lock.txt
+python capstone/quantization_profiling/scripts/collect_environment.py \
+  --output out/quantization_profiling/unified-env/environment.json
+```
+
+已有合格 FP8 产物可直接加载；无需仅因环境升级重做转换。`--device cpu` 也可在本环境中使用，但 CUDA 版 torch 不会因此变成 CPU wheel。默认 `fp8-local` 别名和 configs/fp8.yaml 仍指向 Qwen3-8B-FP8-local；测试上面的新 GPU 输出目录时显式指定模型路径，正式 benchmark 使用修改 model 路径后的单模型配置。
+
+切换环境：
+
+```bash
+# 当前统一量化/推理环境
+source /workspace/venvs/vllm-0112/bin/activate
+
+# 历史 cutedsl 环境；按需要分别执行 source 命令
+source /opt/cutedsl-venv/bin/activate
+echo "$VIRTUAL_ENV"
+which python
+```
+
+本地已用临时解析器验证 Python 3.10 / Linux x86_64 的完整依赖解析，共194个包；未在本机安装GPU包或执行目标机量化。benchmark 已增加这套完整统一版本组合的预检入口，并把实际组合写入 run.json；旧版组合保留历史复现。预检、依赖解析和模拟测试不等于目标 GPU 实测，先完成短请求验证，再在同一新环境重新建立 BF16/AWQ/FP8 对照，不能把跨版本差异全部归因于量化。
+
+依据：[vLLM 0.14.1 CUDA 依赖](https://github.com/vllm-project/vllm/blob/v0.14.1/requirements/cuda.txt)、[通用依赖](https://github.com/vllm-project/vllm/blob/v0.14.1/requirements/common.txt)、[LLM Compressor 0.9.0.5 发行元数据](https://pypi.org/pypi/llmcompressor/0.9.0.5/json)、[PyTorch 2.9.1 安装说明](https://pytorch.org/get-started/previous-versions/#v291)、[compressed-tensors 0.13.0 FP8_BLOCK 定义](https://github.com/vllm-project/compressed-tensors/blob/0.13.0/src/compressed_tensors/quantization/quant_scheme.py)。
 
 ### ModelScope 启动报错：缺少 pkg_resources
 
@@ -282,7 +367,7 @@ python -m unittest discover -s capstone/quantization_profiling/tests -p "test_do
 
 ## 运行已下载的模型
 
-通用入口为 [scripts/run_model.py](scripts/run_model.py)，支持 Transformers、vLLM 本地生成，以及 vLLM HTTP 服务。先激活原来的 GPU 推理环境；vLLM 当前在 requirements 中保持注释，需要时使用上面的加速安装命令。
+通用入口为 [scripts/run_model.py](scripts/run_model.py)，支持 Transformers、vLLM 本地生成，以及 vLLM HTTP 服务。按被测路线激活对应 GPU 推理环境；原 0.11.0 环境用于历史复现，本地 FP8 按上面的统一环境流程验证。
 
 `--model` 支持以下别名，也继续接受本地模型目录；`MODEL_ROOT` 可以修改别名对应的根目录。
 
@@ -357,6 +442,8 @@ python capstone/quantization_profiling/scripts/test_server.py \
 
 ## 三模型正式 benchmark
 
+正式执行接受原 cutedsl 完整版本组合或上面的统一环境组合，不允许混用两者；实际版本组合写入 run.json。本地 FP8 先按 [统一环境说明](#vllm-0112-统一量化与推理环境) 完成加载验证，再运行同环境三模型对照。以下参数可用，目标 GPU 结果仍需实测。
+
 先准备 BF16 tokenizer 的固定请求快照；已有 `data/frozen` 可以直接复用，不能覆盖。完整流程见 [执行说明](docs/week1_execution.md)。
 
 ```bash
@@ -422,4 +509,4 @@ python capstone/quantization_profiling/scripts/quantize_fp8.py \
   --output /workspace/weights_pub/Qwen3-8B-FP8-local --verify-only
 ```
 
-权重为 E4M3、128×128 分块；激活动态按每 token 的 128 通道分组。无需任务校准集。导出 quant_method 为 compressed-tensors，不手动改为官方原生 fp8。默认 CPU 转换以避免约20GiB空闲显存的峰值限制，仍需足够主存；`--device cuda:0` 仅适用于另建的 CUDA 量化环境，CPU 版环境不能使用。输出目录必须不存在；失败留档后换新目录重试。转换完回到原 vLLM 环境，用 run_model.py 加载。真实8B转换、质量及目标GPU推理尚待验收。
+权重为 E4M3、128×128 分块；激活动态按每 token 的 128 通道分组。无需任务校准集。导出 quant_method 为 compressed-tensors，不手动改为官方原生 fp8。默认 CPU 转换以避免约20GiB空闲显存的峰值限制，仍需足够主存；`--device cuda:0` 可在上面的统一环境中使用，独立 CPU 版环境不能使用。输出目录必须不存在；失败留档后换新目录重试。转换完可直接在统一环境中用 run_model.py 加载。真实8B转换、质量及目标GPU推理尚待验收。

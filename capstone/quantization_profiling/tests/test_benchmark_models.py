@@ -245,6 +245,19 @@ class BenchmarkModelsTests(unittest.TestCase):
         self.assertEqual(read(self.root / record["artifact_directory"] / "summary.json")["status"], "failed")
         stop.assert_called_once()
 
+    def test_unified_runtime_accepts_complete_stack_and_rejects_mixed_versions(self):
+        versions = {"torch": "2.9.1+cu128", "transformers": "4.57.3", "vllm": "0.14.1", "compressed-tensors": "0.13.0"}
+        with patch.object(bench.importlib.metadata, "version", side_effect=versions.__getitem__):
+            result = bench.check_runtime_versions()
+        self.assertEqual(result["name"], "unified-quantization-inference")
+        self.assertEqual(result["versions"]["compressed-tensors"], "0.13.0")
+        for package, wrong in (("torch", "2.9.0+cu128"), ("transformers", "4.57.6"),
+                               ("vllm", "0.11.2"), ("compressed-tensors", "0.12.2")):
+            mixed = dict(versions, **{package: wrong})
+            with self.subTest(package=package), patch.object(bench.importlib.metadata, "version", side_effect=mixed.__getitem__):
+                with self.assertRaises(ValueError):
+                    bench.check_runtime_versions()
+
     def test_bad_model_precheck_does_not_skip_remaining_models(self):
         snapshot, frozen = self.frozen()
         configs = [self.config(profile) for profile in ("bf16", "awq", "fp8-local")]

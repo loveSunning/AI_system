@@ -371,6 +371,21 @@ def run_case(config, protocol, case, items, directory, model):
     return record
 
 
+def check_runtime_versions():
+    """Accept complete pinned stacks, never a mixture of old/new versions."""
+    versions = {name: importlib.metadata.version(name) for name in ("torch", "transformers", "vllm")}
+    key = (versions["torch"], versions["transformers"], versions["vllm"].split("+")[0])
+    if key == ("2.8.0+cu129", "4.57.6", "0.11.0"):
+        return {"name": "legacy-cutedsl", "versions": versions}
+    if key == ("2.9.1+cu128", "4.57.3", "0.14.1"):
+        versions["compressed-tensors"] = importlib.metadata.version("compressed-tensors")
+        if versions["compressed-tensors"] != "0.13.0":
+            raise ValueError("Unified stack requires compressed-tensors==0.13.0")
+        return {"name": "unified-quantization-inference", "versions": versions}
+    raise ValueError("Unsupported runtime version combination: " + json.dumps(versions)
+                     + "; use requirements-vllm-0112.txt for the unified environment or the complete legacy stack")
+
+
 def positive_int(value):
     number = int(value)
     if number < 1:
@@ -410,11 +425,7 @@ def main(argv=None):
         return 0
     if sys.platform != "linux":
         p.error("Run managed GPU experiments on the Linux target host; use --plan-only locally")
-    for package, version in {"torch": "2.8.0+cu129", "transformers": "4.57.6"}.items():
-        if importlib.metadata.version(package) != version:
-            raise ValueError("Unexpected package version: " + package)
-    if importlib.metadata.version("vllm").split("+")[0] != "0.11.0":
-        raise ValueError("Protocol validated for vLLM 0.11.0")
+    runtime = check_runtime_versions()
     for config in configs:
         with socket.socket() as sock:
             sock.bind(("0.0.0.0", config["port"]))
@@ -422,6 +433,7 @@ def main(argv=None):
     directory = ROOT / "log" / ("benchmark_" + run_id)
     directory.mkdir(parents=True)
     run = {"schema_version": 2, "run_id": run_id, "started": now(),
+        "runtime": runtime,
         "models": [{"profile": c["profile"], "config": c, "model": None} for c in configs],
         "protocol": protocol, "snapshot_protocol": frozen_protocol,
         "manifest_sha256": digest(a.snapshot / "manifest.json"),

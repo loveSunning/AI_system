@@ -1,6 +1,8 @@
 # 本地模型运行与 vLLM / Transformers 学习指南
 
-目标环境：Linux、RTX 4090D、约 20 GiB 可用显存；vLLM 0.11.0、Transformers 4.57.6、torch 2.8.0+cu129。用户已提供 BF16 正式实验结果；本次新增的 AWQ/本地 FP8 路线仍需在该机器验证。
+目标环境：Linux、RTX 4090D、约20GiB可用显存。当前统一环境采用 vLLM 0.14.1、torch 2.9.1+cu128、Transformers 4.57.3 和 LLM Compressor 0.9.0.5；目录仍沿用 vllm-0112。用户提供的历史BF16结果来自原 vLLM 0.11.0/torch 2.8.0+cu129/Transformers 4.57.6，保留独立记录。
+
+安装、镜像和量化说明见 [统一环境入口](../README.md#vllm-0112-统一量化与推理环境)。旧0.11.0的本地分块FP8加载曾出现 orig_dtype 异常；当前代码的版本预检已接受完整统一组合，实际GPU转换、加载和性能仍需验证。
 
 入口为 [run_model.py](../scripts/run_model.py)。它支持本地文本因果语言模型：Transformers 入口运行未量化模型，vLLM 入口运行受该版本支持的普通/AWQ/FP8 模型。模型目录与量化配置必须对应；更换 `--dtype` 不会把 BF16 权重转换成 AWQ。视觉输入、工具调用和正式性能评测不属于这个入口。
 
@@ -206,7 +208,7 @@ print(tokenizer.decode(new_ids, skip_special_tokens=True))
 - decoder-only 模型批量生成时，脚本使用左 padding 和 attention mask。切回答时按整个 batch 的填充宽度切片，不按某一条未填充的 token 数切片。
 - `use_cache=True` 复用当前生成过程的 KV，不等于跨请求 prefix caching；权重 dtype、KV dtype、量化位宽也不是同一个参数。
 
-参考 [chat template 文档](https://huggingface.co/docs/transformers/v4.57.1/en/chat_templating)、[生成接口与 GenerationConfig](https://huggingface.co/docs/transformers/v4.57.1/en/main_classes/text_generation)。上述链接使用 4.57 系列文档；项目安装版本仍固定为 4.57.6。
+参考 [chat template 文档](https://huggingface.co/docs/transformers/v4.57.1/en/chat_templating)、[生成接口与 GenerationConfig](https://huggingface.co/docs/transformers/v4.57.1/en/main_classes/text_generation)。上述链接使用 4.57 系列文档；统一环境固定为 4.57.3，旧环境固定为 4.57.6。
 
 ## 4. vLLM：让推理引擎管理执行
 
