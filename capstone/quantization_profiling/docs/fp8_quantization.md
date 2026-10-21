@@ -203,7 +203,20 @@ python capstone/quantization_profiling/scripts/run_model.py \
   --dtype bfloat16 --host 0.0.0.0 --port 7081
 ```
 
-检查启动日志，确认 compressed-tensors 和实际 FP8 执行后端；随后复用 test_server.py 做连通性/指标检查。当前 benchmark.py 是严格 BF16 专用入口，会拒绝量化模型，不能仅替换路径拿它跑 FP8；正式量化性能矩阵需后续扩展。
+检查启动日志，确认 compressed-tensors 和引擎实际 dtype/量化方法；具体 GPU kernel 需要 Profiler 证据。随后复用 test_server.py 做连通性/指标检查。`run_model.py --model qwen3-8b-fp8-local` 是相同本地目录的别名。
+
+benchmark 现已支持本地产物，使用原推理环境和同一份 BF16 tokenizer 冻结请求：
+
+```bash
+# 五组负载，每组每轮5次预热、50次正式请求，默认1轮。
+python capstone/quantization_profiling/scripts/benchmark.py --model fp8-local
+
+# 轮数可选，先查看计划再运行三模型对照。
+python capstone/quantization_profiling/scripts/benchmark.py --all-models --rounds 2 --plan-only
+python capstone/quantization_profiling/scripts/benchmark.py --all-models --rounds 2
+```
+
+旧 100 请求快照可以直接复用，默认按固定顺序取前 50 个正式请求，各模型使用相同子集。请求数还可用 `--requests N` 修改，但不能超过快照可用记录数。BF16/AWQ/本地 FP8 分别启动、停止并留存日志，汇总时按模型和负载分组；详见 [完整执行说明](week1_execution.md)。本次实现尚未在目标 4090D 上完成三模型真实对照。
 
 模型能回答后，再对同一留出集做 BF16/官方 FP8/本地 FP8 三组评测，比较质量及独立的性能记录。官方自定义脚本与此配方的 scale 精度、舍入、保留层可能不同，不能提前宣称相同质量或速度。
 

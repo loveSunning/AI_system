@@ -20,6 +20,8 @@ import sys
 import time
 import traceback
 
+from model_profiles import inspect_model_config, resolve_model_alias, resolve_runtime_options
+
 
 DEFAULT_PROMPT = "请用三句话解释大模型推理中的 prefill 和 decode。"
 GENERATION_FLAGS = {
@@ -43,9 +45,8 @@ def parse_args(argv=None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--backend", choices=("vllm", "transformers"), default="vllm")
-    parser.add_argument("--model", default=str(
-        Path(os.environ.get("MODEL_ROOT", "/workspace/weights_pub")) / "Qwen3-8B"
-    ), help="local model directory; repository IDs are not downloaded")
+    parser.add_argument("--model", default="qwen3-8b",
+                        help="local directory or qwen3-8b/qwen3-8b-awq/qwen3-8b-fp8-local alias; MODEL_ROOT applies")
     parser.add_argument("--tokenizer", help="local tokenizer directory; defaults to --model")
     inputs = parser.add_mutually_exclusive_group()
     inputs.add_argument("--prompt", action="append", help="user text; repeat for independent requests")
@@ -75,7 +76,7 @@ def parse_args(argv=None):
     parser.add_argument("--enforce-eager", action=argparse.BooleanOptionalAction, default=True,
                         help="vLLM: disable CUDA Graph capture for the initial smoke test")
     parser.add_argument("--quantization", default="auto",
-                        help="vLLM quantization method, e.g. awq; auto reads model config")
+                        help="vLLM loader; auto selects AWQ-Marlin for AWQ and reads FP8 checkpoint metadata")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="Transformers only")
     parser.add_argument("--trust-remote-code", action="store_true",
                         help="allow custom Python code from the local model repository")
@@ -133,7 +134,7 @@ def local_directory(value, description):
 
 
 def resolve_paths(args):
-    args.model = local_directory(args.model, "Model")
+    args.model = local_directory(resolve_model_alias(args.model), "Model")
     args.tokenizer = local_directory(args.tokenizer or args.model, "Tokenizer")
     config_path = Path(args.model) / "config.json"
     if not config_path.is_file():
@@ -141,9 +142,14 @@ def resolve_paths(args):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise ValueError("config.json must contain an object")
-    if args.backend == "transformers" and config.get("quantization_config") and not args.tokenize_only:
+    args.model_profile = inspect_model_config(config)
+    args.model_quantization_config = config.get("quantization_config")
+    if args.backend == "transformers" and args.model_profile != "bf16" and not args.tokenize_only:
         raise ValueError("This Transformers entry point supports unquantized models. "
                          "Use --backend vllm for prequantized AWQ/FP8 weights.")
+    if args.backend == "vllm" and not args.tokenize_only:
+        options = resolve_runtime_options(config, args.dtype, args.quantization)
+        args.dtype, args.quantization = options["dtype"], options["quantization"]
     if not args.tokenize_only:
         # Enumerate only model weight names; no weight data is read here.
         has_weights = any(Path(args.model).glob("*.safetensors")) or any(
@@ -397,6 +403,10 @@ def main(argv=None):
     args = parse_args(argv)
     try:
         config = resolve_paths(args)
+        print(f"Model profile: {args.model_profile}; dtype: {args.dtype}; "
+              f"vLLM quantization option: {args.quantization}", flush=True)
+        print("Checkpoint quantization metadata:",
+              json.dumps(args.model_quantization_config, ensure_ascii=False, sort_keys=True), flush=True)
         if args.backend == "vllm" and not args.tokenize_only:
             # No torch.cuda calls in the parent before vLLM starts its workers.
             os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
@@ -441,6 +451,8 @@ def main(argv=None):
                 if key not in {"output", "prompt_file", "messages_file", "prompt"}
             },
             "model_type": config.get("model_type"),
+            "model_profile": args.model_profile,
+            "quantization_config": args.model_quantization_config,
             "model_config_sha256": hashlib.sha256(
                 (Path(args.model) / "config.json").read_bytes()
             ).hexdigest(),

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_model.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("quantization_run_model", SCRIPT)
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
@@ -156,6 +157,68 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prequantized"):
             runner.resolve_paths(self.args("--backend", "transformers"))
         runner.resolve_paths(self.args("--backend", "transformers", "--tokenize-only"))
+
+    def test_awq_offline_and_server_choose_same_bf16_marlin_loader(self):
+        (self.model_dir / "config.json").write_text(json.dumps({
+            "model_type": "qwen3", "quantization_config": {
+                "quant_method": "awq", "bits": 4, "group_size": 128, "zero_point": True,
+            },
+        }), encoding="utf-8")
+        args = self.args()
+        runner.resolve_paths(args)
+        self.assertEqual(args.model_profile, "awq")
+        self.assertEqual((args.dtype, args.quantization), ("bfloat16", "awq_marlin"))
+        offline = runner.vllm_engine_kwargs(args)
+        command = runner.server_command(args)
+        self.assertEqual(offline["quantization"], command[command.index("--quantization") + 1])
+        self.assertEqual(offline["dtype"], command[command.index("--dtype") + 1])
+        args = self.args("--quantization", "awq")
+        runner.resolve_paths(args)
+        self.assertEqual(args.dtype, "float16")
+        with self.assertRaisesRegex(ValueError, "float16 only"):
+            runner.resolve_paths(self.args("--quantization", "awq", "--dtype", "bfloat16"))
+
+    def test_compressed_fp8_never_forces_the_native_fp8_loader(self):
+        metadata = {"quant_method": "compressed-tensors", "config_groups": {"group_0": {
+            "weights": {"num_bits": 8, "type": "float", "strategy": "block", "block_structure": [128, 128]},
+            "input_activations": {"num_bits": 8, "type": "float", "dynamic": True},
+        }}}
+        (self.model_dir / "config.json").write_text(json.dumps({
+            "model_type": "qwen3", "quantization_config": metadata,
+        }), encoding="utf-8")
+        args = self.args()
+        runner.resolve_paths(args)
+        self.assertEqual(args.model_profile, "fp8-local")
+        self.assertEqual(args.dtype, "bfloat16")
+        self.assertNotIn("quantization", runner.vllm_engine_kwargs(args))
+        self.assertNotIn("--quantization", runner.server_command(args))
+        with self.assertRaisesRegex(ValueError, "compressed-tensors"):
+            runner.resolve_paths(self.args("--quantization", "fp8"))
+        output = self.root / "fp8-tokens.json"
+        with patch.dict(sys.modules, {"transformers": self.fake_transformers()}):
+            self.assertEqual(self.invoke("--tokenize-only", "--output", str(output)), 0)
+        record = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(record["model_profile"], "fp8-local")
+        self.assertEqual(record["quantization_config"], metadata)
+
+    def test_all_three_aliases_start_the_downloaded_local_model(self):
+        for alias, dirname, quant in (
+            ("qwen3-8b", "Qwen3-8B", None),
+            ("qwen3-8b-awq", "Qwen3-8B-AWQ", {"quant_method": "awq", "bits": 4}),
+            ("qwen3-8b-fp8-local", "Qwen3-8B-FP8-local", {"quant_method": "fp8", "fmt": "e4m3"}),
+        ):
+            with self.subTest(alias=alias):
+                directory = self.root / dirname
+                directory.mkdir()
+                (directory / "config.json").write_text(json.dumps({"model_type": "qwen3", "quantization_config": quant}), encoding="utf-8")
+                (directory / "model.safetensors").write_bytes(b"fake")
+                with patch.dict(runner.os.environ, {"MODEL_ROOT": str(self.root)}), \
+                     patch.object(runner.subprocess, "call", return_value=0) as call, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(runner.main(["--model", alias, "--serve"]), 0)
+                command = call.call_args.args[0]
+                self.assertEqual(command[command.index("--model") + 1], str(directory.resolve()))
+                self.assertEqual(command[command.index("--tokenizer") + 1], str(directory.resolve()))
 
     def test_repeated_prompts_are_independent_with_same_system(self):
         conversations = runner.load_conversations(self.args(

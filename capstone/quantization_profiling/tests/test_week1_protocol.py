@@ -87,7 +87,7 @@ class WeekOneTests(unittest.TestCase):
         config=read(ROOT/"configs/bf16.yaml"); protocol=read(ROOT/"configs/workloads.yaml")
         validate(config,protocol,{"config":{}})
         with self.assertRaises(ValueError): validate(config,protocol,{"config":{"quantization_config":{"quant_method":"awq"}}})
-        with self.assertRaises(ValueError): validate(config,dict(protocol,rounds=1),{"config":{}})
+        with self.assertRaises(ValueError): validate(config,dict(protocol,rounds=0),{"config":{}})
         self.assertIn("8320",launch_command(config,protocol["cases"][3]))
 
     def test_sse_middleware_to_benchmark_rounds_and_failure_records(self):

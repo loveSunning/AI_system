@@ -1,4 +1,5 @@
 {
+  "profile": "bf16",
   "model": "/workspace/weights_pub/Qwen3-8B",
   "dtype": "bfloat16",
   "quantization": null,
