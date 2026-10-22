@@ -525,6 +525,20 @@ python capstone/quantization_profiling/scripts/benchmark.py --all-models --round
 python capstone/quantization_profiling/scripts/benchmark.py --model bf16 --model awq
 ```
 
+**benchmark 的执行开关：** `--enforce-eager true/false`（也支持 `--enforce-eager` / `--no-enforce-eager`）覆盖本次配置；省略时沿用配置文件。`fp8-origin` 是 `fp8-official` 的别名。`--fp8-backend marlin` 在 vLLM 0.14.1 下请求原生 FP8 loader 的 **W8A16** 路线；当前本地 compressed-tensors FP8_BLOCK 不支持这个强制开关，会明确拒绝该组合。详细命令与格式边界见 [benchmark 模型、Marlin 与 eager 开关](docs/benchmark_backends.md)。
+
+```bash
+# 官方 FP8：强制 Marlin，允许 CUDA Graph，只选一个负载先验证。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --model fp8-origin --fp8-backend marlin --enforce-eager false \
+  --case w1024_o128 --requests 80 --rounds 1
+
+# 本地 FP8：按原格式自动分派，显式打开 eager。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --model fp8-local --fp8-backend auto --enforce-eager true \
+  --case w1024_o128 --requests 80 --rounds 1
+```
+
 默认每种模型共 **250 个正式请求 + 25 个预热请求**；四模型合计 **1000 + 100**。`--rounds N` 设置重复轮数，`--requests N` 设置每组每轮的正式请求数，均须为正整数，正式请求数不能超过快照中可用记录数。`--config <文件>` 可指定单模型自定义配置，与 `--model`/`--all-models` 互斥。
 
 旧的 100 请求/3 轮快照无需重建：本次默认确定性地选择每组前 50 个正式请求，所有模型和轮次使用相同子集；原协议、本次有效协议和请求子集 hash 会另行记录，实际选中的记录保存为 selected_requests.jsonl。要重跑旧的 3×100 协议，使用包含 100 条正式请求的旧快照并显式设置 `--rounds 3 --requests 100`。不传生成参数时新快照默认每组50个正式请求，可用 prepare_workloads.py --requests N 扩大容量。

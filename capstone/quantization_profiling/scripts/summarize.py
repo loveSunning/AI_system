@@ -92,6 +92,18 @@ def main(argv=None):
                      "本次验收以上述有效协议为准，快照保持原始内容。")
     if protocol["rounds"] == 1:
         lines.append("本次仅一轮，无法据此评估多轮之间的波动。")
+    configured = [d for d in run.get("models", []) if "enforce_eager" in d.get("config", {})]
+    if configured:
+        lines += ["", "| 模型 | enforce_eager | FP8 后端请求 | 执行精度约定 |",
+                  "|---|---|---|---|"]
+        for descriptor in configured:
+            config = descriptor["config"]
+            backend = config.get("fp8_backend", "auto")
+            precision = "W8A16（Marlin）" if backend == "marlin" else "按 checkpoint / 平台分派"
+            lines.append("|" + "|".join(cell(x) for x in (
+                LABELS.get(descriptor["profile"], descriptor["profile"]),
+                config["enforce_eager"], backend, precision)) + "|")
+        lines += ["", "后端列记录请求配置；Marlin 初始化核验见各组 summary.json，实际 CUDA kernel 仍需 Nsight 确认。"]
     lines += ["", "| 模型 | 负载 | 状态 | 轮次 | 成功/总数 | 吞吐 token/s | E2E p95(s) | TTFT文本事件 p95(s) |",
               "|---|---|---|---|---|---|---|---|"]
     records, paths = [], set()

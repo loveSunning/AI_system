@@ -141,6 +141,7 @@ python capstone/quantization_profiling/scripts/run_model.py \
 | --tensor-parallel-size | 1 | vLLM tensor parallel 卡数 |
 | --enforce-eager / --no-enforce-eager | eager | 控制 vLLM 是否禁用 CUDA Graph 捕获 |
 | --quantization | auto | 按模型预设/权重配置选择；AWQ 主线 awq_marlin，官方 FP8 使用 fp8，本地 FP8 自动识别 compressed-tensors |
+| --fp8-backend | auto | 项目运行入口：auto 或 marlin；后者仅支持 vLLM 0.14.1 原生 FP8 loader 的 W8A16，当前 compressed-tensors FP8_BLOCK 不接受强制 Marlin |
 | --device | cuda | Transformers 使用 cuda 或 cpu |
 | --tokenize-only | 关闭 | 仅准备模板/token，不加载权重 |
 | --output | 不写文件 | 指定 JSON 记录路径；同路径会覆盖 |

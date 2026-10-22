@@ -95,6 +95,8 @@
 
 两组 loader 不同，但可能汇入同一条主要计算路径；这与吞吐接近相符，仍需验证实际 dispatch。不要强行给 compressed-tensors checkpoint 加 `--quantization fp8` 来“统一后端”，这会改变 loader 语义或报错。
 
+**显式 Marlin 是独立对照路线。** benchmark 现支持 `--model fp8-origin --fp8-backend marlin --enforce-eager false`。vLLM 0.14.1 的原生 FP8 loader 通过 `VLLM_TEST_FORCE_FP8_MARLIN=1` 进入 W8A16；本地 compressed-tensors FP8_BLOCK/W8A8 不响应这个变量，不能据此把它标记为 Marlin。auto 模式显式将该变量设为 0，以免继承终端残留。完整命令、限制和报告字段见 [benchmark 执行开关](benchmark_backends.md)。原表的 W8A8 性能与 Marlin 的 W8A16 性能应分别记录。
+
 ### 2.3 M=1 的 decode 与长 prefill 是两种问题
 
 线性层可写为 `C[M,N] = A[M,K] × W[N,K]^T`。

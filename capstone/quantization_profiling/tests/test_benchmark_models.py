@@ -326,5 +326,116 @@ class BenchmarkModelsTests(unittest.TestCase):
         self.assertEqual(len(run["selected_ids"]), 55)
 
 
+    def test_eager_cli_overrides_are_applied_without_changing_configs(self):
+        snapshot, _ = self.frozen()
+        config_file = ROOT / "configs/fp8.yaml"
+        original_hash = digest(config_file)
+        for flags, expected in (([], True), (["--enforce-eager"], True),
+                                (["--enforce-eager", "true"], True),
+                                (["--enforce-eager", "false"], False),
+                                (["--enforce-eager=false"], False),
+                                (["--enforce-eager", "0"], False),
+                                (["--no-enforce-eager"], False)):
+            output = io.StringIO()
+            with self.subTest(flags=flags), contextlib.redirect_stdout(output):
+                self.assertEqual(bench.main(["--snapshot", str(snapshot), "--model", "fp8-local",
+                                             "--requests", "7", "--plan-only", *flags]), 0)
+            entry = json.loads(output.getvalue())["commands"][0]
+            self.assertEqual(entry["enforce_eager"], expected)
+            self.assertIn("--enforce-eager" if expected else "--no-enforce-eager", entry["command"])
+        self.assertEqual(digest(config_file), original_hash)
+        config = self.config("bf16")
+        config["enforce_eager"] = False
+        custom = self.root / "custom.json"
+        write(custom, config)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bench.main(["--snapshot", str(snapshot), "--config", str(custom), "--plan-only"])
+        self.assertFalse(json.loads(output.getvalue())["commands"][0]["enforce_eager"])
+
+    def test_origin_marlin_plan_records_environment_and_keeps_same_request_subset(self):
+        snapshot, _ = self.frozen()
+        plans = []
+        for backend in ("auto", "marlin"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                bench.main(["--snapshot", str(snapshot), "--model", "fp8-origin",
+                            "--fp8-backend", backend, "--enforce-eager", "false", "--plan-only"])
+            plans.append(json.loads(output.getvalue()))
+        self.assertEqual(plans[1]["models"], ["fp8-official"])
+        self.assertEqual(plans[0]["selected_requests_sha256"], plans[1]["selected_requests_sha256"])
+        for plan, backend, flag in zip(plans, ("auto", "marlin"), ("0", "1")):
+            entry = plan["commands"][0]
+            self.assertEqual(entry["fp8_backend_requested"], backend)
+            self.assertEqual(entry["environment_overrides"], {"VLLM_TEST_FORCE_FP8_MARLIN": flag})
+            self.assertEqual(entry["command"][entry["command"].index("--fp8-backend")+1], backend)
+            self.assertFalse(entry["enforce_eager"])
+
+    def test_compressed_tensors_marlin_fails_before_hashing_or_launch(self):
+        config = self.quantized("fp8-local")
+        config["fp8_backend"] = "marlin"
+        with patch.object(bench, "digest") as hash_file, patch.object(bench.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(ValueError, "does not honor"):
+                bench.verify_model(config, self.source)
+        hash_file.assert_not_called()
+        launch.assert_not_called()
+        config = self.config("bf16")
+        config["enforce_eager"] = "false"
+        with self.assertRaisesRegex(ValueError, "JSON boolean"):
+            bench.validate(config, self.protocol)
+
+    def test_marlin_requires_initialization_evidence_but_not_claims_of_kernel_verification(self):
+        config = self.quantized("fp8-official")
+        config["fp8_backend"] = "marlin"
+        model = {"config": read(Path(config["model"]) / "config.json")}
+        startup = "Initializing a V1 LLM engine with config: dtype=torch.bfloat16, quantization=fp8, seed=42"
+        with self.assertRaisesRegex(ValueError, "Marlin initialization"):
+            bench.verify_engine(startup, config, model)
+        result = bench.verify_engine(startup + "\nWeight-only FP8 compression will be used leveraging the Marlin kernel.", config, model)
+        self.assertEqual(result["execution_precision"], "W8A16")
+        self.assertTrue(result["backend_initialization_verified"])
+        self.assertFalse(result["cuda_kernel_verified"])
+
+    def test_server_environment_is_scoped_and_execution_settings_are_persisted(self):
+        configs = [self.config("fp8-official"), self.config("bf16")]
+        configs[0].update(fp8_backend="marlin", enforce_eager=False)
+        captured = []
+        def launch(command, stdout, **kwargs):
+            captured.append(kwargs["env"])
+            method = "fp8" if "--fp8-backend" in command else "None"
+            stdout.write(f"Initializing a V1 LLM engine with config: dtype=torch.bfloat16, quantization={method}, seed=42\n")
+            if method == "fp8":
+                stdout.write("Weight-only FP8 compression will be used leveraging the Marlin kernel.\n")
+            stdout.flush()
+            return SimpleNamespace(poll=lambda: None)
+        def phase(args, cfg, group, round_id, stage, concurrency, output):
+            return {"round": round_id, "phase": stage, "successful_requests": len(group),
+                    "total_requests": len(group), "failed_requests": 0}
+        with patch.dict(bench.os.environ, {"VLLM_TEST_FORCE_FP8_MARLIN": "1"}), \
+             patch.object(bench, "GPURecorder", FakeGPU), patch.object(bench.subprocess, "Popen", side_effect=launch), \
+             patch.object(bench.Client, "health", return_value={}), patch.object(bench, "phase", side_effect=phase), \
+             patch.object(bench.time, "sleep"), patch.object(bench, "stop_process"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            for cfg in configs:
+                actual = dict(self.base_config, quantization_config=NATIVE_FP8_CONFIG) if cfg["profile"] == "fp8-official" else self.base_config
+                record = bench.run_case(cfg, dict(self.protocol, rounds=1), self.case, self.items(), self.root, {"config": actual})
+                self.assertEqual(record["status"], "passed")
+                self.assertEqual(record["enforce_eager"], cfg["enforce_eager"])
+            self.assertEqual(bench.os.environ["VLLM_TEST_FORCE_FP8_MARLIN"], "1")
+        self.assertEqual([env["VLLM_TEST_FORCE_FP8_MARLIN"] for env in captured], ["1", "0"])
+
+    def test_legacy_runtime_rejects_explicit_marlin_before_starting_services(self):
+        snapshot, _ = self.frozen()
+        runtime = {"versions": {"vllm": "0.11.0"}}
+        with patch.object(bench.sys, "platform", "linux"), \
+             patch.object(bench, "check_runtime_versions", return_value=runtime), \
+             patch.object(bench.subprocess, "Popen") as launch, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as error:
+            bench.main(["--snapshot", str(snapshot), "--model", "fp8-origin", "--fp8-backend", "marlin"])
+        self.assertEqual(error.exception.code, 2)
+        launch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

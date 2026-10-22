@@ -154,5 +154,16 @@ class SummarizeModelsTests(unittest.TestCase):
                              (directory / "bf16/w128_o128/requests.jsonl").resolve())
 
 
+    def test_execution_settings_distinguish_marlin_w8a16_from_auto(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, _ = self.fixture(directory, profiles=("fp8-official",))
+            run["models"][0]["config"] = {"enforce_eager": False, "fp8_backend": "marlin"}
+            write(directory / "run.json", run)
+            report = self.render(directory)
+            self.assertIn("|官方 FP8|False|marlin|W8A16（Marlin）|", report)
+            self.assertIn("实际 CUDA kernel 仍需 Nsight 确认", report)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,8 @@ from experiment_utils import ROOT, digest, read, write, load_snapshot, failure_k
 from test_server import Client, summarize_requests, percentile, redact
 from model_profiles import (PROFILE_NAMES, canonical_profile, resolve_model_alias,
                             inspect_model_config, resolve_runtime_options, quant_method,
-                            profile_from_model_name, validate_model_profile)
+                            profile_from_model_name, validate_model_profile, FP8_BACKENDS,
+                            validate_fp8_backend, fp8_backend_environment)
 
 
 def now():
@@ -105,6 +106,8 @@ def launch_command(config, case):
         command.extend(["--tokenizer", config["tokenizer"]])
     if config.get("quantization") not in (None, "auto"):
         command.extend(["--quantization", config["quantization"]])
+    if config.get("profile", "bf16").startswith("fp8-"):
+        command.extend(["--fp8-backend", config.get("fp8_backend", "auto")])
     return command
 
 
@@ -165,7 +168,13 @@ def validate(config, protocol, model=None):
         raise ValueError("Unknown model profile: " + profile)
     if profile == "bf16" and (config["dtype"] != "bfloat16" or config.get("quantization") not in (None, "auto")):
         raise ValueError("BF16 baseline requires unquantized weights and explicit bfloat16")
+    if type(config["enforce_eager"]) is not bool:
+        raise ValueError("enforce_eager must be a JSON boolean, not a string")
+    backend = config.get("fp8_backend", "auto")
+    if backend not in FP8_BACKENDS or (backend != "auto" and not profile.startswith("fp8-")):
+        raise ValueError("fp8_backend must be auto, or marlin for an FP8 model")
     if model is not None:
+        validate_fp8_backend(model["config"], backend)
         validate_model_profile(model["config"], profile)
         resolve_runtime_options(model["config"], config["dtype"], config.get("quantization") or "auto")
     if config["prefix_caching"] or protocol["prefix_caching"] or protocol["thinking"]:
@@ -241,6 +250,16 @@ def load_configs(args, source_model):
         if not config.get("tokenizer"):
             config["tokenizer"] = config["model"] if config["profile"] == "bf16" else source_model["path"]
         config["tokenizer"] = resolve_model_alias(config["tokenizer"])
+        if getattr(args, "enforce_eager", None) is not None:
+            config["enforce_eager"] = args.enforce_eager
+        if config["profile"].startswith("fp8-"):
+            config.setdefault("fp8_backend", "auto")
+            if getattr(args, "fp8_backend", None) is not None:
+                config["fp8_backend"] = args.fp8_backend
+        fp8_backend_environment(config.get("fp8_backend", "auto"))
+    if (getattr(args, "fp8_backend", None) == "marlin"
+            and not any(c["profile"].startswith("fp8-") for c in configs)):
+        raise ValueError("--fp8-backend marlin requires selecting an FP8 model")
     return configs
 
 
@@ -249,6 +268,7 @@ def verify_model(config, source_model):
     directory = Path(config["model"])
     actual = read(directory / "config.json")
     profile = validate_model_profile(actual, config["profile"])
+    validate_fp8_backend(actual, config.get("fp8_backend", "auto"))
     runtime = resolve_runtime_options(actual, config["dtype"], config.get("quantization") or "auto")
     config.update(dtype=runtime["dtype"], quantization=runtime["quantization"])
     if not any(directory.glob("*.safetensors")) and not any(directory.glob("*.bin")):
@@ -310,8 +330,15 @@ def verify_engine(startup, config, model):
         expected = quant_method(model["config"]) or "None"
     if not quant or quant.group(1).replace("_", "-") != expected.replace("_", "-"):
         raise ValueError("Cannot verify resolved quantization from engine startup log")
-    return {"dtype": dtype.group(1), "quantization": quant.group(1),
-            "source": "vLLM engine initialization config", "cuda_kernel_verified": False}
+    verified = {"dtype": dtype.group(1), "quantization": quant.group(1),
+                "source": "vLLM engine initialization config", "cuda_kernel_verified": False}
+    if config.get("fp8_backend") == "marlin":
+        if "leveraging the Marlin kernel" not in startup:
+            raise ValueError("Cannot verify requested FP8 Marlin initialization in startup log")
+        verified.update(fp8_backend_requested="marlin", execution_precision="W8A16",
+                        backend_initialization_verified=True,
+                        backend_source="vLLM FP8 Marlin initialization message")
+    return verified
 
 
 def run_case(config, protocol, case, items, directory, model):
@@ -319,14 +346,20 @@ def run_case(config, protocol, case, items, directory, model):
     case_dir.mkdir(parents=True)
     record = {"case": case["id"], "model_profile": config["profile"],
         "artifact_directory": case_dir.relative_to(directory).as_posix(),
-        "status": "incomplete", "rounds": [], "command": launch_command(config, case)}
+        "status": "incomplete", "rounds": [], "command": launch_command(config, case),
+        "enforce_eager": config["enforce_eager"],
+        "fp8_backend_requested": config.get("fp8_backend", "auto"),
+        "server_environment_overrides": {"VLLM_TEST_FORCE_FP8_MARLIN":
+            "1" if config.get("fp8_backend") == "marlin" else "0"}}
     process = None
     gpu = GPURecorder(case_dir / "gpu.jsonl", config["gpu_sample_interval_seconds"])
     args = client_args(config)
     try:
         with gpu, (case_dir / "server.log").open("w", encoding="utf-8") as log:
             gpu.phase = "loading"
-            process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT,
+                                       start_new_session=True,
+                                       env=fp8_backend_environment(config.get("fp8_backend", "auto")))
             deadline = time.monotonic() + config["startup_timeout_seconds"]
             probe_args = SimpleNamespace(**vars(args)); probe_args.timeout = 2
             while True:
@@ -394,16 +427,32 @@ def positive_int(value):
     return number
 
 
+def boolean_value(value):
+    normalized = value.strip().lower()
+    if normalized in ("true", "1"):
+        return True
+    if normalized in ("false", "0"):
+        return False
+    raise argparse.ArgumentTypeError("use true or false (also accepts 1 or 0)")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--snapshot", type=Path, default=ROOT / "data/frozen")
     choices = p.add_mutually_exclusive_group()
     choices.add_argument("--config", type=Path, help="custom single-model config")
-    choices.add_argument("--model", action="append", help="bf16, awq, fp8-official, fp8-local or qwen3-8b aliases; repeat to compare")
+    choices.add_argument("--model", action="append", help="bf16, awq, fp8-official/fp8-origin, fp8-local or qwen3-8b aliases; repeat to compare")
     choices.add_argument("--all-models", action="store_true", help="sequentially compare BF16, AWQ, official FP8 and local FP8")
     p.add_argument("--rounds", type=positive_int, default=1, help="rounds per model/case (default: 1)")
     p.add_argument("--requests", type=positive_int, default=50, help="formal requests per round (default: 50)")
     p.add_argument("--case", action="append", help="select case IDs; omitted runs all five")
+    eager = p.add_mutually_exclusive_group()
+    eager.add_argument("--enforce-eager", nargs="?", const=True, type=boolean_value, default=None,
+                       metavar="{true,false}", help="override config eager mode; bare flag means true")
+    eager.add_argument("--no-enforce-eager", dest="enforce_eager", action="store_false", default=None,
+                       help="override config with enforce_eager=false (allow CUDA Graph)")
+    p.add_argument("--fp8-backend", choices=FP8_BACKENDS, default=None,
+                   help="FP8 models only: auto follows vLLM dispatch; marlin requests native-FP8 W8A16 (v0.14.1)")
     p.add_argument("--plan-only", action="store_true", help="validate snapshot hashes and print plan without loading/hash-checking model weights")
     a = p.parse_args(argv)
     manifest, items, frozen_protocol = load_snapshot(a.snapshot)
@@ -419,7 +468,11 @@ def main(argv=None):
         "formal_requests_per_round": protocol["requests"], "warmup_per_round": protocol["warmup"],
         "cases": [c["id"] for c in cases], "selected_requests_sha256": subset_sha,
         "selected_ids": [x["id"] for x in items],
-        "commands": [{"model_profile": config["profile"], "case": case["id"], "command": launch_command(config, case)}
+        "commands": [{"model_profile": config["profile"], "case": case["id"], "command": launch_command(config, case),
+                      "enforce_eager": config["enforce_eager"],
+                      "fp8_backend_requested": config.get("fp8_backend", "auto"),
+                      "environment_overrides": {"VLLM_TEST_FORCE_FP8_MARLIN":
+                          "1" if config.get("fp8_backend") == "marlin" else "0"}}
                      for config in configs for case in cases],
         "model_verification": "pending: actual weights and engine settings checked during execution"}, ensure_ascii=False, indent=2), flush=True)
     if a.plan_only:
@@ -427,6 +480,9 @@ def main(argv=None):
     if sys.platform != "linux":
         p.error("Run managed GPU experiments on the Linux target host; use --plan-only locally")
     runtime = check_runtime_versions()
+    if (any(c.get("fp8_backend") == "marlin" for c in configs)
+            and runtime["versions"]["vllm"].split("+")[0] != "0.14.1"):
+        p.error("--fp8-backend marlin is audited for vLLM 0.14.1; use the unified runtime")
     for config in configs:
         with socket.socket() as sock:
             sock.bind(("0.0.0.0", config["port"]))

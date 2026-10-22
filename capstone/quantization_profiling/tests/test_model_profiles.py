@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from model_profiles import (canonical_profile, inspect_model_config, resolve_model_alias,
-                            resolve_runtime_options, profile_from_model_name, validate_model_profile)
+                            resolve_runtime_options, profile_from_model_name, validate_model_profile,
+                            validate_fp8_backend, fp8_backend_environment)
 
 
 def fp8_config():
@@ -100,6 +101,32 @@ class ModelProfileTests(unittest.TestCase):
             resolve_runtime_options(config, dtype="bfloat16", quantization="awq")
         with self.assertRaises(ValueError):
             resolve_runtime_options(config, dtype="float32")
+
+
+    def test_fp8_origin_alias_and_native_marlin_contract(self):
+        self.assertEqual(canonical_profile("FP8-ORIGIN"), "fp8-official")
+        self.assertTrue(resolve_model_alias("fp8-origin").endswith("Qwen3-8B-FP8"))
+        native = {"quantization_config": {"quant_method": "fp8", "fmt": "e4m3",
+                  "activation_scheme": "dynamic", "weight_block_size": [128, 128]}}
+        validate_fp8_backend(native, "marlin")
+        validate_fp8_backend(fp8_config(), "auto")
+        with self.assertRaisesRegex(ValueError, "does not honor"):
+            validate_fp8_backend(fp8_config(), "marlin")
+        with self.assertRaisesRegex(ValueError, "requires an FP8"):
+            validate_fp8_backend({}, "marlin")
+
+    def test_backend_environment_is_isolated_and_rejects_conflicting_modes(self):
+        original = {"VLLM_TEST_FORCE_FP8_MARLIN": "1", "CUDA_VISIBLE_DEVICES": "2"}
+        auto = fp8_backend_environment("auto", original)
+        marlin = fp8_backend_environment("marlin", original)
+        self.assertEqual(auto["VLLM_TEST_FORCE_FP8_MARLIN"], "0")
+        self.assertEqual(marlin["VLLM_TEST_FORCE_FP8_MARLIN"], "1")
+        self.assertEqual(auto["CUDA_VISIBLE_DEVICES"], "2")
+        self.assertEqual(original["VLLM_TEST_FORCE_FP8_MARLIN"], "1")
+        for env, message in (({"VLLM_BATCH_INVARIANT": "1"}, "BATCH_INVARIANT"),
+                             ({"VLLM_MARLIN_INPUT_DTYPE": "fp8"}, "W8A16")):
+            with self.subTest(env=env), self.assertRaisesRegex(ValueError, message):
+                fp8_backend_environment("marlin", env)
 
 
 if __name__ == "__main__":

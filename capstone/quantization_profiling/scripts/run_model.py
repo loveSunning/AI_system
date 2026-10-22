@@ -21,7 +21,8 @@ import time
 import traceback
 
 from model_profiles import (inspect_model_config, resolve_model_alias, resolve_runtime_options,
-                            profile_from_model_name, validate_model_profile)
+                            profile_from_model_name, validate_model_profile, FP8_BACKENDS,
+                            validate_fp8_backend, fp8_backend_environment)
 
 
 DEFAULT_PROMPT = "请用三句话解释大模型推理中的 prefill 和 decode。"
@@ -78,6 +79,8 @@ def parse_args(argv=None):
                         help="vLLM: disable CUDA Graph capture for the initial smoke test")
     parser.add_argument("--quantization", default="auto",
                         help="vLLM loader; auto selects AWQ-Marlin for AWQ and reads FP8 checkpoint metadata")
+    parser.add_argument("--fp8-backend", choices=FP8_BACKENDS, default="auto",
+                        help="vLLM FP8: auto dispatch or native-FP8 Marlin W8A16 (v0.14.1)")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="Transformers only")
     parser.add_argument("--trust-remote-code", action="store_true",
                         help="allow custom Python code from the local model repository")
@@ -147,6 +150,7 @@ def resolve_paths(args):
     args.model_profile = (validate_model_profile(config, named_profile)
                           if named_profile is not None else inspect_model_config(config))
     args.model_quantization_config = config.get("quantization_config")
+    validate_fp8_backend(config, args.fp8_backend)
     if args.backend == "transformers" and args.model_profile != "bf16" and not args.tokenize_only:
         raise ValueError("This Transformers entry point supports unquantized models. "
                          "Use --backend vllm for prequantized AWQ/FP8 weights.")
@@ -411,6 +415,14 @@ def main(argv=None):
         print("Checkpoint quantization metadata:",
               json.dumps(args.model_quantization_config, ensure_ascii=False, sort_keys=True), flush=True)
         if args.backend == "vllm" and not args.tokenize_only:
+            if args.fp8_backend == "marlin" and importlib.metadata.version("vllm").split("+")[0] != "0.14.1":
+                raise ValueError("--fp8-backend marlin is audited for vLLM 0.14.1; use the unified runtime")
+            backend_env = fp8_backend_environment(args.fp8_backend)
+            os.environ["VLLM_TEST_FORCE_FP8_MARLIN"] = backend_env["VLLM_TEST_FORCE_FP8_MARLIN"]
+            print(f"FP8 backend request: {args.fp8_backend}; "
+                  f"force_marlin={backend_env['VLLM_TEST_FORCE_FP8_MARLIN']}; "
+                  f"execution={'W8A16' if args.fp8_backend == 'marlin' else 'checkpoint/platform dispatch'}; "
+                  "CUDA kernel verification requires profiling.", flush=True)
             # No torch.cuda calls in the parent before vLLM starts its workers.
             os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
             os.environ.setdefault("HF_HUB_OFFLINE", "1")

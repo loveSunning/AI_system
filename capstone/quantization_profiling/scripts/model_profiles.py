@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 PROFILE_NAMES = ("bf16", "awq", "fp8-official", "fp8-local")
+FP8_BACKENDS = ("auto", "marlin")
 MODEL_DIRECTORIES = {
     "bf16": "Qwen3-8B",
     "awq": "Qwen3-8B-AWQ",
@@ -18,7 +19,7 @@ MODEL_DIRECTORIES = {
 _ALIASES = {
     "bf16": "bf16", "qwen3-8b": "bf16",
     "awq": "awq", "qwen3-8b-awq": "awq",
-    "fp8-official": "fp8-official", "qwen3-8b-fp8": "fp8-official",
+    "fp8-official": "fp8-official", "fp8-origin": "fp8-official", "qwen3-8b-fp8": "fp8-official",
     # Preserve the historical short alias; select official FP8 explicitly.
     "fp8": "fp8-local", "fp8-local": "fp8-local", "qwen3-8b-fp8-local": "fp8-local",
 }
@@ -162,3 +163,40 @@ def resolve_runtime_options(config, dtype="auto", quantization="auto"):
         if dtype not in ("float16", "bfloat16"):
             raise ValueError("FP8 inference uses float16/bfloat16 activations outside quantized GEMMs")
     return {"profile": profile, "dtype": dtype, "quantization": requested, "quant_method": method}
+
+
+def validate_fp8_backend(config, backend="auto"):
+    """Validate the loader contract; this does not prove a GPU kernel executed.
+
+    In vLLM 0.14.1 the force-Marlin variable is read by native Fp8LinearMethod,
+    not CompressedTensorsW8A8Fp8. Marlin is a separate W8A16 execution path.
+    """
+    if backend not in FP8_BACKENDS:
+        raise ValueError(f"Unknown FP8 backend {backend!r}; choose {', '.join(FP8_BACKENDS)}")
+    if backend == "auto":
+        return
+    if inspect_model_config(config) != "fp8-local":
+        raise ValueError("--fp8-backend marlin requires an FP8 checkpoint")
+    if quant_method(config) != "fp8":
+        raise ValueError(
+            "--fp8-backend marlin requires the native fp8 loader in vLLM 0.14.1. "
+            "The current compressed-tensors FP8_BLOCK/W8A8 loader does not honor "
+            "VLLM_TEST_FORCE_FP8_MARLIN; refusing to benchmark Triton as Marlin. "
+            "Use fp8-origin/fp8-official, or a separately validated native-FP8 checkpoint; "
+            "do not edit the original checkpoint metadata."
+        )
+
+
+def fp8_backend_environment(backend="auto", environ=None):
+    """Return an isolated child environment; never mutate the benchmark parent."""
+    if backend not in FP8_BACKENDS:
+        raise ValueError(f"Unknown FP8 backend {backend!r}")
+    env = dict(os.environ if environ is None else environ)
+    if backend == "marlin":
+        if env.get("VLLM_BATCH_INVARIANT", "0").strip().lower() not in ("", "0", "false"):
+            raise ValueError("Unset VLLM_BATCH_INVARIANT before requesting FP8 Marlin; it disables this path")
+        if env.get("VLLM_MARLIN_INPUT_DTYPE", "").strip():
+            raise ValueError("Unset VLLM_MARLIN_INPUT_DTYPE: vLLM 0.14.1 FP8 Marlin requires W8A16 inputs")
+    # Make auto reproducible even if the launching shell previously forced Marlin.
+    env["VLLM_TEST_FORCE_FP8_MARLIN"] = "1" if backend == "marlin" else "0"
+    return env

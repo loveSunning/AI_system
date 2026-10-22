@@ -414,5 +414,30 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(call.call_args.kwargs, {})
 
 
+    def test_native_fp8_marlin_reaches_server_environment_and_graph_flag(self):
+        (self.model_dir / "config.json").write_text(json.dumps({"model_type": "qwen3",
+            "quantization_config": {"quant_method": "fp8", "fmt": "e4m3",
+                                    "activation_scheme": "dynamic", "weight_block_size": [128, 128]}}))
+        observed = []
+        def start(command):
+            observed.append(runner.os.environ["VLLM_TEST_FORCE_FP8_MARLIN"])
+            self.assertNotIn("--enforce-eager", command)
+            self.assertNotIn("--fp8-backend", command)  # project flag, not a vLLM loader name
+            return 0
+        with patch.dict(runner.os.environ, {"VLLM_BATCH_INVARIANT": "0", "VLLM_MARLIN_INPUT_DTYPE": ""}), \
+             patch.object(runner.importlib.metadata, "version", return_value="0.14.1"), \
+             patch.object(runner.subprocess, "call", side_effect=start):
+            self.assertEqual(self.invoke("--serve", "--fp8-backend", "marlin", "--no-enforce-eager"), 0)
+        self.assertEqual(observed, ["1"])
+
+    def test_native_fp8_marlin_rejects_unaudited_runtime_without_starting_server(self):
+        (self.model_dir / "config.json").write_text(json.dumps({"quantization_config":
+            {"quant_method": "fp8", "fmt": "e4m3"}}))
+        with patch.object(runner.importlib.metadata, "version", return_value="0.11.0"), \
+             patch.object(runner.subprocess, "call") as start:
+            self.assertEqual(self.invoke("--serve", "--fp8-backend", "marlin"), 1)
+        start.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
