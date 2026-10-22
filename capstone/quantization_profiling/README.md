@@ -2,7 +2,7 @@
 
 围绕同一份 Qwen3-8B 模型与固定负载，建立 BF16 基线，运行一条 W4A16 量化路径，结合 Nsight 时间线、热点 kernel 和留出集质量回归，解释显存、吞吐、尾延迟与质量之间的取舍。
 
-**当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
+**当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ、官方 FP8 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/官方 FP8/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
 
 **FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；当前统一环境支持量化与推理；另保留 `torch==2.8.0+cpu` 的历史 CPU 量化方案。
 
@@ -26,7 +26,7 @@
 | P1-01 | W29 | 环境、模型 revision、模板与生成参数锁定，启动入口 | 可重建环境，复现代表请求；读取实际显存 | BF16 已有真实结果；环境和来源信息仍需人工核对 |
 | P1-02 | W29 | 五组 workload 的 BF16 原始记录和基线汇总 | 并发 1 起步；按所选轮数验收；OOM 如实记录 | 已有历史 3×100 基线；新默认 1×50，不覆盖历史结果 |
 | P1-03 | W30 | nsys 时间线、3 个代表热点的 ncu 抽样与证据表 | 分清 prefill/decode；至少一个热点有证据和优化假设 | 未开始 |
-| P1-04 | W30 | AWQ 优先的 W4A16 配置、权重来源与对照结果 | 核验版本/硬件/kernel；相同输入与评测协议 | 运行/配置/benchmark 已支持；真实对照待执行 |
+| P1-04 | W30 | AWQ/W4A16 与官方/本地 FP8 的权重来源及对照结果 | 核验版本/硬件/kernel；相同输入与评测协议 | 四模型运行/配置/benchmark 已支持；真实对照待执行 |
 | P1-05 | W30/W32 | 固定 100 条留出任务的逐题质量回归 | 与校准集分离；固定判分；实验前锁定质量门槛 | 数据与判分器已准备，配对回归待执行 |
 | P1-06 | W32 | 性能、显存、质量与诊断报告及复现入口 | 每项结论可追溯到实验 ID；不预设加速收益 | 未开始 |
 
@@ -46,13 +46,14 @@ capstone/quantization_profiling/
 ├── configs/
 │   ├── bf16.yaml                   # 已实现：BF16 服务配置（JSON 格式的 YAML）
 │   ├── awq.yaml                    # 已实现：AWQ/W4A16，awq_marlin + BF16
+│   ├── fp8-official.yaml           # 已实现：官方 Qwen3-8B-FP8，原生 fp8 格式
 │   ├── fp8.yaml                    # 已实现：本地 FP8，自动识别权重量化格式
 │   └── workloads.yaml              # 已实现：五组负载、预热、重复次数与种子
 ├── scripts/
 │   ├── collect_environment.py      # 已实现：并行环境检测、打印与 JSON 快照
 │   ├── download_models.sh          # 已实现：批量下载、跳过已有模型与失败重试
 │   ├── run_model.py                # 已实现：vLLM/Transformers、token 检查与 HTTP 服务
-│   ├── model_profiles.py           # 已实现：三模型别名、量化配置与运行预设
+│   ├── model_profiles.py           # 已实现：四模型别名、量化配置与运行预设
 │   ├── test_server.py              # 已实现：远程接口、并发测试、指标和自动日志
 │   ├── profiling_middleware.py     # 已实现：服务端 JSON/SSE 耗时与吞吐量扩展
 │   ├── quantize_fp8.py             # 已实现：FP8_BLOCK 转换、产物校验与指纹
@@ -64,6 +65,7 @@ capstone/quantization_profiling/
 ├── tests/
 │   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
 │   ├── test_download_models.py     # 模拟 CLI，验证跳过、批量下载与重试
+│   ├── test_prepare_workloads.py   # 生成数量、参数优先级、快照与 benchmark 兼容
 │   ├── test_run_model.py           # 模板、token 预算、输出切片与入口行为
 │   ├── test_server_client.py       # 本地 HTTP，验证并发、日志、指标与错误处理
 │   ├── test_quantize_fp8.py         # FP8 源/产物校验、路径保护与失败留档
@@ -307,7 +309,7 @@ bash capstone/quantization_profiling/scripts/download_models.sh --dry-run
 bash capstone/quantization_profiling/scripts/download_models.sh
 ```
 
-下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，本地 FP8 为 `/workspace/weights_pub/Qwen3-8B-FP8-local`，官方 FP8 可选下载到 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用；本次三模型运行/benchmark 使用 BF16、AWQ、本地 FP8 配置；当前运行入口见后文。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
+下载脚本沿用参考脚本的 ModelScope CLI，默认模型根目录为 `/workspace/weights_pub`。本项目使用的预训练模型统一从该目录下的模型子目录读取：BF16 为 `/workspace/weights_pub/Qwen3-8B`，AWQ 为 `/workspace/weights_pub/Qwen3-8B-AWQ`，本地 FP8 为 `/workspace/weights_pub/Qwen3-8B-FP8-local`，官方 FP8 为 `/workspace/weights_pub/Qwen3-8B-FP8`。已有权重直接复用；本次四模型运行/benchmark 使用 BF16、AWQ、官方 FP8、本地 FP8 配置；当前运行入口见后文。支持 `MODEL_ROOT` 环境变量、`--model-root`、重复 `--model`（替换默认列表）、`--revision`、`--dry-run` 与 `--help`，不会自动安装依赖。
 
 **一次下载多个模型**：重复传入 `--model`，按顺序处理；只列出需要的模型。下面以 BF16 和 AWQ 为例，已有 `Qwen3-8B` 非空目录时显示 `SKIP`，继续下载缺失的 `Qwen3-8B-AWQ`。
 
@@ -323,7 +325,7 @@ bash capstone/quantization_profiling/scripts/download_models.sh \
   --model Qwen/Qwen3-8B \
   --model Qwen/Qwen3-8B-AWQ
 
-# 如需同时下载选做的 FP8，追加第三个 --model。
+# 四项对比所需的三份仓库权重；本地 FP8 由量化脚本另行生成。
 bash capstone/quantization_profiling/scripts/download_models.sh \
   --model Qwen/Qwen3-8B \
   --model Qwen/Qwen3-8B-AWQ \
@@ -375,9 +377,10 @@ python -m unittest discover -s capstone/quantization_profiling/tests -p "test_do
 | --- | --- | --- |
 | `qwen3-8b` | `/workspace/weights_pub/Qwen3-8B` | BF16，无权重量化 |
 | `qwen3-8b-awq` | `/workspace/weights_pub/Qwen3-8B-AWQ` | W4A16，`awq_marlin`，BF16 激活 |
+| `qwen3-8b-fp8` | `/workspace/weights_pub/Qwen3-8B-FP8` | 官方分块 FP8，原生 `fp8` 加载器 |
 | `qwen3-8b-fp8-local` | `/workspace/weights_pub/Qwen3-8B-FP8-local` | FP8 权重/动态 FP8 激活，按 config 自动识别 compressed-tensors |
 
-每次只启动一个模型。下面的 AWQ 服务示例可将别名替换为另外两种模型；已有服务占用 7081 时先正常停止它：
+每次只启动一个模型。下面的 AWQ 服务示例可将别名替换为其它三种模型；已有服务占用 7081 时先正常停止它：
 
 ```bash
 python capstone/quantization_profiling/scripts/run_model.py \
@@ -436,13 +439,30 @@ python capstone/quantization_profiling/scripts/test_server.py \
 
 使用更新后的 `run_model.py --serve` 重启服务后，`--require-server-metrics` 会核验服务端指标是否存在。`--stream-only` 只测试流式请求；`--stream` 先测试非流式，再测试流式，每一组各执行 `--requests` 次；`--check-only` 只检查健康和模型列表。部分请求失败仍会继续完成其余请求并保存日志，最终返回非零退出码。更多说明见 [教程第 5 节](docs/model_running.md#5-启动-http-服务并用-python-调用)。
 
-默认 vLLM 显存预算为物理总显存的 0.75，单步 token 预算为 2048，并启用 chunked prefill。`run_model.py` 和 `test_server.py` 用于功能/连通性测试；固定负载、预热、轮次和显存采样使用下面的正式 benchmark。新增加的 AWQ/本地 FP8 路线仍需在目标 4090D 上实际运行验证。
+默认 vLLM 显存预算为物理总显存的 0.75，单步 token 预算为 2048，并启用 chunked prefill。`run_model.py` 和 `test_server.py` 用于功能/连通性测试；固定负载、预热、轮次和显存采样使用下面的正式 benchmark。新增加的 AWQ/官方 FP8/本地 FP8 路线仍需在目标 4090D 上实际运行验证。
 
 完整说明见 [模型运行与 vLLM / Transformers 详细教程](docs/model_running.md)：包括 AWQ、批量和多轮输入、参数对照、两个库的独立 Python 示例、HTTP 客户端、流式输出与显存排错。
 
-## 三模型正式 benchmark
+## 四模型正式 benchmark
 
-正式执行接受原 cutedsl 完整版本组合或上面的统一环境组合，不允许混用两者；实际版本组合写入 run.json。本地 FP8 先按 [统一环境说明](#vllm-0112-统一量化与推理环境) 完成加载验证，再运行同环境三模型对照。以下参数可用，目标 GPU 结果仍需实测。
+`--all-models` 依次运行以下四项，使用相同的 BF16 tokenizer、冻结请求和性能协议，结果按各自标签保存：
+
+| benchmark 选择 | 模型目录 | 配置文件 |
+| --- | --- | --- |
+| `bf16` | `/workspace/weights_pub/Qwen3-8B` | `configs/bf16.yaml` |
+| `awq` | `/workspace/weights_pub/Qwen3-8B-AWQ` | `configs/awq.yaml` |
+| `fp8-official` | `/workspace/weights_pub/Qwen3-8B-FP8` | `configs/fp8-official.yaml` |
+| `fp8-local` | `/workspace/weights_pub/Qwen3-8B-FP8-local` | `configs/fp8.yaml` |
+
+官方 FP8 使用 [Qwen 官方配置](https://huggingface.co/Qwen/Qwen3-8B-FP8/blob/main/config.json) 声明的原生 `fp8`、E4M3、动态激活和 `[128, 128]` 权重分块；本地产物保留 `compressed-tensors` 加载方式。两个 FP8 方案独立列示。`fp8` 短别名为兼容旧命令仍表示 `fp8-local`；选择官方权重请使用 `fp8-official` 或 `qwen3-8b-fp8`。
+
+若尚未下载官方 FP8，可在已安装 ModelScope CLI 的环境中执行：
+
+```bash
+bash capstone/quantization_profiling/scripts/download_models.sh --model Qwen/Qwen3-8B-FP8
+```
+
+正式执行接受原 cutedsl 完整版本组合或上面的统一环境组合，不允许混用两者；实际版本组合写入 run.json。本地 FP8 先按 [统一环境说明](#vllm-0112-统一量化与推理环境) 完成加载验证，再运行同环境四模型对照。以下参数可用，目标 GPU 结果仍需实测。
 
 先准备 BF16 tokenizer 的固定请求快照；已有有效的 `data/frozen` 可以直接复用，不能覆盖。生成方式、文件含义与自定义目录见 [benchmark 测试数据生成说明](docs/week1_execution.md#2-冻结数据与复用旧快照)。在 Linux 目标机执行：
 
@@ -450,17 +470,36 @@ python capstone/quantization_profiling/scripts/test_server.py \
 source /workspace/venvs/vllm-0112/bin/activate
 cd /workspace/AI_system
 
-# 首次生成：输出目录必须尚不存在。
+# 首次生成：默认每组50条正式请求；输出目录必须尚不存在。
 python capstone/quantization_profiling/scripts/prepare_workloads.py \
   --model /workspace/weights_pub/Qwen3-8B \
   --config capstone/quantization_profiling/configs/workloads.yaml \
   --output capstone/quantization_profiling/data/frozen
 ```
 
-默认生成 **275 条性能请求：五组，每组5条预热、50条正式请求**，完整套用聊天模板后校验最终输入 token 数；三模型共用这份数据。生成过程不启动 GPU 推理，但会读取 BF16 权重计算 SHA256；另将已有 100 条质量任务和判分规则复制到快照。
+默认生成 **275 条性能请求：五组，每组5条预热、50条正式请求**，完整套用聊天模板后校验最终输入 token 数；四模型共用这份数据。生成过程不启动 GPU 推理，但会读取 BF16 权重计算 SHA256；另将已有 100 条质量任务和判分规则复制到快照。
+
+**生成数量可设置。** 生成脚本新增 `--requests N`：每组正式请求数，不含预热；覆盖配置值，省略时按配置生成。以下示例为每组200条，五组共1025条性能记录（1000条正式、25条预热）；输出到新目录以保留原快照：
 
 ```bash
-# 校验快照并预览三模型计划，不启动 GPU 服务。
+python capstone/quantization_profiling/scripts/prepare_workloads.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --config capstone/quantization_profiling/configs/workloads.yaml \
+  --requests 200 \
+  --output capstone/quantization_profiling/data/frozen_200
+
+# 使用这份快照，实际运行每组200条、1轮；可先追加 --plan-only 预览。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --snapshot capstone/quantization_profiling/data/frozen_200 \
+  --all-models --requests 200 --rounds 1
+```
+
+生成脚本的 `--requests` 决定快照容量，benchmark 的 `--requests` 决定每组每轮实际测量数量。benchmark 默认仍为50，生成200条后需显式传 `--requests 200` 才会全部使用；四模型1轮合计4000条正式、100条预热请求。若五组合计只需要200条正式请求（每个模型），两个命令均改用 `--requests 40`。更多数量和旧快照复用说明见 [自定义数据数量](docs/week1_execution.md#25-已有快照重建和自定义数量)。
+
+以下命令继续使用默认 `data/frozen` 快照：
+
+```bash
+# 校验快照并预览四模型计划，不启动 GPU 服务。
 python capstone/quantization_profiling/scripts/benchmark.py \
   --snapshot capstone/quantization_profiling/data/frozen --all-models --plan-only
 
@@ -470,10 +509,13 @@ python capstone/quantization_profiling/scripts/benchmark.py
 # 选择 AWQ；轮数可选，下面每组做2轮，每轮50次正式请求。
 python capstone/quantization_profiling/scripts/benchmark.py --model awq --rounds 2
 
+# 单独测试官方 FP8。
+python capstone/quantization_profiling/scripts/benchmark.py --model fp8-official
+
 # 选择本地 FP8，先只测短请求一组。
 python capstone/quantization_profiling/scripts/benchmark.py --model fp8-local --case w128_o128
 
-# 先预览三模型计划，再依次运行；脚本自动启动/停止受管服务。
+# 先预览四模型计划，再依次运行；脚本自动启动/停止受管服务。
 python capstone/quantization_profiling/scripts/benchmark.py --all-models --plan-only
 python capstone/quantization_profiling/scripts/benchmark.py --all-models --rounds 1 --requests 50
 
@@ -481,11 +523,30 @@ python capstone/quantization_profiling/scripts/benchmark.py --all-models --round
 python capstone/quantization_profiling/scripts/benchmark.py --model bf16 --model awq
 ```
 
-默认每种模型共 **250 个正式请求 + 25 个预热请求**；三模型合计 **750 + 75**。`--rounds N` 设置重复轮数，`--requests N` 设置每组每轮的正式请求数，均须为正整数，正式请求数不能超过快照中可用记录数。`--config <文件>` 可指定单模型自定义配置，与 `--model`/`--all-models` 互斥。
+默认每种模型共 **250 个正式请求 + 25 个预热请求**；四模型合计 **1000 + 100**。`--rounds N` 设置重复轮数，`--requests N` 设置每组每轮的正式请求数，均须为正整数，正式请求数不能超过快照中可用记录数。`--config <文件>` 可指定单模型自定义配置，与 `--model`/`--all-models` 互斥。
 
-旧的 100 请求/3 轮快照无需重建：本次默认确定性地选择每组前 50 个正式请求，所有模型和轮次使用相同子集；原协议、本次有效协议和请求子集 hash 会另行记录，实际选中的记录保存为 selected_requests.jsonl。要重跑旧的 3×100 协议，使用包含 100 条正式请求的旧快照并显式设置 `--rounds 3 --requests 100`。新冻结快照默认只有每组 50 个正式请求。
+旧的 100 请求/3 轮快照无需重建：本次默认确定性地选择每组前 50 个正式请求，所有模型和轮次使用相同子集；原协议、本次有效协议和请求子集 hash 会另行记录，实际选中的记录保存为 selected_requests.jsonl。要重跑旧的 3×100 协议，使用包含 100 条正式请求的旧快照并显式设置 `--rounds 3 --requests 100`。不传生成参数时新快照默认每组50个正式请求，可用 prepare_workloads.py --requests N 扩大容量。
 
-日志位于 `log/benchmark_<ID>/<模型>/<负载>/`，保留每种模型的原始请求、启动日志、实际引擎 dtype/量化方法和显存；根目录记录 run.json 和 summary.json。使用 `summarize.py <实验目录>` 按模型/负载分别生成报告，按本次所选轮数验收。单轮结果可用于初步对照，但不能判断跨轮波动；50 个样本的 p95 也比原 100 样本更不稳定。历史 3×100 BF16 报告保留原实验 ID、协议和结果。
+日志位于 `log/benchmark_<ID>/<模型>/<负载>/`，保留每种模型的原始请求、启动日志、实际引擎 dtype/量化方法和显存；根目录记录 run.json 和 summary.json。单轮结果可用于初步对照，但不能判断跨轮波动；50 个样本的 p95 也比原 100 样本更不稳定。历史 3×100 BF16 报告保留原实验 ID、协议和结果。
+
+### benchmark 结束后生成报告
+
+benchmark 结束时打印 `Artifacts: .../log/benchmark_<ID>`；随后手工运行 `summarize.py`，传入这个**实验根目录**，其中应有 `run.json` 和根 `summary.json`。下面以历史实验 ID 为例，请替换成实际目录；命令从仓库根目录执行：
+
+```bash
+python capstone/quantization_profiling/scripts/summarize.py \
+  "capstone/quantization_profiling/log/benchmark_20261020T084357Z_294018cc"
+```
+
+默认在该实验目录生成 `Week1_Report.md`（按模型、负载、正式轮次列示结果与协议验收）和 `performance.jsonl`（合并请求明细，包含预热/正式记录）。它不重新压测，也不会启动模型。需要把 Markdown 报告放到 reports 时：
+
+```bash
+python capstone/quantization_profiling/scripts/summarize.py \
+  "capstone/quantization_profiling/log/benchmark_20261020T084357Z_294018cc" \
+  --output capstone/quantization_profiling/reports/Benchmark_Report.md
+```
+
+`--output` 只指定 Markdown 文件位置，`performance.jsonl` 仍写入原实验目录。汇总只需 Python 标准库；将完整实验目录复制到 Windows 后也能运行。参数、Windows 命令和结果解读见 [benchmark 报告汇总说明](docs/week1_execution.md#42-汇总已有-benchmark-结果)。
 
 ## 核心实验约定
 
@@ -500,7 +561,7 @@ python capstone/quantization_profiling/scripts/benchmark.py --model bf16 --model
 
 能够从环境与数据指纹出发，复跑一个 BF16/W4A16 配对 case，并追溯到原始性能记录、质量逐题结果、trace 和最终结论。报告必须解释至少一个真实瓶颈，并说明量化为何在某些负载上有效或无效；性能与质量结论均以实测为准。
 
-官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型运行与服务调用见 [详细教程](docs/model_running.md)，固定 workload 的 BF16/AWQ/本地 FP8 正式基准测试见 [第一周执行说明](docs/week1_execution.md)。
+官方学习资料与版本核验入口集中在 [planning.md](planning.md)；模型运行与服务调用见 [详细教程](docs/model_running.md)，固定 workload 的 BF16/AWQ/官方 FP8/本地 FP8 正式基准测试见 [第一周执行说明](docs/week1_execution.md)。
 
 ## 自行制作 Qwen3-8B 分块 FP8
 

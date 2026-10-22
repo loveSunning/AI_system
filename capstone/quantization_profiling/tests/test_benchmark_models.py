@@ -20,6 +20,9 @@ FP8_CONFIG = {"quant_method": "compressed-tensors", "config_groups": {"group_0":
     "input_activations": {"num_bits": 8, "type": "float", "dynamic": True}}}}
 
 
+NATIVE_FP8_CONFIG = {"quant_method": "fp8", "fmt": "e4m3",
+                     "activation_scheme": "dynamic", "weight_block_size": [128, 128]}
+
 class FakeGPU:
     def __init__(self, *args):
         self.phase = "before_load"
@@ -57,7 +60,8 @@ class BenchmarkModelsTests(unittest.TestCase):
         config = self.config(profile)
         directory = Path(config["model"])
         directory.mkdir()
-        quant = {"quant_method": "awq", "bits": 4, "group_size": 128} if profile == "awq" else FP8_CONFIG
+        quant = ({"quant_method": "awq", "bits": 4, "group_size": 128} if profile == "awq" else
+                 NATIVE_FP8_CONFIG if profile == "fp8-official" else FP8_CONFIG)
         write(directory / "config.json", dict(self.base_config, quantization_config=quant))
         (directory / "model.safetensors").write_bytes(b"different quantized bytes " + profile.encode())
         return config
@@ -108,23 +112,29 @@ class BenchmarkModelsTests(unittest.TestCase):
         snapshot, frozen = self.frozen()
         before = digest(snapshot / "manifest.json")
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with patch.dict(bench.os.environ, {"MODEL_ROOT": str(self.root)}), contextlib.redirect_stdout(output):
             self.assertEqual(bench.main(["--snapshot", str(snapshot), "--all-models", "--plan-only"]), 0)
         plan = json.loads(output.getvalue())
-        self.assertEqual(plan["models"], ["bf16", "awq", "fp8-local"])
+        self.assertEqual(plan["models"], ["bf16", "awq", "fp8-official", "fp8-local"])
         self.assertEqual((plan["rounds"], plan["formal_requests_per_round"]), (1, 50))
         self.assertEqual(len(plan["selected_ids"]), 55)
-        self.assertEqual(len(plan["commands"]), 3)
+        self.assertEqual(len(plan["commands"]), 4)
         awq = plan["commands"][1]["command"]
         self.assertEqual(awq[awq.index("--quantization") + 1], "awq_marlin")
-        self.assertNotIn("--quantization", plan["commands"][2]["command"])
+        official = plan["commands"][2]["command"]
+        self.assertEqual(official[official.index("--quantization") + 1], "fp8")
+        self.assertTrue(official[official.index("--model") + 1].endswith("Qwen3-8B-FP8"))
+        self.assertNotIn("--quantization", plan["commands"][3]["command"])
+        for entry in plan["commands"]:
+            command = entry["command"]
+            self.assertEqual(command[command.index("--tokenizer") + 1], str(self.source_path))
         self.assertEqual(digest(snapshot / "manifest.json"), before)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            bench.main(["--snapshot", str(snapshot), "--model", "QWEN3-8B", "--model", "qwen3-8b-fp8-local",
-                        "--rounds", "2", "--requests", "7", "--plan-only"])
+            bench.main(["--snapshot", str(snapshot), "--model", "QWEN3-8B", "--model", "Qwen3-8B-FP8",
+                        "--model", "qwen3-8b-fp8-local", "--rounds", "2", "--requests", "7", "--plan-only"])
         plan = json.loads(output.getvalue())
-        self.assertEqual(plan["models"], ["bf16", "fp8-local"])
+        self.assertEqual(plan["models"], ["bf16", "fp8-official", "fp8-local"])
         self.assertEqual((plan["rounds"], len(plan["selected_ids"])), (2, 12))
 
     def test_custom_config_expands_alias_before_profile_inference_and_null_tokenizer(self):
@@ -141,10 +151,33 @@ class BenchmarkModelsTests(unittest.TestCase):
         self.assertEqual(result["model"], str(target))
         self.assertEqual(result["tokenizer"], str(self.source_path))
 
+    def test_official_alias_custom_config_and_wrong_fp8_format(self):
+        config = self.quantized("fp8-official")
+        target = self.root / "Qwen3-8B-FP8"
+        Path(config["model"]).rename(target)
+        config.pop("profile")
+        config.update(model="Qwen3-8B-FP8", tokenizer=None)
+        path = self.root / "official.json"
+        write(path, config)
+        with patch.dict(bench.os.environ, {"MODEL_ROOT": str(self.root)}):
+            loaded = bench.load_configs(SimpleNamespace(config=path), self.source)[0]
+        self.assertEqual(loaded["profile"], "fp8-official")
+        with contextlib.redirect_stdout(io.StringIO()):
+            model = bench.verify_model(loaded, self.source)
+        self.assertEqual(model["quant_method"], "fp8")
+        self.assertEqual(model["base_source_verification"], "architecture_only; original base revision unproven")
+        bench.validate(loaded, self.protocol, model)
+        wrong = {"config": dict(self.base_config, quantization_config=FP8_CONFIG)}
+        with self.assertRaisesRegex(ValueError, "Official FP8"):
+            bench.validate(loaded, self.protocol, wrong)
+        write(target / "config.json", wrong["config"])
+        with self.assertRaisesRegex(ValueError, "Official FP8"):
+            bench.verify_model(loaded, self.source)
+
     def test_bf16_changed_source_fails_but_quantized_shards_have_independent_hashes(self):
         with contextlib.redirect_stdout(io.StringIO()):
             base = bench.verify_model(self.config("bf16"), self.source)
-            for profile in ("awq", "fp8-local"):
+            for profile in ("awq", "fp8-official", "fp8-local"):
                 config = self.quantized(profile)
                 model = bench.verify_model(config, self.source)
                 bench.validate(config, self.protocol, model)
@@ -192,10 +225,12 @@ class BenchmarkModelsTests(unittest.TestCase):
                 bench.verify_model(config, self.source)
 
     def test_resolved_engine_format_is_checked_without_claiming_cuda_kernel(self):
-        for profile, method in (("bf16", "None"), ("awq", "awq_marlin"), ("fp8-local", "compressed-tensors")):
+        for profile, method in (("bf16", "None"), ("awq", "awq_marlin"),
+                                ("fp8-official", "fp8"), ("fp8-local", "compressed-tensors")):
             config = self.config(profile)
             model = {"config": self.base_config if profile == "bf16" else dict(self.base_config,
-                quantization_config={"quant_method": "awq"} if profile == "awq" else FP8_CONFIG)}
+                quantization_config=({"quant_method": "awq"} if profile == "awq" else
+                                     NATIVE_FP8_CONFIG if profile == "fp8-official" else FP8_CONFIG))}
             line = f"INFO Initializing a V1 LLM engine (v0.11.0) with config: dtype=torch.bfloat16, quantization={method}, seed=42"
             verified = bench.verify_engine(line, config, model)
             self.assertEqual(verified["quantization"], method)
@@ -260,7 +295,7 @@ class BenchmarkModelsTests(unittest.TestCase):
 
     def test_bad_model_precheck_does_not_skip_remaining_models(self):
         snapshot, frozen = self.frozen()
-        configs = [self.config(profile) for profile in ("bf16", "awq", "fp8-local")]
+        configs = [self.config(profile) for profile in ("bf16", "awq", "fp8-official", "fp8-local")]
         def environment(command, **kwargs):
             if "--output" in command:
                 write(Path(command[command.index("--output") + 1]), {"checks": {"torch": {"runtime": {
@@ -268,7 +303,8 @@ class BenchmarkModelsTests(unittest.TestCase):
             return SimpleNamespace(stdout="synthetic", returncode=0)
         def verify(config, source):
             if config["profile"] == "awq": raise ValueError("missing AWQ files")
-            actual = self.base_config if config["profile"] == "bf16" else dict(self.base_config, quantization_config=FP8_CONFIG)
+            actual = self.base_config if config["profile"] == "bf16" else dict(
+                self.base_config, quantization_config=NATIVE_FP8_CONFIG if config["profile"] == "fp8-official" else FP8_CONFIG)
             return {"config": actual}
         def case_run(config, protocol, case, items, directory, model):
             return {"case": case["id"], "model_profile": config["profile"], "rounds": [], "status": "passed"}
@@ -280,10 +316,10 @@ class BenchmarkModelsTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()):
             status = bench.main(["--snapshot", str(snapshot), "--all-models"])
         self.assertEqual(status, 1)
-        self.assertEqual([call.args[0]["profile"] for call in runner.call_args_list], ["bf16", "fp8-local"])
+        self.assertEqual([call.args[0]["profile"] for call in runner.call_args_list], ["bf16", "fp8-official", "fp8-local"])
         run_path = next((self.root / "log").iterdir())
         results = read(run_path / "summary.json")["cases"]
-        self.assertEqual([x["status"] for x in results], ["passed", "failed", "passed"])
+        self.assertEqual([x["status"] for x in results], ["passed", "failed", "passed", "passed"])
         self.assertEqual(results[1]["failure_kind"], "model_precheck")
         run = read(run_path / "run.json")
         self.assertEqual((run["snapshot_protocol"]["requests"], run["protocol"]["requests"]), (100, 50))

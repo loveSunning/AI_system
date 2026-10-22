@@ -25,15 +25,29 @@ def exact_prompt(tokenizer, target, index):
     raise ValueError(f"Cannot construct exact {target}-token prompt; no truncated template saved")
 
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", type=Path, default=Path("/workspace/weights_pub/Qwen3-8B"))
     p.add_argument("--revision", default="unknown", help="resolved source commit; unknown is recorded honestly")
     p.add_argument("--config", type=Path, default=ROOT / "configs/workloads.yaml")
+    p.add_argument("--requests", type=positive_int,
+                   help="formal requests to generate per case, excluding warmup; overrides config requests")
     p.add_argument("--output", type=Path, default=ROOT / "data/frozen")
     a = p.parse_args(argv)
     if a.output.exists():
         p.error("Output exists; use a new directory to preserve the frozen experiment")
+    protocol = read(a.config)
+    if a.requests is not None:
+        protocol["requests"] = a.requests
+    if type(protocol.get("requests")) is not int or protocol["requests"] < 1:
+        p.error("Config requests must be a positive integer, or pass --requests N")
     from transformers import AutoTokenizer
     model = a.model.resolve()
     config = read(model / "config.json")
@@ -43,7 +57,10 @@ def main(argv=None):
     template = tokenizer.get_chat_template()
     if "enable_thinking" not in template:
         p.error("Template does not support the required thinking switch")
-    protocol = read(a.config)
+    case_count = len(protocol["cases"])
+    total = case_count * (protocol["requests"] + protocol["warmup"])
+    print(f"Preparing {case_count} cases: {protocol['requests']} formal + {protocol['warmup']} warmup "
+          f"requests per case ({total} total).", flush=True)
     prepared = []
     for case in protocol["cases"]:
         for index in range(protocol["requests"] + protocol["warmup"]):

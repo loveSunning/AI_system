@@ -1,6 +1,6 @@
 # P1：Qwen3-8B 量化与性能诊断学习规划
 
-更新日期：2026-10-21。用户已提供 BF16 五组负载×3轮×100请求全部通过的真实报告；环境/模型来源和显存预算仍需结合原始文件人工解释。本次扩展三模型运行与 benchmark，新增 AWQ/本地 FP8 配置；当前默认每组每轮预热5次、正式50次、1轮，可用 --rounds 指定轮数。新路线的目标机性能与质量、Profiler 诊断仍待执行；历史 BF16 实验 ID 和 3×100 协议保持原样。执行步骤见 [第一周运行说明](docs/week1_execution.md)。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把文件存在或本地测试通过等同于目标机实验通过。
+更新日期：2026-10-22。用户已提供 BF16 五组负载×3轮×100请求全部通过的真实报告；环境/模型来源和显存预算仍需结合原始文件人工解释。本次扩展四模型运行与 benchmark，包含 AWQ/官方 FP8/本地 FP8 配置；当前默认每组每轮预热5次、正式50次、1轮，可用 --rounds 指定轮数。新路线的目标机性能与质量、Profiler 诊断仍待执行；历史 BF16 实验 ID 和 3×100 协议保持原样。执行步骤见 [第一周运行说明](docs/week1_execution.md)。本文依据 [项目说明](README.md) 与 [W29–W52 计划](../../docs/learning-plan-w29-w52.md) 展开；不把文件存在或本地测试通过等同于目标机实验通过。
 
 ## 1. 项目目标与范围
 
@@ -17,7 +17,7 @@
 | 质量 | 100 条固定留出任务、逐题判分；独立语料 PPL 选做 |
 | 暂缓 | 多框架完整对比、训练/微调、自写量化 kernel、INT8 全矩阵、多卡和跨平台迁移；分别留给后续案例或选做 |
 
-当前阶段已提供 download_models.sh、collect_environment.py、run_model.py、test_server.py、prepare_workloads.py、benchmark.py、evaluate_quality.py、summarize.py 和 serve.sh。BF16/AWQ/本地 FP8 配置与 100 条质量数据已落地。性能快照必须使用目标机的真实 tokenizer 生成；实验结果保存在独立 log/benchmark_* 目录，不写入虚构的基线数字。
+当前阶段已提供 download_models.sh、collect_environment.py、run_model.py、test_server.py、prepare_workloads.py、benchmark.py、evaluate_quality.py、summarize.py 和 serve.sh。BF16/AWQ/官方 FP8/本地 FP8 配置与 100 条质量数据已落地。性能快照必须使用目标机的真实 tokenizer 生成；实验结果保存在独立 log/benchmark_* 目录，不写入虚构的基线数字。
 
 ## 2. 学习内容与依赖路径
 
@@ -76,7 +76,7 @@
 
 1. 在 workloads.yaml 配置五组负载、并发、请求数、预热、轮数、请求顺序、种子、缓存策略和输出限制；新快照默认每组预热5次、正式50次、1轮。
 2. 生成可重复的请求，使用锁定 tokenizer 在最终模板渲染后核验输入 token 数；保存请求快照和 hash，避免客户端/服务端重复套模板。不能以字符数或模板前 token 数代替实际输入长度。
-3. 每组每轮先预热5个请求，当前默认正式50个请求、1轮；--rounds N 可增加轮数，--requests N 可改正式请求数。旧100请求/3轮快照可按顺序选前50个正式请求复用，原快照不改；同次比较的所有模型共用子集，另存有效协议与子集hash。请求数不能超过快照可用记录数。披露50样本p95的不稳定性及单轮无法估计跨轮波动的限制。
+3. 每组每轮先预热5个请求，当前默认正式50个请求、1轮；--rounds N 可增加轮数，--requests N 可改正式请求数。旧100请求/3轮快照可按顺序选前50个正式请求复用，原快照不改；同次比较的所有模型共用子集，另存有效协议与子集hash。请求数不能超过快照可用记录数；需要更大容量时用 prepare_workloads.py --requests 200 输出到新目录，再由 benchmark.py --snapshot 新目录 --requests 200 使用，原配置和旧快照不改。披露50样本p95的不稳定性及单轮无法估计跨轮波动的限制。
 4. 准备 100 条有可判定答案的留出任务，并单独准备校准数据；记录来源、许可、样本 ID、去重方式、随机种子和文件 hash。可采用选择题、数值计算、字段抽取、结构化指令遵循各 25 条的初始分层方案。
 5. 冻结判分规则、质量目标和性能/质量各自的生成参数。质量采用正常停止规则；性能若强制固定长度，其输出不用于质量判分。
 
@@ -155,7 +155,7 @@
 | w8192_o128 | 8192 / 128 | 长上下文、容量边界与 TTFT |
 | w1024_o512 | 1024 / 512 | 更长输出的 decode 和端到端成本 |
 
-当前统一入口支持“BF16/AWQ/本地FP8 × 5组负载 × 并发1 × 所选轮数”，默认每组每轮预热5次、正式50次、1轮。可先测一组/一个模型，再使用 --all-models 依次跑三模型。每格记录成功、OOM、超时、拒绝或不可支持状态；失败不能填 0ms 或伪造吞吐。只有共同成功的格子才能计算配对收益。并发 8/16 是容量允许时的后续扩展，并发 32 选做。
+当前统一入口支持“BF16/AWQ/官方FP8/本地FP8 × 5组负载 × 并发1 × 所选轮数”，默认每组每轮预热5次、正式50次、1轮。可先测一组/一个模型，再使用 --all-models 依次跑四模型。每格记录成功、OOM、超时、拒绝或不可支持状态；失败不能填 0ms 或伪造吞吐。只有共同成功的格子才能计算配对收益。并发 8/16 是容量允许时的后续扩展，并发 32 选做。
 
 先采用固定并发的 closed-loop 请求模式，记录客户端最大在途请求数与补发方式。开放到达率/QPS 实验属于扩展，必须单独标注请求率、队列与持续时间，不能与固定并发结果混在一起。
 
@@ -187,7 +187,7 @@
 
 ## 6. 文件职责与后续实现顺序
 
-下载、环境采集、三模型运行与benchmark、质量入口和汇总工具已实现；表中区分当前工具职责和仍需采集的目标机证据。先验证一条短请求，再扩展矩阵。
+下载、环境采集、四模型运行与benchmark、质量入口和汇总工具已实现；表中区分当前工具职责和仍需采集的目标机证据。先验证一条短请求，再扩展矩阵。
 
 | 文件 | 后续职责 / 输入 | 后续输出与验收 |
 | --- | --- | --- |
@@ -199,9 +199,9 @@
 | scripts/run_model.py | 已实现：本地模型路径/三种qwen3别名、backend、prompt/messages、模板/thinking、生成与显存参数 | Transformers/vLLM本地生成、token检查、JSON运行记录、vLLM HTTP服务；量化新路线仍待4090D验证，正式性能用benchmark |
 | scripts/test_server.py | 已实现：远程 base URL、模型别名、请求参数与可选 API Key 环境变量 | 健康/模型列表、非流式与可选 SSE 检查、JSON 结果及失败退出码；客户端无 GPU 依赖，真实远程连通性待验证 |
 | scripts/collect_environment.py | 已实现：当前 Python、依赖版本、GPU/驱动、PyTorch/CUDA、nvcc/Nsight 并行探测 | 终端打印，可选 environment.json；默认核对 4090D/20 GiB，缺失和超时有诊断；模型 revision/模板/hash 快照后续补充 |
-| scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
+| scripts/prepare_workloads.py | 冻结 workload、tokenizer、模板及原始数据；--requests N 覆盖每组生成数量 | 可重放的请求快照、token 校验、hash/来源清单；核验质量集条数、唯一性及已知校准交叉 |
 | scripts/serve.sh | 已实现的配置和启动模式 | 启动命令、日志、就绪/失败状态；BF16/W4A16 分进程运行，profiling 与正常模式区分 |
-| scripts/benchmark.py | 已实现：--model bf16/awq/fp8-local、--all-models、--rounds、--requests、--case；复用冻结请求 | 分模型/负载保存原始请求、有效协议/子集hash、实际dtype/量化、失败与显存；默认50请求/1轮 |
+| scripts/benchmark.py | 已实现：--model bf16/awq/fp8-official/fp8-local、--all-models、--rounds、--requests、--case；复用冻结请求 | 分模型/负载保存原始请求、有效协议/子集hash、实际dtype/量化、失败与显存；默认50请求/1轮 |
 | scripts/evaluate_quality.py | 同一质量留出集、两组服务配置、冻结判分规则 | 逐题原始回答/分数、总体/分项质量与配对差异；记录评测器版本/hash |
 | scripts/summarize.py | 原始性能/质量结果、manifest、证据索引 | 校验后生成 CSV/图表和报告素材；拒绝把不同协议的记录合并 |
 | data/performance.jsonl | 未来的正式逐请求性能记录入口 | 一行一个请求，包含失败记录；通过 run ID 关联各轮元数据 |
@@ -299,4 +299,4 @@ Project1_Report.md 在实验完成后填写以下内容，本次不写入报告�
 
 学习目标：理解静态128×128权重分块、动态每token/128通道激活缩放、scale精度、compressed-tensors导出与实际kernel的关系。先完成无数据RTN转换和静态产物校验，再在原vLLM0.11.0环境验证生成。将源模型revision/文件hash、配方、依赖、日志、目标权重hash关联保存。
 
-验收：全部目标Linear实际保存为E4M3、scale形状和值有效、保留层与模板正确、目标GPU能够推理；之后用固定质量集比较BF16/官方FP8/本地产物。数值方案接近不代表逐位、质量或性能相同。当前脚本与文档已实现，真实8B转换和4090D加载仍待验证；benchmark已扩展支持本地FP8，使用 --model fp8-local 或 --all-models，默认50正式请求/1轮。三种模型共用冻结的tokenizer/token IDs；量化权重另存指纹，不能拿BF16权重hash去要求量化产物相同。
+验收：全部目标Linear实际保存为E4M3、scale形状和值有效、保留层与模板正确、目标GPU能够推理；之后用固定质量集比较BF16/官方FP8/本地产物。数值方案接近不代表逐位、质量或性能相同。当前脚本与文档已实现，真实8B转换和4090D加载仍待验证；benchmark已扩展支持官方与本地FP8，分别使用 --model fp8-official、--model fp8-local，或用 --all-models 运行四项对比，默认50正式请求/1轮。四种模型共用冻结的tokenizer/token IDs；量化权重另存指纹，不能拿BF16权重hash去要求量化产物相同。

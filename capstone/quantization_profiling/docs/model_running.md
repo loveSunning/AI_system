@@ -52,7 +52,7 @@ CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.
 
 vLLM 入口默认启用 eager 执行、关闭 prefix caching，并把每步调度 token 预算限制为 2048、启用 chunked prefill，避免第一次学习时混入 CUDA Graph 捕获和前缀缓存命中。后续需要研究 Graph 时再显式使用 `--no-enforce-eager`。0.75 是物理总显存的比例：24 GiB 显卡约对应 18 GiB 的引擎预算，不是“20 GiB 空闲显存的 75%”；它也不是整卡硬隔离上限。权重、KV 和运行时开销都需容纳在实际环境中，短请求参数不能保证一定不 OOM。
 
-### 1.4 三种模型使用同一个入口
+### 1.4 四种模型使用同一个入口
 
 `--model` 既接受本地路径，也接受别名；别名从 `MODEL_ROOT`（默认 `/workspace/weights_pub`）查找对应目录。
 
@@ -60,6 +60,7 @@ vLLM 入口默认启用 eager 执行、关闭 prefix caching，并把每步调�
 | --- | --- | --- |
 | qwen3-8b | Qwen3-8B | BF16，无权重量化 |
 | qwen3-8b-awq | Qwen3-8B-AWQ | awq_marlin，BF16 激活、INT4 权重 |
+| qwen3-8b-fp8 | Qwen3-8B-FP8 | 官方分块 FP8，原生 fp8 加载器 |
 | qwen3-8b-fp8-local | Qwen3-8B-FP8-local | BF16 非量化部分，按 config 识别 FP8 量化层 |
 
 ```bash
@@ -70,21 +71,27 @@ CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.
   --prompt "请用三句话解释权重量化。" \
   --output out/quantization_profiling/awq-smoke.json
 
+# 官方分块 FP8：使用原生 fp8 权重配置。
+CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
+  --backend vllm --model qwen3-8b-fp8 --thinking off \
+  --prompt "请简要解释动态激活量化。" \
+  --output out/quantization_profiling/fp8-official-smoke.json
+
 # 自行转换的本地 FP8 权重：直接读取 config 的 compressed-tensors 方案。
 CUDA_VISIBLE_DEVICES=0 python capstone/quantization_profiling/scripts/run_model.py \
   --backend vllm --model qwen3-8b-fp8-local --thinking off \
   --prompt "请简要解释动态激活量化。" \
   --output out/quantization_profiling/fp8-smoke.json
 
-# 三者均可启动服务；同一端口每次只运行一种模型。
+# 四者均可启动服务；同一端口每次只运行一种模型。
 python capstone/quantization_profiling/scripts/run_model.py \
   --serve --model qwen3-8b-fp8-local \
   --host 0.0.0.0 --port 7081 --max-num-seqs 1
 ```
 
-脚本根据模型配置解析预设，并检查声明的模型与权重量化信息是否一致。AWQ 预设使用 `awq_marlin`，以便与 BF16 基线保持相同激活 dtype。若确实要测试旧 AWQ 路径，显式使用 `--quantization awq --dtype float16`；该路径和默认 Marlin 路径应分组比较。对于本地 FP8，保留 `quant_method=compressed-tensors`，不要手动改成 `fp8`；`--quantization auto` 让 vLLM 根据实际权重配置加载。
+脚本根据模型配置解析预设，并检查声明的模型与权重量化信息是否一致。AWQ 预设使用 `awq_marlin`，以便与 BF16 基线保持相同激活 dtype。若确实要测试旧 AWQ 路径，显式使用 `--quantization awq --dtype float16`；该路径和默认 Marlin 路径应分组比较。官方 FP8 使用原生 `fp8` 加载器；对于本地 FP8，保留 `quant_method=compressed-tensors`，不要手动改成 `fp8`；`--quantization auto` 让 vLLM 根据实际权重配置加载。
 
-启动日志可核验实际引擎 dtype 和量化方法，具体执行 kernel 仍需 Profiler 证据。Transformers 入口会拒绝已量化模型；本次三精度主线使用 vLLM。正式比较使用 [benchmark 流程](week1_execution.md)，共用冻结请求，不能直接把上述单次短请求耗时当成性能结论。
+启动日志可核验实际引擎 dtype 和量化方法，具体执行 kernel 仍需 Profiler 证据。Transformers 入口会拒绝已量化模型；本次四模型对比使用 vLLM。正式比较使用 [benchmark 流程](week1_execution.md)，共用冻结请求，不能直接把上述单次短请求耗时当成性能结论。
 
 ## 2. 通用脚本的输入、参数和输出
 
@@ -118,9 +125,9 @@ python capstone/quantization_profiling/scripts/run_model.py \
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | --backend | vllm | 选择推理库 |
-| --model | /workspace/weights_pub/Qwen3-8B | 本地目录或 qwen3-8b / qwen3-8b-awq / qwen3-8b-fp8-local；MODEL_ROOT 改变别名根目录 |
+| --model | /workspace/weights_pub/Qwen3-8B | 本地目录或 qwen3-8b / qwen3-8b-awq / qwen3-8b-fp8 / qwen3-8b-fp8-local；MODEL_ROOT 改变别名根目录 |
 | --tokenizer | 与 model 相同 | tokenizer 的本地目录 |
-| --dtype | auto | 按模型预设解析；上述三模型主线使用 BF16；不是量化算法 |
+| --dtype | auto | 按模型预设解析；上述四模型主线使用 BF16；不是量化算法 |
 | --thinking | auto | 保留模板默认值；on/off 显式传入 enable_thinking |
 | --max-new-tokens | 128 | 生成 token 上限，不保证一定生成到该长度 |
 | --max-model-len | 2048 | 输入加输出的总 token 预算；vLLM 同时用它限制引擎上下文 |
@@ -133,7 +140,7 @@ python capstone/quantization_profiling/scripts/run_model.py \
 | --max-num-batched-tokens | 2048 | vLLM 每步调度 token 预算，含 prefill；配合 chunked prefill 控制单步工作量 |
 | --tensor-parallel-size | 1 | vLLM tensor parallel 卡数 |
 | --enforce-eager / --no-enforce-eager | eager | 控制 vLLM 是否禁用 CUDA Graph 捕获 |
-| --quantization | auto | 按模型预设/权重配置选择；AWQ 主线 awq_marlin，本地 FP8 自动识别 compressed-tensors |
+| --quantization | auto | 按模型预设/权重配置选择；AWQ 主线 awq_marlin，官方 FP8 使用 fp8，本地 FP8 自动识别 compressed-tensors |
 | --device | cuda | Transformers 使用 cuda 或 cpu |
 | --tokenize-only | 关闭 | 仅准备模板/token，不加载权重 |
 | --output | 不写文件 | 指定 JSON 记录路径；同路径会覆盖 |
@@ -434,7 +441,7 @@ print()
 | 单条生成、模型结构与生成策略 | Transformers | dtype、device、GenerationConfig、EOS |
 | 本地批量推理与量化权重 | vLLM LLM | 引擎初始化日志、KV 预算、实际 quantization backend |
 | 常驻服务、HTTP 请求与流式输出 | vLLM API server | 服务就绪、请求参数、usage、错误与流式事件 |
-| 正式 BF16/AWQ/本地 FP8 性能比较 | 已实现的 benchmark 与固定 workload | 默认每组预热5次、正式50次、1轮；--rounds 可选；本脚本只用于先跑通 |
+| 正式 BF16/AWQ/官方 FP8/本地 FP8 性能比较 | 已实现的 benchmark 与固定 workload | 默认每组预热5次、正式50次、1轮；--rounds 可选；本脚本只用于先跑通 |
 
 - 缺少 `vllm`：确认当前 Python 安装了 README 指定的 wheel；requirements 中若仍注释 vLLM 行，需要单独执行加速安装命令。
 - 缺少 `accelerate`：Transformers 的 device_map 需要它，按项目 requirements 安装对应版本。

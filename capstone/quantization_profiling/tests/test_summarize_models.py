@@ -12,7 +12,7 @@ from summarize import completion, main, request_path
 
 
 class SummarizeModelsTests(unittest.TestCase):
-    def fixture(self, directory, profiles=("bf16", "awq", "fp8-local"), cases=("w128_o128",),
+    def fixture(self, directory, profiles=("bf16", "awq", "fp8-official", "fp8-local"), cases=("w128_o128",),
                 rounds=1, requests=50, legacy=False):
         run = {"run_id": "synthetic_only", "manifest_sha256": "frozen-sha",
                "protocol": {"requests": requests, "rounds": rounds, "warmup": 5, "concurrency": 1},
@@ -43,7 +43,7 @@ class SummarizeModelsTests(unittest.TestCase):
             main([str(directory)])
         return (directory / "Week1_Report.md").read_text(encoding="utf-8")
 
-    def test_three_models_one_round_fifty_requests_and_separate_export(self):
+    def test_four_models_one_round_fifty_requests_and_separate_export(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             run, summary = self.fixture(directory)
@@ -56,11 +56,25 @@ class SummarizeModelsTests(unittest.TestCase):
             self.assertIn("无法据此评估多轮之间的波动", report)
             self.assertIn("|BF16|w128_o128|passed|1|50/50|", report)
             self.assertIn("|AWQ/W4A16|w128_o128|passed|1|50/50|", report)
+            self.assertIn("|官方 FP8|w128_o128|passed|1|50/50|", report)
             self.assertIn("|本地 FP8|w128_o128|passed|1|50/50|", report)
             exported = rows(directory / "performance.jsonl")
-            self.assertEqual(len(exported), 3)
-            self.assertEqual({row["model_profile"] for row in exported}, {"bf16", "awq", "fp8-local"})
+            self.assertEqual(len(exported), 4)
+            self.assertEqual({row["model_profile"] for row in exported}, {"bf16", "awq", "fp8-official", "fp8-local"})
             self.assertEqual({row["run_id"] for row in exported}, {"synthetic_only"})
+
+    def test_old_three_model_runs_still_pass_and_missing_official_result_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, summary = self.fixture(directory, profiles=("bf16", "awq", "fp8-local"))
+            self.assertTrue(completion(run, summary)[0])
+            self.assertNotIn("|官方 FP8|", self.render(directory))
+            run, summary = self.fixture(directory)
+            summary["cases"] = [entry for entry in summary["cases"] if entry["model_profile"] != "fp8-official"]
+            write(directory / "summary.json", summary)
+            report = self.render(directory)
+            self.assertIn("有效协议：False", report)
+            self.assertIn("fp8-official/w128_o128：缺少实验结果", report)
 
     def test_missing_round_or_request_does_not_pass(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -112,7 +126,7 @@ class SummarizeModelsTests(unittest.TestCase):
             self.assertIn("|本地 FP8|w128_o128|passed|1|50/50|", report)
             self.assertIn("有效协议：False", report)
             self.assertIn("CUDA out of memory", report)
-            self.assertEqual(len(rows(directory / "performance.jsonl")), 3)
+            self.assertEqual(len(rows(directory / "performance.jsonl")), 4)
 
     def test_missing_or_duplicate_matrix_records_and_empty_precheck_fail(self):
         with tempfile.TemporaryDirectory() as temp:

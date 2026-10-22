@@ -20,7 +20,8 @@ import sys
 import time
 import traceback
 
-from model_profiles import inspect_model_config, resolve_model_alias, resolve_runtime_options
+from model_profiles import (inspect_model_config, resolve_model_alias, resolve_runtime_options,
+                            profile_from_model_name, validate_model_profile)
 
 
 DEFAULT_PROMPT = "请用三句话解释大模型推理中的 prefill 和 decode。"
@@ -46,7 +47,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--backend", choices=("vllm", "transformers"), default="vllm")
     parser.add_argument("--model", default="qwen3-8b",
-                        help="local directory or qwen3-8b/qwen3-8b-awq/qwen3-8b-fp8-local alias; MODEL_ROOT applies")
+                        help="local directory or qwen3-8b/qwen3-8b-awq/qwen3-8b-fp8/qwen3-8b-fp8-local alias; MODEL_ROOT applies")
     parser.add_argument("--tokenizer", help="local tokenizer directory; defaults to --model")
     inputs = parser.add_mutually_exclusive_group()
     inputs.add_argument("--prompt", action="append", help="user text; repeat for independent requests")
@@ -134,6 +135,7 @@ def local_directory(value, description):
 
 
 def resolve_paths(args):
+    named_profile = profile_from_model_name(args.model)
     args.model = local_directory(resolve_model_alias(args.model), "Model")
     args.tokenizer = local_directory(args.tokenizer or args.model, "Tokenizer")
     config_path = Path(args.model) / "config.json"
@@ -142,7 +144,8 @@ def resolve_paths(args):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise ValueError("config.json must contain an object")
-    args.model_profile = inspect_model_config(config)
+    args.model_profile = (validate_model_profile(config, named_profile)
+                          if named_profile is not None else inspect_model_config(config))
     args.model_quantization_config = config.get("quantization_config")
     if args.backend == "transformers" and args.model_profile != "bf16" and not args.tokenize_only:
         raise ValueError("This Transformers entry point supports unquantized models. "

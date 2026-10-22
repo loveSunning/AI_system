@@ -217,18 +217,21 @@ python capstone/quantization_profiling/scripts/run_model.py \
 
 检查启动日志，确认 compressed-tensors 和引擎实际 dtype/量化方法；具体 GPU kernel 需要 Profiler 证据。随后复用 test_server.py 做连通性/指标检查。`run_model.py --model qwen3-8b-fp8-local` 是相同本地目录的别名。
 
-benchmark 已适配当前统一版本组合的预检，保留原 cutedsl 组合用于历史复现；不能混用新旧依赖。先完成短请求验证，再用同一新环境重测三模型，冻结请求继续共用 BF16 tokenizer。默认 FP8 配置指向 Qwen3-8B-FP8-local；GPU 转换输出到另一个目录时，需用修改了 model 路径的配置：
+benchmark 已适配当前统一版本组合的预检，保留原 cutedsl 组合用于历史复现；不能混用新旧依赖。先完成短请求验证，再用同一新环境重测四模型，冻结请求继续共用 BF16 tokenizer。默认 FP8 配置指向 Qwen3-8B-FP8-local；GPU 转换输出到另一个目录时，需用修改了 model 路径的配置：
 
 ```bash
 # 五组负载，每组每轮5次预热、50次正式请求，默认1轮。
 python capstone/quantization_profiling/scripts/benchmark.py --model fp8-local
 
-# 轮数可选，先查看计划再运行三模型对照。
+# 官方权重单独对比，默认目录 /workspace/weights_pub/Qwen3-8B-FP8。
+python capstone/quantization_profiling/scripts/benchmark.py --model fp8-official
+
+# 轮数可选，先查看计划再运行四模型对照。
 python capstone/quantization_profiling/scripts/benchmark.py --all-models --rounds 2 --plan-only
 python capstone/quantization_profiling/scripts/benchmark.py --all-models --rounds 2
 ```
 
-旧 100 请求快照可以直接复用，默认按固定顺序取前 50 个正式请求，各模型使用相同子集。请求数还可用 `--requests N` 修改，但不能超过快照可用记录数。BF16/AWQ/本地 FP8 分别启动、停止并留存日志，汇总时按模型和负载分组；详见 [完整执行说明](week1_execution.md)。本次实现尚未在目标 4090D 上完成三模型真实对照。
+旧 100 请求快照可以直接复用，默认按固定顺序取前 50 个正式请求，各模型使用相同子集。请求数还可用 `--requests N` 修改，但不能超过快照可用记录数。BF16/AWQ/官方 FP8/本地 FP8 分别启动、停止并留存日志，汇总时按模型和负载分组；详见 [完整执行说明](week1_execution.md)。本次实现尚未在目标 4090D 上完成四模型真实对照。
 
 模型能回答后，再对同一留出集做 BF16/官方 FP8/本地 FP8 三组评测，比较质量及独立的性能记录。官方自定义脚本与此配方的 scale 精度、舍入、保留层可能不同，不能提前宣称相同质量或速度。
 

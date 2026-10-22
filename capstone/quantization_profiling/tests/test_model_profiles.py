@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from model_profiles import canonical_profile, inspect_model_config, resolve_model_alias, resolve_runtime_options
+from model_profiles import (canonical_profile, inspect_model_config, resolve_model_alias,
+                            resolve_runtime_options, profile_from_model_name, validate_model_profile)
 
 
 def fp8_config():
@@ -26,6 +27,26 @@ class ModelProfileTests(unittest.TestCase):
             self.assertEqual(resolve_model_alias("Qwen/Qwen3-8B"), "Qwen/Qwen3-8B")
         with self.assertRaises(ValueError):
             canonical_profile("not-a-profile")
+
+    def test_official_fp8_alias_and_recipe_are_distinct_from_local_fp8(self):
+        with patch.dict(os.environ, {"MODEL_ROOT": "/custom/weights"}):
+            self.assertEqual(canonical_profile("QWEN3-8B-FP8"), "fp8-official")
+            self.assertEqual(resolve_model_alias("fp8-official"), str(Path("/custom/weights") / "Qwen3-8B-FP8"))
+            self.assertEqual(profile_from_model_name("/models/Qwen3-8B-FP8"), "fp8-official")
+            self.assertIsNone(profile_from_model_name("/models/other-checkpoint"))
+            self.assertEqual(canonical_profile("fp8"), "fp8-local")  # Historical alias.
+        native = {"quantization_config": {"quant_method": "fp8", "fmt": "e4m3",
+                  "activation_scheme": "dynamic", "weight_block_size": [128, 128]}}
+        self.assertEqual(validate_model_profile(native, "fp8-official"), "fp8-official")
+        self.assertEqual(validate_model_profile(native, "fp8-local"), "fp8-local")
+        self.assertEqual(resolve_runtime_options(native, quantization="fp8")["quantization"], "fp8")
+        with self.assertRaisesRegex(ValueError, "Official FP8"):
+            validate_model_profile(fp8_config(), "fp8-official")
+        for field, value in (("activation_scheme", "static"), ("weight_block_size", [64, 128]), ("fmt", "e5m2")):
+            bad = copy.deepcopy(native)
+            bad["quantization_config"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "FP8"):
+                validate_model_profile(bad, "fp8-official")
 
     def test_fp8_metadata_preserves_loader_format(self):
         config = fp8_config()

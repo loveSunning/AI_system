@@ -5,7 +5,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from experiment_utils import read, rows, write_rows
 
 
-LABELS = {"bf16": "BF16", "awq": "AWQ/W4A16", "fp8-local": "本地 FP8"}
+LABELS = {"bf16": "BF16", "awq": "AWQ/W4A16",
+          "fp8-official": "官方 FP8", "fp8-local": "本地 FP8"}
 
 
 def cell(value):

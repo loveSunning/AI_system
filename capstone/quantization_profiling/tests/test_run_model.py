@@ -201,10 +201,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(record["model_profile"], "fp8-local")
         self.assertEqual(record["quantization_config"], metadata)
 
-    def test_all_three_aliases_start_the_downloaded_local_model(self):
+    def test_all_four_aliases_start_the_downloaded_local_model(self):
         for alias, dirname, quant in (
             ("qwen3-8b", "Qwen3-8B", None),
             ("qwen3-8b-awq", "Qwen3-8B-AWQ", {"quant_method": "awq", "bits": 4}),
+            ("qwen3-8b-fp8", "Qwen3-8B-FP8", {"quant_method": "fp8", "fmt": "e4m3",
+              "activation_scheme": "dynamic", "weight_block_size": [128, 128]}),
             ("qwen3-8b-fp8-local", "Qwen3-8B-FP8-local", {"quant_method": "fp8", "fmt": "e4m3"}),
         ):
             with self.subTest(alias=alias):
@@ -219,6 +221,24 @@ class RunnerTests(unittest.TestCase):
                 command = call.call_args.args[0]
                 self.assertEqual(command[command.index("--model") + 1], str(directory.resolve()))
                 self.assertEqual(command[command.index("--tokenizer") + 1], str(directory.resolve()))
+
+    def test_official_fp8_profile_is_recorded_and_rejects_other_quantization(self):
+        directory = self.root / "Qwen3-8B-FP8"
+        directory.mkdir()
+        metadata = {"quant_method": "fp8", "fmt": "e4m3", "activation_scheme": "dynamic",
+                    "weight_block_size": [128, 128]}
+        config_path = directory / "config.json"
+        config_path.write_text(json.dumps({"model_type": "qwen3", "quantization_config": metadata}), encoding="utf-8")
+        (directory / "model.safetensors").write_bytes(b"fake")
+        with patch.dict(runner.os.environ, {"MODEL_ROOT": str(self.root)}):
+            args = runner.parse_args(["--model", "qwen3-8b-fp8", "--serve"])
+            runner.resolve_paths(args)
+            self.assertEqual(args.model_profile, "fp8-official")
+            self.assertEqual(args.dtype, "bfloat16")
+            self.assertEqual(args.model_quantization_config["quant_method"], "fp8")
+            config_path.write_text(json.dumps({"quantization_config": {"quant_method": "awq", "bits": 4}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Official FP8"):
+                runner.resolve_paths(runner.parse_args(["--model", "qwen3-8b-fp8", "--serve"]))
 
     def test_repeated_prompts_are_independent_with_same_system(self):
         conversations = runner.load_conversations(self.args(

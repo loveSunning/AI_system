@@ -1,6 +1,6 @@
 """Local model aliases and vLLM quantization choices, without importing GPU libraries.
 
-Profile labels describe weight formats. ``dtype`` controls activation/nonquantized
+Profile labels identify comparison deployments and validate their weight formats. ``dtype`` controls activation/nonquantized
 layers; it never changes packed AWQ or FP8 weights into BF16 weights on disk.
 """
 from __future__ import annotations
@@ -8,21 +8,24 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-PROFILE_NAMES = ("bf16", "awq", "fp8-local")
+PROFILE_NAMES = ("bf16", "awq", "fp8-official", "fp8-local")
 MODEL_DIRECTORIES = {
     "bf16": "Qwen3-8B",
     "awq": "Qwen3-8B-AWQ",
+    "fp8-official": "Qwen3-8B-FP8",
     "fp8-local": "Qwen3-8B-FP8-local",
 }
 _ALIASES = {
     "bf16": "bf16", "qwen3-8b": "bf16",
     "awq": "awq", "qwen3-8b-awq": "awq",
+    "fp8-official": "fp8-official", "qwen3-8b-fp8": "fp8-official",
+    # Preserve the historical short alias; select official FP8 explicitly.
     "fp8": "fp8-local", "fp8-local": "fp8-local", "qwen3-8b-fp8-local": "fp8-local",
 }
 
 
 def canonical_profile(value):
-    """Return a built-in format label for a case-insensitive profile/model alias."""
+    """Return a deployment label for a case-insensitive profile/model alias."""
     try:
         return _ALIASES[str(value).strip().lower()]
     except KeyError:
@@ -36,6 +39,16 @@ def resolve_model_alias(value):
     except ValueError:
         return str(value)
     return str(Path(os.environ.get("MODEL_ROOT", "/workspace/weights_pub")) / MODEL_DIRECTORIES[profile])
+
+
+def profile_from_model_name(value):
+    """Read a deployment label from an explicit alias or known directory basename."""
+    for name in (str(value), Path(str(value)).name):
+        try:
+            return canonical_profile(name)
+        except ValueError:
+            pass
+    return None
 
 
 def quant_method(config):
@@ -84,6 +97,28 @@ def inspect_model_config(config):
                 raise ValueError("compressed-tensors profile requires FP8 weights and dynamic FP8 activations")
         return "fp8-local"
     raise ValueError(f"Unsupported quantization method {method!r}; supported profiles: {', '.join(PROFILE_NAMES)}")
+
+
+def validate_model_profile(config, profile):
+    """Validate a selected deployment without inferring official provenance from dtype.
+
+    The legacy inspector describes the FP8 format family as ``fp8-local``.
+    Official Qwen FP8 is a separate deployment using the native fp8 loader;
+    local native-FP8 deployments remain supported for historical configurations.
+    Weight hashes and source records, rather than this label, identify contents.
+    """
+    selected = canonical_profile(profile)
+    detected = inspect_model_config(config)
+    if selected == "fp8-official":
+        quant = config.get("quantization_config") or {}
+        if (detected != "fp8-local" or quant_method(config) != "fp8"
+                or quant.get("fmt") != "e4m3" or quant.get("activation_scheme") != "dynamic"
+                or quant.get("weight_block_size") != [128, 128]):
+            raise ValueError("Official FP8 profile requires native fp8, E4M3, dynamic activations "
+                             "and weight_block_size=[128, 128]")
+    elif selected != detected:
+        raise ValueError("Selected profile does not match actual model quantization config")
+    return selected
 
 
 def resolve_runtime_options(config, dtype="auto", quantization="auto"):

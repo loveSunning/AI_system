@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Managed BF16/AWQ/FP8 comparison using the same frozen token requests."""
+"""Managed BF16/AWQ/official-FP8/local-FP8 comparison on frozen token requests."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -20,7 +20,8 @@ import uuid
 from experiment_utils import ROOT, digest, read, write, load_snapshot, failure_kind
 from test_server import Client, summarize_requests, percentile, redact
 from model_profiles import (PROFILE_NAMES, canonical_profile, resolve_model_alias,
-                            inspect_model_config, resolve_runtime_options, quant_method)
+                            inspect_model_config, resolve_runtime_options, quant_method,
+                            profile_from_model_name, validate_model_profile)
 
 
 def now():
@@ -165,8 +166,7 @@ def validate(config, protocol, model=None):
     if profile == "bf16" and (config["dtype"] != "bfloat16" or config.get("quantization") not in (None, "auto")):
         raise ValueError("BF16 baseline requires unquantized weights and explicit bfloat16")
     if model is not None:
-        if inspect_model_config(model["config"]) != profile:
-            raise ValueError("Selected profile does not match actual model quantization config")
+        validate_model_profile(model["config"], profile)
         resolve_runtime_options(model["config"], config["dtype"], config.get("quantization") or "auto")
     if config["prefix_caching"] or protocol["prefix_caching"] or protocol["thinking"]:
         raise ValueError("Protocol requires prefix caching and thinking disabled")
@@ -210,10 +210,13 @@ def select_requests(items, snapshot_protocol, cases, requests=50, rounds=1):
 def load_configs(args, source_model):
     if args.config:
         config = read(args.config)
+        named_profile = profile_from_model_name(config["model"])
         config["model"] = resolve_model_alias(config["model"])
         if "profile" not in config:
             method = config.get("quantization") or "auto"
-            if method in ("awq", "awq_marlin"):
+            if named_profile is not None:
+                config["profile"] = named_profile
+            elif method in ("awq", "awq_marlin"):
                 config["profile"] = "awq"
             elif method in ("fp8", "compressed-tensors"):
                 config["profile"] = "fp8-local"
@@ -245,9 +248,7 @@ def verify_model(config, source_model):
     """Hash the selected weights separately from the BF16 workload source."""
     directory = Path(config["model"])
     actual = read(directory / "config.json")
-    profile = inspect_model_config(actual)
-    if profile != config["profile"]:
-        raise ValueError("Selected profile does not match actual model quantization config")
+    profile = validate_model_profile(actual, config["profile"])
     runtime = resolve_runtime_options(actual, config["dtype"], config.get("quantization") or "auto")
     config.update(dtype=runtime["dtype"], quantization=runtime["quantization"])
     if not any(directory.glob("*.safetensors")) and not any(directory.glob("*.bin")):
@@ -398,8 +399,8 @@ def main(argv=None):
     p.add_argument("--snapshot", type=Path, default=ROOT / "data/frozen")
     choices = p.add_mutually_exclusive_group()
     choices.add_argument("--config", type=Path, help="custom single-model config")
-    choices.add_argument("--model", action="append", help="bf16, awq, fp8-local or qwen3-8b aliases; repeat to compare")
-    choices.add_argument("--all-models", action="store_true", help="sequentially compare BF16, AWQ and local FP8")
+    choices.add_argument("--model", action="append", help="bf16, awq, fp8-official, fp8-local or qwen3-8b aliases; repeat to compare")
+    choices.add_argument("--all-models", action="store_true", help="sequentially compare BF16, AWQ, official FP8 and local FP8")
     p.add_argument("--rounds", type=positive_int, default=1, help="rounds per model/case (default: 1)")
     p.add_argument("--requests", type=positive_int, default=50, help="formal requests per round (default: 50)")
     p.add_argument("--case", action="append", help="select case IDs; omitted runs all five")
