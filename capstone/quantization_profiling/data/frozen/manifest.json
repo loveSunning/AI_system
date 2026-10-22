@@ -4,9 +4,9 @@
   "files": {
     "quality_protocol.json": "0dda3c2f3a6fd3df40141469475a07ef62fa1ee46eb7dd6ed448e4fe18fd79d6",
     "model.json": "923e2894b28ec0292a4b449b23cb88373b435b2ad17d159abbfca49cd3c0869f",
-    "workloads.yaml": "2e1073e3182f169537671faa4313acb6a24658f9b0fe429fe4e4eb0d3cabdf0f",
+    "workloads.yaml": "9c0a22652b1a1937da37863fc7e67da5c987b213e83b5e0cf1b1ba28d3947cb5",
     "quality_holdout.jsonl": "7d5d15692cba3bda40e8cd208f0316dde405d5be625f8f25c60ba6ae04b6c513",
     "chat_template.jinja": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8",
-    "requests.jsonl": "87629bdcf2cb6873b8eeaaaf15f5f2b07c3d197963dd2c876143db050f56dfc4"
+    "requests.jsonl": "c8a34ab0568beca2ba9b28e6592bfcab5800d593127b4bfebb8f83faf31588f3"
   }
 }
