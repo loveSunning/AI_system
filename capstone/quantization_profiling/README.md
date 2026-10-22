@@ -444,9 +444,26 @@ python capstone/quantization_profiling/scripts/test_server.py \
 
 正式执行接受原 cutedsl 完整版本组合或上面的统一环境组合，不允许混用两者；实际版本组合写入 run.json。本地 FP8 先按 [统一环境说明](#vllm-0112-统一量化与推理环境) 完成加载验证，再运行同环境三模型对照。以下参数可用，目标 GPU 结果仍需实测。
 
-先准备 BF16 tokenizer 的固定请求快照；已有 `data/frozen` 可以直接复用，不能覆盖。完整流程见 [执行说明](docs/week1_execution.md)。
+先准备 BF16 tokenizer 的固定请求快照；已有有效的 `data/frozen` 可以直接复用，不能覆盖。生成方式、文件含义与自定义目录见 [benchmark 测试数据生成说明](docs/week1_execution.md#2-冻结数据与复用旧快照)。在 Linux 目标机执行：
 
 ```bash
+source /workspace/venvs/vllm-0112/bin/activate
+cd /workspace/AI_system
+
+# 首次生成：输出目录必须尚不存在。
+python capstone/quantization_profiling/scripts/prepare_workloads.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --config capstone/quantization_profiling/configs/workloads.yaml \
+  --output capstone/quantization_profiling/data/frozen
+```
+
+默认生成 **275 条性能请求：五组，每组5条预热、50条正式请求**，完整套用聊天模板后校验最终输入 token 数；三模型共用这份数据。生成过程不启动 GPU 推理，但会读取 BF16 权重计算 SHA256；另将已有 100 条质量任务和判分规则复制到快照。
+
+```bash
+# 校验快照并预览三模型计划，不启动 GPU 服务。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --snapshot capstone/quantization_profiling/data/frozen --all-models --plan-only
+
 # 默认 BF16：五组负载，每组预热5次、正式50次，共1轮。
 python capstone/quantization_profiling/scripts/benchmark.py
 

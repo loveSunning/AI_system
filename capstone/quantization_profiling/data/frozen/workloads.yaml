@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "warmup": 5,
+  "requests": 50,
+  "rounds": 1,
+  "concurrency": 1,
+  "prefix_caching": false,
+  "thinking": false,
+  "temperature": 0,
+  "ignore_eos": true,
+  "min_tokens_equals_max_tokens": true,
+  "order": "case order below; round order 1..rounds; request ID ascending; same requests each round",
+  "cases": [
+    {
+      "id": "w128_o128",
+      "input_tokens": 128,
+      "output_tokens": 128
+    },
+    {
+      "id": "w1024_o128",
+      "input_tokens": 1024,
+      "output_tokens": 128
+    },
+    {
+      "id": "w4096_o256",
+      "input_tokens": 4096,
+      "output_tokens": 256
+    },
+    {
+      "id": "w8192_o128",
+      "input_tokens": 8192,
+      "output_tokens": 128
+    },
+    {
+      "id": "w1024_o512",
+      "input_tokens": 1024,
+      "output_tokens": 512
+    }
+  ]
+}

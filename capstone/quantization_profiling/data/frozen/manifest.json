@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "scorer_sha256": "8219b24ca2b6992efdedcb895062c2380b7188f0a584c349daaf61251c806217",
+  "files": {
+    "quality_protocol.json": "0dda3c2f3a6fd3df40141469475a07ef62fa1ee46eb7dd6ed448e4fe18fd79d6",
+    "model.json": "923e2894b28ec0292a4b449b23cb88373b435b2ad17d159abbfca49cd3c0869f",
+    "workloads.yaml": "2e1073e3182f169537671faa4313acb6a24658f9b0fe429fe4e4eb0d3cabdf0f",
+    "quality_holdout.jsonl": "7d5d15692cba3bda40e8cd208f0316dde405d5be625f8f25c60ba6ae04b6c513",
+    "chat_template.jinja": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8",
+    "requests.jsonl": "87629bdcf2cb6873b8eeaaaf15f5f2b07c3d197963dd2c876143db050f56dfc4"
+  }
+}

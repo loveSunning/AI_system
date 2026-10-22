@@ -1,6 +1,6 @@
 # 第一周后续：BF16、AWQ 和本地 FP8 的统一评测
 
-更新：2026-10-21。用户提供的 BF16 实验 `20261020T084357Z_294018cc` 已完成五组负载、每组三轮、每轮100个正式请求。该报告与快照保持原样。本次实现扩展 AWQ/本地 FP8，并把新运行的默认值改为每组每轮50个正式请求、1轮；新路线的目标机推理、性能与质量仍需实测。
+更新：2026-10-22。用户提供的 BF16 实验 `20261020T084357Z_294018cc` 已完成五组负载、每组三轮、每轮100个正式请求。该报告与快照保持原样。本次实现扩展 AWQ/本地 FP8，并把新运行的默认值改为每组每轮50个正式请求、1轮；新路线的目标机推理、性能与质量仍需实测。
 
 **当前统一环境：** 按 [README 安装入口](../README.md#vllm-0112-统一量化与推理环境) 使用 vLLM 0.14.1、LLM Compressor 0.9.0.5、torch 2.9.1+cu128、Transformers 4.57.3 和 compressed-tensors 0.13.0，目录沿用 vllm-0112。benchmark 版本预检已接受该完整组合并记录到run.json；先做短请求验证，再执行三模型同环境对照。历史BF16仍按旧版本追溯，新组合尚未在目标GPU完成正式矩阵。
 
@@ -30,25 +30,108 @@ benchmark 的 `--model` 也接受上表 qwen3 别名。模型目录名不能证�
 
 ## 2. 冻结数据与复用旧快照
 
-在Linux 4090D主机上激活当前统一环境，从仓库根目录执行；旧cutedsl环境仅用于历史复现，不与新环境结果混合。准备请求及正式服务使用同一套锁定依赖。
+### 2.1 生成 benchmark 测试数据
 
-如果已存在有效的 `data/frozen`，直接进入第3节。首次准备时用BF16源模型的真实tokenizer冻结共同请求：
+测试数据由 `scripts/prepare_workloads.py` 在本地构造，无需额外下载数据集。输入是 BF16 源模型的 tokenizer/模板和 `configs/workloads.yaml`，输出是 benchmark 读取的固定请求快照。BF16、AWQ 和本地 FP8 共用同一份快照，不要按量化模型分别生成不同请求。
+
+在 Linux 4090D 主机上，从仓库根目录执行：
+
+```bash
+source /workspace/venvs/vllm-0112/bin/activate
+cd /workspace/AI_system
+
+# 首次生成：输出目录必须尚不存在。
+python capstone/quantization_profiling/scripts/prepare_workloads.py \
+  --model /workspace/weights_pub/Qwen3-8B \
+  --config capstone/quantization_profiling/configs/workloads.yaml \
+  --output capstone/quantization_profiling/data/frozen
+```
+
+使用前，`--model` 目录应已有未量化 Qwen3-8B 的 config、tokenizer/模板和 safetensors 权重；脚本使用 `local_files_only=True`，不会自动下载缺失文件。准备请求及正式服务使用同一套锁定依赖；旧 cutedsl 环境仅用于历史复现，不与新环境结果混合。
+
+生成阶段不启动 vLLM、不把模型权重加载到 GPU，也不生成模型回答；它会读取完整权重文件计算 SHA256，因此仍需本地权重，耗时取决于磁盘速度。看到 `Hashing local weights and tokenizer files` 时等待完成，最后输出 `Frozen: ...`。
+
+参数含义：
+
+| 参数 | 用途 |
+| --- | --- |
+| `--model` | BF16 源模型目录，用于 tokenizer、结构信息、权重指纹和理论显存预算；不要传 AWQ/FP8 模型 |
+| `--config` | 冻结前的负载配置，决定输入/输出 token 长度、每组请求数、预热与评测协议 |
+| `--output` | 新快照目录；包含后续 benchmark 所需的请求、模板、规则和文件指纹 |
+| `--revision` | 可选，只填写已确认的源仓库不可变 commit；省略时如实记录 `unknown`，仍用本地文件 SHA256 固定内容 |
+
+### 2.2 数据内容与 token 长度
+
+脚本按请求编号构造合成提示，在正文中重复 ` x` 调整长度；先完整渲染 Qwen3 聊天模板（thinking 关闭，添加生成提示），再用真实 tokenizer 编码，反复调整直到最终输入长度精确相等。长度包含模板、角色标记和生成提示，不能用字符数代替。无法构造精确长度时直接退出，不截断模板。
+
+当前配置生成：
+
+| 负载 | 最终输入 token | 目标输出 token | 预热请求 | 正式请求 |
+| --- | --- | --- | --- | --- |
+| `w128_o128` | 128 | 128 | 5 | 50 |
+| `w1024_o128` | 1024 | 128 | 5 | 50 |
+| `w4096_o256` | 4096 | 256 | 5 | 50 |
+| `w8192_o128` | 8192 | 128 | 5 | 50 |
+| `w1024_o512` | 1024 | 512 | 5 | 50 |
+
+共 **275 条性能请求（25 条预热 + 250 条正式）**。`requests.jsonl` 每行包含请求 ID、负载、预热/正式标记、messages、渲染文本、`prompt_token_ids` 和目标输入/输出长度。输出 token 数是运行时要满足的预算，快照不包含性能请求的参考答案。这些合成请求用于控制长度和比较性能，不用于评估回答质量。
+
+正式运行调用 `/v1/completions` 并直接发送冻结的 token IDs，避免重复套模板；响应 usage 再次核验输入/输出长度。默认关闭 prefix caching，保证三种模型使用同一请求口径。
+
+### 2.3 生成的文件
+
+默认目录为 `capstone/quantization_profiling/data/frozen/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `requests.jsonl` | 275 条性能请求及最终 token IDs |
+| `workloads.yaml` | 本次冻结的负载和评测协议副本 |
+| `chat_template.jinja` | 本次实际使用的聊天模板 |
+| `model.json` | BF16 源模型路径、来源 revision、结构、文件 SHA256、参数量及权重/KV 理论预算 |
+| `quality_holdout.jsonl` | 从仓库 `data/` 复制的 100 条质量任务，不计入 275 条性能请求 |
+| `quality_protocol.json` | 从仓库复制的质量判分规则 |
+| `manifest.json` | 快照文件的 SHA256 和质量评分脚本指纹，用于校验与追溯 |
+
+理论显存预算不含激活、workspace、allocator、分页和运行时余量。生成期间保持模型目录内容不变；生成后不要手工修改快照文件，否则后续 hash 校验会失败。
+
+### 2.4 校验快照并运行 benchmark
+
+生成成功后，先检查快照文件 hash、请求数量和负载配置，打印三模型运行计划；这一步不启动 GPU 服务，也不验证实际模型权重是否可加载：
+
+```bash
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --snapshot capstone/quantization_profiling/data/frozen \
+  --all-models --requests 50 --rounds 1 --plan-only
+```
+
+确认三个模型的本地路径和量化配置正确、7081 端口空闲后，去掉 `--plan-only` 执行正式测试：
+
+```bash
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --snapshot capstone/quantization_profiling/data/frozen \
+  --all-models --requests 50 --rounds 1
+```
+
+三模型复用同一份 275 条快照；每模型五组各运行一次，合计 750 条正式请求和 75 条预热请求。只测 BF16 可把 `--all-models` 换成 `--model bf16`；只验收短请求一组可加 `--case w128_o128`。
+
+### 2.5 已有快照、重建和自定义数量
+
+**已有有效的 `data/frozen` 可以直接复用，无需重复生成。** 脚本拒绝覆盖已存在的输出目录，即使目录为空也会拒绝。修改 tokenizer、模板或负载后需要新快照时，指定另一个目录，并在 benchmark 中传入相同路径：
 
 ```bash
 python capstone/quantization_profiling/scripts/prepare_workloads.py \
   --model /workspace/weights_pub/Qwen3-8B \
-  --output capstone/quantization_profiling/data/frozen
+  --config capstone/quantization_profiling/configs/workloads.yaml \
+  --output capstone/quantization_profiling/data/frozen_v2
+
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --snapshot capstone/quantization_profiling/data/frozen_v2 \
+  --all-models --requests 50 --rounds 1 --plan-only
 ```
 
-新 `configs/workloads.yaml` 默认生成每组5个预热和50个正式请求，协议默认1轮。脚本拒绝覆盖已有快照。已确认源仓库不可变commit时可加 `--revision <真实commit>`；未查明时如实记录unknown，仍用本地文件SHA256固定内容。不要填写猜测的revision。哈希会读取大型分片，模型目录应保持静止。
+**旧 100 请求/3 轮快照无需重建。** benchmark 不会修改它，默认按固定顺序取每组前 50 个正式请求；所有被测模型和轮次复用相同子集。新运行保存原快照协议、本次有效协议、选中的请求及子集 hash。比较结果时同时核对模型、原快照指纹、子集、轮数、并发和缓存配置。
 
-脚本完整渲染模板后核验最终输入token数，保存messages、渲染文本和token IDs，构造精确长度失败就退出。性能请求调用 `/v1/completions` 并直接发送冻结的token IDs，避免重复套模板，响应usage再次核验输入/输出长度。
-
-快照包括 requests.jsonl、workloads.yaml、chat_template.jinja、model.json、质量数据/规则和manifest.json。model.json包含BF16源模型结构、文件指纹、参数量及权重/KV理论预算；理论预算不含激活、workspace、allocator、分页和运行时余量。
-
-**旧100请求/3轮快照无需重建。** benchmark不会修改它，默认按固定顺序取每组前50个正式请求；所有被测模型和轮次复用相同子集。新运行保存原快照协议、本次有效协议、选中的请求及子集hash。比较结果时同时核对模型、原快照指纹、子集、轮数、并发和缓存配置。
-
-如果要恢复旧100/3运行，需有每组100个正式请求的快照，再传 `--requests 100 --rounds 3`。当前默认新快照只有50个正式请求，不能凭空扩展到100；可以在冻结前另备请求数为100的workload配置，输出到新的快照目录。
+减少正式请求数或增加轮数只需设置 benchmark 的 `--requests N`、`--rounds N`，不必重新生成；每轮复用同一组请求。若要使用超过快照容量的请求数，例如在新默认 50 条快照上运行 `--requests 100`，应先另存一份 JSON 格式的 workload 配置，把顶层 `requests` 改为 100，再通过生成脚本的 `--config` 冻结到新目录。benchmark 的 `--requests` 只选择已有请求，不会生成额外数据。
 
 ## 3. 选择模型、轮数和请求数
 
