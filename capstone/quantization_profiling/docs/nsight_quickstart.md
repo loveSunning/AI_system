@@ -41,7 +41,7 @@ wait_7081() {
 继续在同一终端执行。保留当前 `--enforce-eager false` 和逐节点 `--cuda-graph-trace=node` 配置；是否实际捕获/回放 Graph 仍要看日志与时间线。每个模型保存独立报告和 nsys 日志。临时目录只改变文件位置，不保证能解决采集器内部错误。
 
 ```bash
-for MODEL_PROFILE in bf16 fp8-official; do
+for MODEL_PROFILE in bf16 fp8-official awq fp8-local; do
   wait_7081 || break
 
   REPORT_PREFIX="capstone/quantization_profiling/log/profiling/no_eager_${MODEL_PROFILE}_w128_o128_${RUN_TAG}"
