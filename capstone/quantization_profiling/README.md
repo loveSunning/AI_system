@@ -6,6 +6,8 @@
 
 **Nsight 快速运行：** [简化版：直接运行 nsys 和 ncu](docs/nsight_quickstart.md)。benchmark 使用默认冻结数据。
 
+**已有 nsys 报告解读：** [2026-10-23 四模型报告的实际热点、GUI 步骤与 CLI 命令](docs/nsys_report_reading_20261023.md)。包含同等 decode 周期对照、统计字段含义与采集完整性限制。
+
 **FP8 性能诊断与 Nsight 实操：** [官方/本地 FP8 与 BF16、AWQ 的逐步分析命令](docs/nsight_fp8_performance_analysis.md)。结合 2026-10-22 的 1×80、并发 1 结果，覆盖服务/离线采集、prefill/decode、NCU 指标与受控消融；实际 GPU 归因须在目标机采集验证。
 
 **FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；当前统一环境支持量化与推理；另保留 `torch==2.8.0+cpu` 的历史 CPU 量化方案。
