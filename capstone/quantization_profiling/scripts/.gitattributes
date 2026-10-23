@@ -1,1 +1,2 @@
 *.sh text eol=lf
+evaluate_quality.py text eol=lf

@@ -280,26 +280,23 @@ python capstone/quantization_profiling/scripts/summarize.py $benchmarkRun
 
 报告按本次声明的模型、负载、轮数和请求数验收，不强制至少三轮；只选部分 case 时按所选 case 验收，并说明覆盖范围。历史单模型报告仍按原记录读取。失败配置没有指标时保留空缺，不填 0ms。命令成功生成文件不等于实验全部通过，应查看报告中的“本次所选模型/负载全部满足有效协议”和失败列表。
 
-## 5. 质量数据和后续回归
+## 5. 质量对比
 
-`data/quality_holdout.jsonl`仍为100条，不随性能请求数减少。四类各25条：整数运算、最大值选择、字段抽取、JSON结构指令；样本ID唯一，参考答案显式保存。它是自编教学回归集，难度/覆盖有限。
+四类固定任务各 25 条，合计 100 条；沿用已冻结的原始判分器。质量生成正常 EOS 停止，与性能测试的强制输出长度协议分开。
 
-判分只去除答案首尾空白；文本严格匹配；JSON忽略键顺序，但键、值和类型必须一致，重复键和代码围栏判错，截断判错。基础设施失败单列，不自动重试；出现此类失败则总体准确率为空并标记incomplete。后续量化门槛预设为较BF16下降不超过2个百分点。
-
-质量集不参与性能请求或量化校准/调参；BF16→本地FP8的RTN转换见 [FP8说明](fp8_quantization.md)。质量评测采用正常EOS停止，不启用ignore_eos/min_tokens。benchmark结束会停止服务，另开终端启动对应模型，再运行质量入口：
+从 Linux 4090D 主机的仓库根目录执行，先停止占用 7081 的已有服务：
 
 ```bash
-# 终端1：先测BF16，后续逐个替换成AWQ/官方FP8/本地FP8。
-python capstone/quantization_profiling/scripts/run_model.py \
-  --serve --model qwen3-8b --host 0.0.0.0 --port 7081 --max-model-len 2048
-
-# 终端2：label仅是标签，需关联真实服务日志。
-python capstone/quantization_profiling/scripts/evaluate_quality.py \
-  --label bf16 --base-url http://127.0.0.1:7081 \
-  --output capstone/quantization_profiling/log/quality_bf16_001
+source /workspace/venvs/vllm-0112/bin/activate
+python capstone/quantization_profiling/scripts/compare_quality.py --plan-only
+python capstone/quantization_profiling/scripts/compare_quality.py
 ```
 
-分别保存BF16/AWQ/官方FP8/本地FP8逐题结果后再比较，不能把性能输出当质量答案。不要针对这100题调参后继续称为未见留出集。
+默认 BF16、AWQ、官方 FP8、本地 FP8，共 400 次请求，自动顺序启动和停止服务。使用另一份快照时增加 `--snapshot <目录>`；性能数据数量不影响质量集 100 题。结果保存在 `log/quality_<ID>/`，自动生成 Quality_Report.md、总体/分类 CSV 和逐题配对/新增错误 JSONL。
+
+门槛已冻结为相对 BF16 下降不超过 2 个百分点。HTTP/超时/缺题为 incomplete，不填质量分；格式错误和截断按原规则判错。服务实际 dtype/量化方式与模型文件指纹一并保存。
+
+完整协议、模型选择、错误解读、Windows 离线重建和输出文件见 [四模型质量对比](quality_comparison.md)。已有远程服务的单模型入口 `evaluate_quality.py` 仍保留；自动四模型对比优先使用 compare_quality.py。
 
 ## 6. 验收与剩余工作
 

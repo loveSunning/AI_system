@@ -20,6 +20,8 @@
 
 **本周执行入口：[第一周完整运行与验收说明](docs/week1_execution.md)。** 原有短请求测试用于连通性检查；正式性能结果请使用新 benchmark 流程。
 
+**质量对比入口：** [四模型 100 题评测、自动服务管理与质量报告](docs/quality_comparison.md)。运行 `python capstone/quantization_profiling/scripts/compare_quality.py`，自动比较 BF16、AWQ、官方 FP8 和本地 FP8；结果以目标机产物为准。
+
 ## 从哪里开始
 
 1. 阅读 [详细学习与实施规划](planning.md)，按“环境与显存预算 → 数据与口径 → BF16 → Profiling → W4A16 → 质量回归 → 报告”的顺序推进。
@@ -37,7 +39,7 @@
 | P1-02 | W29 | 五组 workload 的 BF16 原始记录和基线汇总 | 并发 1 起步；按所选轮数验收；OOM 如实记录 | 已有历史 3×100 基线；新默认 1×50，不覆盖历史结果 |
 | P1-03 | W30 | nsys 时间线、3 个代表热点的 ncu 抽样与证据表 | 分清 prefill/decode；至少一个热点有证据和优化假设 | 未开始 |
 | P1-04 | W30 | AWQ/W4A16 与官方/本地 FP8 的权重来源及对照结果 | 核验版本/硬件/kernel；相同输入与评测协议 | 四模型运行/配置/benchmark 已支持；真实对照待执行 |
-| P1-05 | W30/W32 | 固定 100 条留出任务的逐题质量回归 | 与校准集分离；固定判分；实验前锁定质量门槛 | 数据与判分器已准备，配对回归待执行 |
+| P1-05 | W30/W32 | 固定 100 条留出任务的逐题质量回归 | 与校准集分离；固定判分；实验前锁定质量门槛 | 四模型自动评测、配对与报告已实现；目标机得分待生成 |
 | P1-06 | W32 | 性能、显存、质量与诊断报告及复现入口 | 每项结论可追溯到实验 ID；不预设加速收益 | 未开始 |
 
 ## 目录与文件职责
@@ -71,6 +73,7 @@ capstone/quantization_profiling/
 │   ├── serve.sh                    # 已实现：BF16 服务启动便捷入口
 │   ├── benchmark.py                # 已实现：自动服务管理、正式压测、显存与失败记录
 │   ├── evaluate_quality.py         # 已实现：留出集推理、严格判分与逐题结果
+│   ├── compare_quality.py          # 已实现：四模型服务管理、质量配对与报告
 │   └── summarize.py                # 已实现：单次实验汇总与报告
 ├── tests/
 │   ├── test_collect_environment.py # 环境探针、并发与预检行为测试
@@ -574,13 +577,31 @@ python capstone/quantization_profiling/scripts/summarize.py \
 
 `--output` 只指定 Markdown 文件位置，`performance.jsonl` 仍写入原实验目录。汇总只需 Python 标准库；将完整实验目录复制到 Windows 后也能运行。参数、Windows 命令和结果解读见 [benchmark 报告汇总说明](docs/week1_execution.md#42-汇总已有-benchmark-结果)。
 
+## 四模型质量对比
+
+在 Linux 4090D 主机的统一环境中，从仓库根目录执行：
+
+```bash
+source /workspace/venvs/vllm-0112/bin/activate
+
+# 预览固定的 100 题与四模型启动计划。
+python capstone/quantization_profiling/scripts/compare_quality.py --plan-only
+
+# 自动逐个启动模型、评测并生成报告；默认使用 data/frozen。
+python capstone/quantization_profiling/scripts/compare_quality.py
+```
+
+每种模型 100 题，共 400 次请求，并发 1；正常 EOS、temperature=0、seed=42、thinking=false。原始回答、总体/分项得分、相对 BF16 的百分点差值和新增错误写入独立 `log/quality_<ID>/`。自动生成 `Quality_Report.md`、`quality.csv`、`quality_categories.csv`、`paired_results.jsonl` 和 `regressions.jsonl`。
+
+准确率下降不超过冻结的 **2 个百分点**才通过；缺题、HTTP 错误或输入 token 不一致标记未完成。默认允许 CUDA Graph，FP8 后端 auto；可用 `--enforce-eager true` 明确评估 eager 配置。完整命令、选模型、选快照及重建报告见 [质量对比说明](docs/quality_comparison.md)。
+
 ## 核心实验约定
 
 - 模型固定为 Qwen3-8B；优先使用 4090D 单卡，其他设备独立记录。模型、tokenizer、chat template、thinking 开关、生成参数和 runtime 版本均需锁定。
 - 固定输入/目标输出 token：`128/128`、`1024/128`、`4096/256`、`8192/128`、`1024/512`。从并发 `1` 开始，容量允许再测 `8/16`，并发 `32` 选做。
 - 同一对照组使用相同预热、请求子集与所选轮数；默认每轮预热 5 次、正式 50 次、1 轮，可用 `--rounds` 增加重复。记录实际 token、TTFT、TPOT、端到端时延、吞吐、显存和错误；正式计时与 profiler 采集分开。
 - AWQ 为首选 W4A16 方案；本次预设 awq_marlin + BF16；本地 FP8 使用自身量化配置。实际后端由启动日志核验，具体 GPU kernel 另用 Profiler 确认。INT8 仍为选做。
-- 质量集固定 100 条，独立于校准集。准确率下降不超过 **2 个百分点**作为待锁定的项目目标，不能当作已取得的结果或统计保证。
+- 质量集固定 100 条，独立于校准集。准确率下降不超过 **2 个百分点**为 quality_protocol.json 已冻结的项目门槛，不能当作已取得的结果或统计保证。
 - BF16 与量化使用共同可运行配置做配对比较；量化独有的长上下文/大并发容量收益单独报告。保留 OOM、失败与局限。
 
 ## 完成后的交付标准
