@@ -140,6 +140,7 @@ class Client:
         self.base_url = args.base_url
         self.timeout = args.timeout
         self.api_key = os.environ.get(args.api_key_env, "")
+        self.on_first_text = getattr(args, "on_first_text", None)
         self.opener = build_opener(ProxyHandler({})) if args.no_proxy else build_opener()
 
     def open(self, path, payload=None, stream=False):
@@ -243,6 +244,8 @@ class Client:
                         last_text = time.perf_counter()
                         if first_text is None:
                             first_text = last_text
+                            if self.on_first_text is not None:
+                                self.on_first_text(first_text - started)
                     if choice.get("finish_reason") is not None:
                         finish_reason = choice["finish_reason"]
         elapsed = time.perf_counter() - started

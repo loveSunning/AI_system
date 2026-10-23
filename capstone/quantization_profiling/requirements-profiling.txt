@@ -1,0 +1,2 @@
+# Optional pure CPU-side annotation API; does not replace the pinned CUDA stack.
+nvtx==0.2.14

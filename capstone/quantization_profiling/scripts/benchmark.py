@@ -17,6 +17,8 @@ import threading
 import time
 from types import SimpleNamespace
 import uuid
+from profiling_trace import (DOMAIN as NVTX_DOMAIN, ProcessRange, configure_logging,
+                             log_event, managed_logging, require_nvtx, stage as trace_stage)
 from experiment_utils import ROOT, digest, read, write, load_snapshot, failure_kind
 from test_server import Client, summarize_requests, percentile, redact
 from model_profiles import (PROFILE_NAMES, canonical_profile, resolve_model_alias,
@@ -76,21 +78,29 @@ def client_args(config):
 def stop_process(process):
     if process is None:
         return
-    # Only signal the process group created by this run, never an existing service.
+    # The wrapper may exit before its API/worker children. Allow the whole
+    # owned process group its grace period before escalating to SIGKILL.
+    log_event("shutdown_start", process_group=process.pid, grace_seconds=15)
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        pass
-    # The API parent may exit before workers. Clean up remaining members too.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        process.poll()  # Reap the wrapper, but do not equate its exit with worker exit.
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        log_event("shutdown_escalation", process_group=process.pid, signal="SIGKILL")
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     process.wait(timeout=10)
+    log_event("shutdown_end", process_group=process.pid)
 
 
 def launch_command(config, case):
@@ -108,6 +118,8 @@ def launch_command(config, case):
         command.extend(["--quantization", config["quantization"]])
     if config.get("profile", "bf16").startswith("fp8-"):
         command.extend(["--fp8-backend", config.get("fp8_backend", "auto")])
+    if config.get("nvtx", False):
+        command.append("--nvtx")
     return command
 
 
@@ -116,12 +128,27 @@ def perform(args, config, item, round_id, phase):
     entry = {"id": item["id"], "case": item["case"], "model_profile": config.get("profile", "bf16"),
              "round": round_id, "phase": phase,
              "submitted_utc": now(), "started_monotonic": started, "ok": False}
+    context = {key: entry[key] for key in ("id", "case", "model_profile", "round", "phase")}
+    enabled = config.get("nvtx", False)
+    request_range = ProcessRange("client/request", enabled).start()
+    wait_range = ProcessRange("client/wait_first_text", enabled).start()
+    decode_range = ProcessRange("client/first_text_to_stream_end", enabled)
+    log_event("request_start", input_tokens=item["input_tokens"],
+              output_tokens=item["output_tokens"], **context)
+
+    def on_first_text(elapsed):
+        wait_range.finish()
+        decode_range.start()
+        log_event("client_first_text", time_to_first_text_seconds=elapsed,
+                  timing_scope="client_text_event; not GPU prefill", **context)
+
     try:
         payload = {"model": config["served_model_name"], "prompt": item["prompt_token_ids"],
             "max_tokens": item["output_tokens"], "min_tokens": item["output_tokens"],
             "ignore_eos": True, "temperature": 0, "top_p": 1, "top_k": -1,
             "repetition_penalty": 1, "seed": 42}
-        result = Client(args).stream_chat(payload, path="/v1/completions")
+        request_args = SimpleNamespace(**dict(vars(args), on_first_text=on_first_text))
+        result = Client(request_args).stream_chat(payload, path="/v1/completions")
         entry["result"] = result
         usage = result.get("usage") or {}
         if usage.get("prompt_tokens") != item["input_tokens"]:
@@ -137,33 +164,51 @@ def perform(args, config, item, round_id, phase):
         entry["ok"] = True
     except Exception as e:
         entry.update(error=str(e), failure_kind=failure_kind(str(e)))
+    finally:
+        decode_range.finish()
+        wait_range.finish()
+        request_range.finish()
     entry["finished_monotonic"] = time.perf_counter()
     entry["elapsed_seconds"] = entry["finished_monotonic"] - started
+    response = entry.get("result") or {}
+    client = response.get("client_metrics") or {}
+    first, last = client.get("time_to_first_text_seconds"), client.get("time_to_last_text_seconds")
+    log_event("request_end", ok=entry["ok"], elapsed_seconds=entry["elapsed_seconds"],
+              client_e2e_seconds=client.get("end_to_end_seconds"),
+              client_wait_first_text_seconds=first,
+              client_decode_text_span_seconds=(last-first if first is not None and last is not None else None),
+              server_request_id=(response.get("server_metrics") or {}).get("request_id"),
+              error=entry.get("error"), **context)
     return redact(entry, os.environ.get("VLLM_API_KEY", ""))
 
 
 def phase(args, config, items, round_id, phase_name, concurrency, output):
-    entries = []
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        jobs = [pool.submit(perform, args, config, item, round_id, phase_name) for item in items]
-        for job in as_completed(jobs):
-            entry = job.result()
-            entries.append(entry)
-            with output.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    elapsed = max(x["finished_monotonic"] for x in entries) - min(x["started_monotonic"] for x in entries)
-    summary = summarize_requests(entries, elapsed, concurrency)
-    summary.update(round=round_id, phase=phase_name, timing_scope="first_submit_to_last_finish_including_failures")
-    for key in ("time_to_first_text_seconds", "tpot_text_event_seconds"):
-        values = [e["result"]["client_metrics"][key] for e in entries
-                  if e["ok"] and e["result"]["client_metrics"][key] is not None]
-        summary[key + "_p50"] = percentile(values, .5)
-        summary[key + "_p95"] = percentile(values, .95)
-    return summary
+    with trace_stage("controller/"+phase_name, nvtx=config.get("nvtx", False),
+                     model_profile=config.get("profile", "bf16"), round=round_id,
+                     phase=phase_name, requests=len(items), concurrency=concurrency):
+        entries = []
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            jobs = [pool.submit(perform, args, config, item, round_id, phase_name) for item in items]
+            for job in as_completed(jobs):
+                entry = job.result()
+                entries.append(entry)
+                with output.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        elapsed = max(x["finished_monotonic"] for x in entries) - min(x["started_monotonic"] for x in entries)
+        summary = summarize_requests(entries, elapsed, concurrency)
+        summary.update(round=round_id, phase=phase_name, timing_scope="first_submit_to_last_finish_including_failures")
+        for key in ("time_to_first_text_seconds", "tpot_text_event_seconds"):
+            values = [e["result"]["client_metrics"][key] for e in entries
+                      if e["ok"] and e["result"]["client_metrics"][key] is not None]
+            summary[key + "_p50"] = percentile(values, .5)
+            summary[key + "_p95"] = percentile(values, .95)
+        return summary
 
 
 def validate(config, protocol, model=None):
     profile = config.get("profile", "bf16")
+    if type(config.get("nvtx", False)) is not bool:
+        raise ValueError("nvtx must be a JSON boolean")
     if profile not in PROFILE_NAMES:
         raise ValueError("Unknown model profile: " + profile)
     if profile == "bf16" and (config["dtype"] != "bfloat16" or config.get("quantization") not in (None, "auto")):
@@ -250,6 +295,9 @@ def load_configs(args, source_model):
         if not config.get("tokenizer"):
             config["tokenizer"] = config["model"] if config["profile"] == "bf16" else source_model["path"]
         config["tokenizer"] = resolve_model_alias(config["tokenizer"])
+        config.setdefault("nvtx", False)
+        if getattr(args, "nvtx", None) is not None:
+            config["nvtx"] = args.nvtx
         if getattr(args, "enforce_eager", None) is not None:
             config["enforce_eager"] = args.enforce_eager
         if config["profile"].startswith("fp8-"):
@@ -348,6 +396,9 @@ def run_case(config, protocol, case, items, directory, model):
         "artifact_directory": case_dir.relative_to(directory).as_posix(),
         "status": "incomplete", "rounds": [], "command": launch_command(config, case),
         "enforce_eager": config["enforce_eager"],
+        "nvtx_enabled": config.get("nvtx", False),
+        "nvtx_domain": NVTX_DOMAIN if config.get("nvtx", False) else None,
+        "worker_class": "profiling_worker.ProfilingWorker" if config.get("nvtx", False) else "auto",
         "fp8_backend_requested": config.get("fp8_backend", "auto"),
         "server_environment_overrides": {"VLLM_TEST_FORCE_FP8_MARLIN":
             "1" if config.get("fp8_backend") == "marlin" else "0"}}
@@ -357,24 +408,42 @@ def run_case(config, protocol, case, items, directory, model):
     try:
         with gpu, (case_dir / "server.log").open("w", encoding="utf-8") as log:
             gpu.phase = "loading"
-            process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT,
-                                       start_new_session=True,
-                                       env=fp8_backend_environment(config.get("fp8_backend", "auto")))
-            deadline = time.monotonic() + config["startup_timeout_seconds"]
-            probe_args = SimpleNamespace(**vars(args)); probe_args.timeout = 2
-            while True:
-                if process.poll() is not None:
-                    raise RuntimeError("Server startup failed: " + (case_dir / "server.log").read_text(encoding="utf-8")[-12000:])
-                try:
-                    Client(probe_args).health()
-                    break
-                except Exception:
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("Server startup timeout")
-                    time.sleep(1)
-            startup = (case_dir / "server.log").read_text(encoding="utf-8")
-            record["engine_verification"] = verify_engine(startup, config, model)
-            record["bf16_verified"] = config["profile"] == "bf16"
+            with trace_stage("controller/server_startup", nvtx=config.get("nvtx", False),
+                             model_profile=config["profile"], case=case["id"]):
+                child_env = fp8_backend_environment(config.get("fp8_backend", "auto"))
+                child_env["QUANT_PROFILE_NVTX"] = "1" if config.get("nvtx", False) else "0"
+                if config.get("nvtx", False):
+                    child_env["QUANT_PROFILE_EVENT_DIR"] = str((case_dir / "worker_events").resolve())
+                else:
+                    child_env.pop("QUANT_PROFILE_EVENT_DIR", None)
+                log_event("server_launch", model_profile=config["profile"], case=case["id"],
+                          nvtx=config.get("nvtx", False), enforce_eager=config["enforce_eager"],
+                          server_log=str(case_dir / "server.log"))
+                process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True, env=child_env)
+                startup_started = time.monotonic()
+                next_progress = startup_started
+                deadline = startup_started + config["startup_timeout_seconds"]
+                probe_args = SimpleNamespace(**vars(args)); probe_args.timeout = 2
+                while True:
+                    if process.poll() is not None:
+                        raise RuntimeError("Server startup failed: " + (case_dir / "server.log").read_text(encoding="utf-8")[-12000:])
+                    try:
+                        Client(probe_args).health()
+                        break
+                    except Exception:
+                        if time.monotonic() >= next_progress:
+                            log_event("server_waiting_for_health", model_profile=config["profile"],
+                                      case=case["id"], elapsed_seconds=time.monotonic()-startup_started)
+                            next_progress = time.monotonic() + 10
+                        if time.monotonic() > deadline:
+                            raise TimeoutError("Server startup timeout")
+                        time.sleep(1)
+                startup = (case_dir / "server.log").read_text(encoding="utf-8")
+                record["engine_verification"] = verify_engine(startup, config, model)
+                record["bf16_verified"] = config["profile"] == "bf16"
+            log_event("server_ready", model_profile=config["profile"], case=case["id"],
+                      engine_verification=record["engine_verification"])
             gpu.phase = "loaded"
             time.sleep(max(1, config["gpu_sample_interval_seconds"] * 2))
             for round_id in range(1, protocol["rounds"] + 1):
@@ -391,7 +460,9 @@ def run_case(config, protocol, case, items, directory, model):
     except Exception as error:
         record.update(status="failed", error=redact(str(error), os.environ.get("VLLM_API_KEY", "")), failure_kind=failure_kind(str(error)))
     finally:
-        stop_process(process)
+        with trace_stage("controller/shutdown", nvtx=config.get("nvtx", False),
+                         model_profile=config["profile"], case=case["id"]):
+            stop_process(process)
         peaks = {}
         for sample in gpu.samples:
             for device in sample.get("gpus", []):
@@ -402,6 +473,8 @@ def run_case(config, protocol, case, items, directory, model):
         if not peaks:
             record.update(status="failed", memory_error="No usable nvidia-smi samples")
         write(case_dir / "summary.json", record)
+    log_event("case_end", model_profile=config["profile"], case=case["id"],
+              status=record["status"], artifact_directory=str(case_dir))
     return record
 
 
@@ -436,6 +509,7 @@ def boolean_value(value):
     raise argparse.ArgumentTypeError("use true or false (also accepts 1 or 0)")
 
 
+@managed_logging
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--snapshot", type=Path, default=ROOT / "data/frozen")
@@ -453,9 +527,12 @@ def main(argv=None):
                        help="override config with enforce_eager=false (allow CUDA Graph)")
     p.add_argument("--fp8-backend", choices=FP8_BACKENDS, default=None,
                    help="FP8 models only: auto follows vLLM dispatch; marlin requests native-FP8 W8A16 (v0.14.1)")
+    p.add_argument("--nvtx", action=argparse.BooleanOptionalAction, default=None,
+                   help="optional controller + vLLM 0.14.1 GPU worker stage annotations; requires nvtx")
     p.add_argument("--plan-only", action="store_true", help="validate snapshot hashes and print plan without loading/hash-checking model weights")
     a = p.parse_args(argv)
-    manifest, items, frozen_protocol = load_snapshot(a.snapshot)
+    with trace_stage("controller/read_snapshot", snapshot=str(a.snapshot)):
+        manifest, items, frozen_protocol = load_snapshot(a.snapshot)
     source_model = read(a.snapshot / "model.json")
     configs = load_configs(a, source_model)
     cases = [c for c in frozen_protocol["cases"] if not a.case or c["id"] in a.case]
@@ -470,6 +547,7 @@ def main(argv=None):
         "selected_ids": [x["id"] for x in items],
         "commands": [{"model_profile": config["profile"], "case": case["id"], "command": launch_command(config, case),
                       "enforce_eager": config["enforce_eager"],
+                      "nvtx_enabled": config.get("nvtx", False),
                       "fp8_backend_requested": config.get("fp8_backend", "auto"),
                       "environment_overrides": {"VLLM_TEST_FORCE_FP8_MARLIN":
                           "1" if config.get("fp8_backend") == "marlin" else "0"}}
@@ -480,6 +558,10 @@ def main(argv=None):
     if sys.platform != "linux":
         p.error("Run managed GPU experiments on the Linux target host; use --plan-only locally")
     runtime = check_runtime_versions()
+    if any(c.get("nvtx", False) for c in configs):
+        if runtime["versions"]["vllm"].split("+")[0] != "0.14.1":
+            p.error("--nvtx worker instrumentation is audited for vLLM 0.14.1 only")
+        require_nvtx()
     if (any(c.get("fp8_backend") == "marlin" for c in configs)
             and runtime["versions"]["vllm"].split("+")[0] != "0.14.1"):
         p.error("--fp8-backend marlin is audited for vLLM 0.14.1; use the unified runtime")
@@ -489,6 +571,9 @@ def main(argv=None):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8]
     directory = ROOT / "log" / ("benchmark_" + run_id)
     directory.mkdir(parents=True)
+    configure_logging(directory / "events.jsonl")
+    log_event("experiment_start", run_id=run_id, artifact_directory=str(directory),
+              nvtx_domain=NVTX_DOMAIN, runtime=runtime)
     run = {"schema_version": 2, "run_id": run_id, "started": now(),
         "runtime": runtime,
         "models": [{"profile": c["profile"], "config": c, "model": None} for c in configs],
@@ -521,8 +606,10 @@ def main(argv=None):
     for descriptor in run["models"]:
         config = descriptor["config"]
         try:
-            descriptor["model"] = verify_model(config, source_model)
-            validate(config, protocol, descriptor["model"])
+            with trace_stage("controller/verify_weights", nvtx=config.get("nvtx", False),
+                             model_profile=config["profile"], model_path=config["model"]):
+                descriptor["model"] = verify_model(config, source_model)
+                validate(config, protocol, descriptor["model"])
         except Exception as error:
             descriptor["validation_error"] = str(error)
         write(directory / "run.json", run)
@@ -536,6 +623,8 @@ def main(argv=None):
                 record = run_case(config, protocol, case, items, directory, descriptor["model"])
             results.append(record)
             write(directory / "summary.json", {"run_id": run_id, "cases": results})
+    log_event("experiment_end", run_id=run_id, passed=all(x["status"] == "passed" for x in results),
+              cases=len(results), artifact_directory=str(directory))
     print("Artifacts:", directory)
     return 0 if results and all(x["status"] == "passed" for x in results) else 1
 

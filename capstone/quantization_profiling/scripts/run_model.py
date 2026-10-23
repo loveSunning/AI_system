@@ -81,6 +81,8 @@ def parse_args(argv=None):
                         help="vLLM loader; auto selects AWQ-Marlin for AWQ and reads FP8 checkpoint metadata")
     parser.add_argument("--fp8-backend", choices=FP8_BACKENDS, default="auto",
                         help="vLLM FP8: auto dispatch or native-FP8 Marlin W8A16 (v0.14.1)")
+    parser.add_argument("--nvtx", action="store_true",
+                        help="annotate load/prefill/decode in the vLLM 0.14.1 GPU worker")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="Transformers only")
     parser.add_argument("--trust-remote-code", action="store_true",
                         help="allow custom Python code from the local model repository")
@@ -387,6 +389,8 @@ def server_command(args):
     command.extend(["--no-enable-prefix-caching", "--enable-chunked-prefill"])
     command.extend(["--middleware", "profiling_middleware.ProfilingMiddleware",
                     "--enable-force-include-usage"])
+    if getattr(args, "nvtx", False):
+        command.extend(["--worker-cls", "profiling_worker.ProfilingWorker"])
     if args.enforce_eager:
         command.append("--enforce-eager")
     if args.trust_remote_code:
@@ -426,6 +430,14 @@ def main(argv=None):
             # No torch.cuda calls in the parent before vLLM starts its workers.
             os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        if args.nvtx:
+            if not args.serve or args.backend != "vllm":
+                raise ValueError("--nvtx worker stage tracing requires --serve --backend vllm")
+            if importlib.metadata.version("vllm").split("+")[0] != "0.14.1":
+                raise ValueError("--nvtx worker instrumentation is audited for vLLM 0.14.1 only")
+            from profiling_trace import require_nvtx
+            require_nvtx()
+        os.environ["QUANT_PROFILE_NVTX"] = "1" if args.nvtx else "0"
         if args.serve:
             command = server_command(args)
             # Make the sibling middleware importable in the separate API process.

@@ -1,251 +1,432 @@
-# Nsight 简化版：直接运行 nsys 和 ncu
+# Nsight 快速采集：eager、no_eager、阶段日志与 NVTX
 
-适用：Linux Bash、RTX 4090D、项目的 vLLM 0.14.1 环境。更新：2026-10-23。
+适用：Linux Bash、RTX 4090D、项目固定的 vLLM 0.14.1。更新：2026-10-23。
 
-流程：先用 nsys 找实际热点，再用 ncu 抽样分析热点。两个工具都直接启动现有 benchmark。
+先采时间线，再按需增加CPU栈或显存跟踪，最后用NCU研究单个热点。下面命令均调用现有benchmark，保留5次预热、1次正式请求、1轮。Profiler和阶段日志会增加开销，采集结果用于诊断，不代替无profiler的正式性能结果。
 
-benchmark 默认读取 `capstone/quantization_profiling/data/frozen`，下方命令全部省略 `--snapshot`。请先确认目标机已有这份冻结数据；每次采集只选一组负载、1 个正式请求、1 轮，仍按快照执行预热。Profiler 下的吞吐和 HTTP 延迟不作为正式性能结果。
+新增 `benchmark.py --nvtx` 会同时标记控制进程和实际GPU worker；默认关闭，不在父进程导入torch/CUDA。worker扩展按vLLM 0.14.1接口实现，其他版本不能直接套用。
 
-## 1. 准备环境和端口等待函数
-
-在同一个终端先完整执行本节；新开终端时重新执行，后面的命令会使用这些变量和函数。
+## 1. 一次性准备：在同一个 Bash 终端执行
 
 ```bash
 source /workspace/venvs/vllm-0112/bin/activate
 cd /workspace/AI_system
 
-mkdir -p capstone/quantization_profiling/log/profiling
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-RUN_TAG=$(date -u +%Y%m%dT%H%M%SZ)
+# 只安装轻量NVTX Python注解依赖，不更换torch/vLLM。
+python -m pip install -r capstone/quantization_profiling/requirements-profiling.txt
+python -c 'import nvtx; import importlib.metadata as m; print("nvtx",m.version("nvtx"),"vllm",m.version("vllm"))'
+nsys --version
+nsys status --environment
 
-# 每2秒检查一次7081，最多等待约90秒
+OUT="/workspace/AI_system/capstone/quantization_profiling/log/profiling"
+RUN_TAG=$(date -u +%Y%m%dT%H%M%SZ)
+CASE_ID=w128_o128
+MODEL_PROFILE=fp8-local
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export PYTHONUNBUFFERED=1
+export NSYS_TMPDIR="$OUT/nsys_tmp_${RUN_TAG}"
+export TMPDIR="$NSYS_TMPDIR"
+# 默认只打印prefill、阶段转换和每32步decode；NVTX仍标记每一步。
+export QUANT_PROFILE_LOG_EVERY_N_STEPS=32
+mkdir -p "$OUT" "$NSYS_TMPDIR"
+
 wait_7081() {
   local attempt
   for attempt in {1..45}; do
-    if python -c \
-      'import socket; s=socket.socket(); s.bind(("0.0.0.0",7081)); s.close()' \
-      2>/dev/null; then
+    if python -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0",7081)); s.close()' 2>/dev/null; then
       return 0
     fi
     sleep 2
   done
-
-  echo "7081仍不可绑定，请检查端口状态。" >&2
+  echo "7081仍不可绑定，请检查旧服务及TCP状态。" >&2
   ss -tanp '( sport = :7081 )'
   return 1
 }
+
+NSYS_TIMELINE_ARGS=(
+  --trace=cuda,nvtx,osrt
+  --sample=none
+  --cpuctxsw=none
+  --cuda-event-trace=false
+  --cuda-graph-trace=node
+  --cuda-flush-interval=1000
+  --trace-fork-before-exec=false
+  --wait=all
+)
+NSYS_ARGS=("${NSYS_TIMELINE_ARGS[@]}")
 ```
 
-## 2. nsys：采集四模型时间线（当前为 Graph 对照）
+使用项目的默认冻结快照 `data/frozen`；快照必须已经存在，1个正式请求仍执行冻结的5次预热。
 
-继续在同一终端执行。保留当前 `--enforce-eager false` 和逐节点 `--cuda-graph-trace=node` 配置；是否实际捕获/回放 Graph 仍要看日志与时间线。每个模型保存独立报告和 nsys 日志。临时目录只改变文件位置，不保证能解决采集器内部错误。
+- `cuda`：CUDA API、kernel、memcpy及Graph活动。
+- `nvtx`：下面新增的加载、prefill、decode和请求范围。
+- `osrt`：受支持的OS运行库调用，例如锁、等待、I/O。它不等于CPU采样或线程调度轨迹。
+- `sample=none`：关闭CPU指令/调用栈采样；`cpuctxsw=none`：关闭CPU线程调度跟踪。先获取较低开销的CUDA/NVTX/OSRT时间线。
+- `cuda-graph-trace=node`：允许看到Graph内的节点kernel；开销高于graph整图模式，适合热点分析。eager也显式使用同一采集选项以方便配对。
+- `cuda-event-trace=false`：关闭额外CUDA event completion跟踪，减少扰动；不会关闭kernel或Graph活动追踪。
+- `cuda-flush-interval=1000`：每秒刷新CUDA缓冲，帮助减少异常退出时的数据损失；有额外开销，不能保证最后尾部数据完整。
+- `trace-fork-before-exec=false`：当前使用spawn，先关闭fork到exec之间的特殊追踪；不是关闭正常exec后子进程追踪。
+- `wait=all`：等待被重新托管的子进程。benchmark也会给整个本次服务进程组保留15秒退出宽限期，不再把包装进程退出等同于worker已退出。
+
+若采集器仍提示CUDA 13.0驱动使用12.9追踪库，先核对支持目标驱动的Nsight安装。修改采集参数或升级Windows查看器不能补回旧文件缺失的活动。
+
+## 2. 定义统一采集函数：保存日志并检查数据覆盖
+
+继续在同一终端执行。这个函数不仅检查nsys-rep文件存在，还会检查实际GPU活动、worker NVTX和正式请求范围。
 
 ```bash
-for MODEL_PROFILE in bf16 fp8-official awq fp8-local; do
-  wait_7081 || break
+collect_one() {
+  local mode_label="$1" eager_value="$2" model_profile="$3"
+  shift 3
+  local prefix="$OUT/${mode_label}_${model_profile}_${CASE_ID}_${RUN_TAG}"
+  local nsys_rc audit_rc
+  local -a audit_args=(--require-worker-ranges) pipeline_status
 
-  REPORT_PREFIX="capstone/quantization_profiling/log/profiling/no_eager_${MODEL_PROFILE}_w128_o128_${RUN_TAG}"
-
-  nsys profile \
-    --trace=cuda,nvtx \
-    --sample=none \
-    --cpuctxsw=none \
-    --cuda-event-trace=false \
-    --trace-fork-before-exec=true \
-    --wait=all \
-    -o "$REPORT_PREFIX" \
-    python capstone/quantization_profiling/scripts/benchmark.py \
-      --snapshot capstone/quantization_profiling/data/frozen \
-      --model "$MODEL_PROFILE" \
-      --case w128_o128 \
-      --enforce-eager false \
-      --requests 1 --rounds 1 || break
-
-  if [ ! -s "${REPORT_PREFIX}.nsys-rep" ]; then
-    echo "未生成nsys-rep，停止后续实验，保留qdstrm排查。" >&2
-    break
+  wait_7081 || return 1
+  if nsys profile "${NSYS_ARGS[@]}" -o "$prefix" \
+      python capstone/quantization_profiling/scripts/benchmark.py \
+        --model "$model_profile" --case "$CASE_ID" \
+        --enforce-eager "$eager_value" --nvtx \
+        --requests 1 --rounds 1 "$@" 2>&1 | tee "${prefix}.nsys.log"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
   fi
+
+  nsys_rc=${pipeline_status[0]}
+  if [ "$nsys_rc" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ ! -s "${prefix}.nsys-rep" ]; then
+    echo "采集失败：nsys退出码=$nsys_rc，检查${prefix}.nsys.log" >&2
+    find "$OUT" -maxdepth 4 -type f -name '*.qdstrm' -ls
+    return 1
+  fi
+
+  nsys export --quiet=true --type=sqlite \
+    --output="${prefix}.sqlite" "${prefix}.nsys-rep" || return 1
+  if [ "$eager_value" = false ]; then
+    audit_args+=(--expect-graph)
+  fi
+  if python capstone/quantization_profiling/scripts/check_nsys_capture.py \
+      "${prefix}.sqlite" "${audit_args[@]}" | tee "${prefix}.audit.json"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  audit_rc=${pipeline_status[0]}
+  [ "${pipeline_status[1]}" -eq 0 ] || return 1
+  return "$audit_rc"
+}
+```
+
+PIPESTATUS必须在管道后立即读取，避免把tee成功当成nsys成功。同一RUN_TAG重复同一模式/模型会重名；重采前重新设置RUN_TAG和临时目录，不覆盖有用的原始文件。
+
+覆盖检查退出0只表示关键数据存在，仍要看Diagnostics Summary中的丢事件警告。no_eager的Graph检查失败也可能表示框架实际没有使用Graph，应结合server.log判断，不能只归因于采集器。
+
+## 3. eager 与 no_eager 两套命令
+
+### 3.1 单模型 eager
+
+```bash
+MODEL_PROFILE=fp8-local
+collect_one eager true "$MODEL_PROFILE"
+```
+
+传给benchmark的是 `--enforce-eager true --nvtx`。输出前缀为 `eager_fp8-local_<CASE_ID>_<RUN_TAG>`。
+
+### 3.2 同一模型 no_eager
+
+```bash
+MODEL_PROFILE=fp8-local
+collect_one no_eager false "$MODEL_PROFILE"
+```
+
+传给benchmark的是 `--enforce-eager false --nvtx`，允许框架使用CUDA Graph。必须看到实际回放记录才能确认，而不是只看Graph Creation。
+
+要采官方模型，改成 `MODEL_PROFILE=fp8-official`；`fp8-origin`是其benchmark别名。BF16/AWQ分别用bf16/awq。函数支持追加benchmark参数，例如 `collect_one eager_marlin true fp8-official --fp8-backend marlin`；当前compressed-tensors本地FP8_BLOCK加载路径不接受此请求。
+
+### 3.3 四模型完整配对
+
+```bash
+for MODEL_PROFILE in bf16 awq fp8-official fp8-local; do
+  collect_one eager true "$MODEL_PROFILE" || break
+  collect_one no_eager false "$MODEL_PROFILE" || break
 done
 ```
 
-- 只采一模型：把循环模型列表改成 `fp8-local` 或 `fp8-official`，便于先定位采集错误。
-- 切换负载：把命令和文件名中的 `w128_o128` 一起换成 `w1024_o128`、`w4096_o256` 或 `w1024_o512`。
-- eager 对照：把 `--enforce-eager false` 改为 `true`，同时将文件名前缀 `no_eager_` 改为 `eager_`，避免误标。Graph 出错的分步定位见第 5.1 节。
+失败会停止后续实验，保留已有文件。只采本地/官方FP8时，将列表改成 `fp8-local fp8-official`。
 
-## 3. nsys：查看实际 kernel 和耗时
+改变负载只需先设置 `CASE_ID=w1024_o128`、`w4096_o256`、`w8192_o128`或`w1024_o512`，文件名和命令会同步变化。
 
-采集成功后执行；如果分析旧文件，将 `NSYS_REPORT` 换成其实际路径。
+## 4. 日志和NVTX里新增了什么
 
-```bash
-NSYS_REPORT="$OUT/no_eager_fp8-official_w128_o128_${RUN_TAG}.nsys-rep"
-nsys stats --report cuda_gpu_kern_sum,cuda_api_sum "$NSYS_REPORT"
+| 范围/日志 | 所在进程 | 含义 |
+| --- | --- | --- |
+| controller/verify_weights | benchmark | 哈希/身份验证，不是GPU模型加载 |
+| controller/server_startup | benchmark | 启动子进程到服务健康和引擎配置核验 |
+| worker/load_model | GPU worker | 实际模型构造、权重加载和该方法内初始化 |
+| worker/profile_memory | GPU worker | 初始化显存探测/dummy profile |
+| worker/initialize_kv_cache | GPU worker | KV cache初始化 |
+| worker/compile_and_graph_capture | GPU worker | 编译、内部warmup、Graph捕获；不等于正式decode |
+| controller/warmup、controller/measure | benchmark | HTTP预热/正式阶段，包含该阶段全部请求 |
+| client/request | 客户端线程 | 一个HTTP请求的外层范围 |
+| client/wait_first_text | 客户端线程 | 等待首个文本，包含网络/排队，不是纯GPU prefill |
+| client/first_text_to_stream_end | 客户端线程 | 首文本到SSE完成，包含响应尾部，不是纯GPU decode |
+| worker/prefill | GPU worker | 当前调度步仍处理prompt token |
+| worker/decode | GPU worker | 当前调度步处理prompt之后的生成token |
+| worker/mixed | GPU worker | 同一调度步包含prefill和decode |
+| worker/unknown、worker/idle | GPU worker | 元数据不足或没有调度token，不猜测阶段 |
+| worker/sampling | GPU worker | 独立的token sampling调用，不混作forward |
+| controller/shutdown | benchmark | 终止本次服务进程组 |
+
+worker按 `num_computed_tokens` 与prompt长度判断，最后一个只有1token的分块prefill仍标为prefill；不会用“本步只有1token”简单判断decode。NVTX范围覆盖CPU提交作用域，没有逐步加入CUDA synchronize；异步GPU duration仍从关联的CUDA活动读取。
+
+默认decode日志在阶段转换和每32步输出，prefill/mixed会输出；如需逐步打印，采集前设置 `export QUANT_PROFILE_LOG_EVERY_N_STEPS=1`。这只调整日志密度，NVTX始终标记每步。
+
+产物：
+
+```text
+log/benchmark_<id>/events.jsonl                 控制/请求阶段日志
+log/benchmark_<id>/<model>/<case>/server.log    服务及worker日志
+log/benchmark_<id>/<model>/<case>/worker_events/worker_<pid>.jsonl
+log/profiling/<prefix>.nsys.log                benchmark与nsys控制台输出
+log/profiling/<prefix>.audit.json              数据覆盖检查
 ```
 
-先看 `Name`、`Instances`、`Avg`、`Total Time`。`Time (%)` 是所统计 kernel 的累计耗时占比，不是请求 E2E 的占比。
+JSON日志带UTC、monotonic_ns、PID、线程ID、阶段及请求/轮次等字段。worker的cpu_wall_seconds是方法/调度步的CPU墙钟，不是纯GPU kernel时间；实际load范围在worker行，server_startup还包括服务初始化等工作。
 
-把 `.nsys-rep` 复制到 Windows，用 Nsight Systems GUI 打开。定位 EngineCore/GPU worker，选择预热后的推理区间；本命令也采集了加载、初始化和预热，不会自动把全部记录标成 prefill/decode。
+## 5. 更全面的CPU栈与调度采集：单独做一次
 
-## 4. ncu：只采少量真实热点
-
-先把 `KERNEL_RE` 改成上一步实际看到的热点名称片段，再执行本节。BF16、AWQ、FP8 的名称可能不同，应分别选取。
+如果GPU kernel之间有明显空隙，基础配置的OSRT只能看到部分等待/I/O，不能自动解释CPU在执行哪个函数。以下独立开启CPU采样与线程调度：
 
 ```bash
-MODEL_PROFILE=fp8-official
-KERNEL_RE='替换为nsys报告中的实际热点名称片段'
-LAUNCH_SKIP=0
-NCU_REPORT="$OUT/ncu_${MODEL_PROFILE}_w128_o128_${RUN_TAG}"
+NSYS_ARGS=(
+  --trace=cuda,nvtx,osrt
+  --sample=process-tree
+  --cpuctxsw=process-tree
+  --backtrace=dwarf
+  --cuda-event-trace=false
+  --cuda-graph-trace=node
+  --cuda-flush-interval=1000
+  --trace-fork-before-exec=false
+  --wait=all
+)
+collect_one eager_cpu true fp8-local
+collect_one no_eager_cpu false fp8-local
 
-wait_7081 && ncu \
-  --target-processes all \
+# 做完后恢复基础时间线配置。
+NSYS_ARGS=("${NSYS_TIMELINE_ARGS[@]}")
+```
+
+先看nsys status --environment确认perf相关权限。若采样/调度不被允许，保留基础配置并记录限制；不要把未采集到的CPU图解释为空闲。CPU native栈采样也不等于完整Python源码级调用栈。
+
+按问题增加其它选项，不建议一次全部打开：
+
+| 选项 | 目的与限制 |
+| --- | --- |
+| --trace=cuda,nvtx,osrt,cublas | 关联cuBLAS API与BF16/GEMV；Triton GEMM不经过cuBLAS，不会因此获得Triton源码 |
+| --cuda-memory-usage=true | 增加CUDA内存分配信息，适合加载/缓存分析；有额外开销，不是GEMM内部DRAM带宽 |
+| --cuda-graph-trace=graph | 整图粒度，开销较低；看Graph回放总时序，不提供相同的节点热点细节 |
+| --python-backtrace=cuda + --cudabacktrace=all | 仅在本机help支持时与CPU采样一起试用，查看CUDA API关联的Python栈；不能只在sample=none的基础配置后加一个backtrace开关 |
+| --python-sampling=true --python-sampling-frequency=100 | 本机支持时采样Python栈；适合查GIL/Python处理开销，较低频率先试，与native CPU栈采样是不同选项 |
+
+先执行 `nsys profile --help` 核对版本。需要memory等额外选项时，用 `NSYS_ARGS+=(--cuda-memory-usage=true)`；随后更换mode_label，例如eager_memory，避免与基础结果混淆。不同采集配置的墙钟/吞吐不能直接混为性能对照。
+
+## 6. 采集完成后：先验收，再分析正式请求
+
+### 6.1 选择报告并运行覆盖检查
+
+```bash
+PREFIX="$OUT/no_eager_fp8-local_${CASE_ID}_${RUN_TAG}"
+REP="${PREFIX}.nsys-rep"
+SQLITE="${PREFIX}.sqlite"
+
+# collect_one已导出SQLite；对手工采集的报告，先执行一次：
+# nsys export --type=sqlite --output="$SQLITE" "$REP"
+python capstone/quantization_profiling/scripts/check_nsys_capture.py \
+  "$SQLITE" --require-worker-ranges --expect-graph
+```
+
+检查eager时去掉 `--expect-graph`。检查以前未加本项目NVTX的报告时，同时去掉 `--require-worker-ranges`，否则自然会报缺少新增范围。
+
+重点看：
+
+| 字段 | 解释 |
+| --- | --- |
+| kernel_records | 节点/普通kernel执行记录数量 |
+| gpu_graph_records | 整图GPU执行记录数量；node模式下可能是0 |
+| graph_resource_records | Graph资源事件；再多也不能证明执行数据存在 |
+| measure_gpu_records | 与正式请求范围重叠的GPU活动数量 |
+| graph_launch_api_records、graph_node_kernel_records | 全程Graph launch与节点执行证据；measure_graph_*对应正式区间，Graph验收优先检查正式区间 |
+| worker_ranges | 是否包含实际load_model、prefill、decode等范围 |
+| incomplete_cuda_warnings | 已知CUDA事件不完整警告数量；非0时仍须人工检查 |
+| key_data_present | 关键数据是否存在；不是逐事件完整性保证 |
+
+旧的四个no_eager报告只有Graph资源而无GPU执行时间，不能通过该检查。文件大小、benchmark的passed和Graph Creation数量都不能替代此检查。
+
+### 6.2 命令行先看整个实验的结构
+
+```bash
+nsys stats --help-reports
+nsys stats --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,osrt_sum \
+  "$SQLITE"
+```
+
+全程表包含加载、dummy profile、编译、Graph捕获、HTTP预热和正式请求。这里只用于确认阶段和实际kernel名字，不直接拿全程kernel占比比较模型速度。
+
+### 6.3 只看正式请求：同一时间窗口跨进程过滤
+
+```bash
+nsys stats --filter-nvtx 'controller/measure@quantization_profiling' \
+  --report cuda_gpu_kern_sum,cuda_api_sum,cuda_kern_exec_sum,osrt_sum \
+  "$SQLITE"
+
+# 导出CSV。每种report生成一个文件；指定独立前缀。
+nsys stats --filter-nvtx 'controller/measure@quantization_profiling' \
+  --report cuda_gpu_kern_sum,cuda_api_sum,cuda_kern_exec_sum \
+  --format csv --output "${PREFIX}_measure" "$SQLITE"
+```
+
+`--filter-nvtx` 是按范围的时间窗口过滤，能选中benchmark范围时间内另一个worker进程的活动。默认只取第一个同名范围；本例只有1轮。多轮时用 `controller/measure@quantization_profiling/1` 选择第二轮，索引从0开始。
+
+过滤会纳入与窗口重叠的完整事件，不会把跨边界kernel的duration精确裁短。比较时对齐输入、输出、请求数、eager模式及采集参数，并检查窗口边界。
+
+### 6.4 看prefill/decode内各kernel的成本
+
+```bash
+# CPU范围统计、GPU投影及每个范围内的kernel明细。
+nsys stats --filter-nvtx 'controller/measure@quantization_profiling' \
+  --report nvtx_sum,nvtx_gpu_proj_sum,nvtx_kern_sum "$SQLITE"
+
+# 保存详细时序，便于按Start、PID/TID、关联ID继续核对。
+nsys stats --filter-nvtx 'controller/measure@quantization_profiling' \
+  --report cuda_gpu_trace,cuda_kern_exec_trace,nvtx_gpu_proj_trace \
+  --format csv --output "${PREFIX}_measure_detail" "$SQLITE"
+```
+
+在NVTX投影表中找worker/prefill、worker/decode和worker/mixed。GPU投影通过范围内发起的CUDA API关联GPU活动；它不是简单计算CPU范围长度。父进程中的controller/measure没有直接提交worker的CUDA kernel，通常不会拥有该跨进程GPU投影，需用它做时间过滤，再分析worker范围。
+
+Graph模式下检查cudaGraphLaunch及Graph节点关联；若当前工具版本无法给Graph节点完整生成NVTX投影，就按GUI中的单步范围、launch与GPU节点时间线关联，不能将空投影表解释为没有计算。
+
+| 表/列 | 应该回答的问题 |
+| --- | --- |
+| cuda_gpu_kern_sum：Total Time、Instances、Avg/Med/Max、Time % | 慢在调用更多，还是单次kernel更慢？占比只相对于所选kernel累计时间 |
+| cuda_kern_exec_sum/trace：API、Queue、Kernel时间 | CPU提交、排队还是GPU执行更长？Queue可能是正常异步排队，需结合GPU空隙判断 |
+| nvtx_sum：Total Time、Range Instances | CPU提交/控制范围多长、多少步？不能直接当GPU计算时间 |
+| nvtx_gpu_proj_sum：Total Proj Time、Proj Avg、Total GPU Ops | 各阶段关联的GPU执行跨度；可能包含内部空隙，不等于所有kernel duration之和 |
+| nvtx_kern_sum：NVTX Range、Kern Inst、Total Time | 哪个kernel在prefill或decode中花费最多 |
+| cuda_api_sum：Num Calls、Avg、Total Time | launch、同步、分配是否频繁；CPU API耗时不是对应kernel的GPU duration |
+| osrt_sum：Name、Total Time、Num Calls | 是否存在锁/等待/I/O热点；整段等待可能只是服务空闲或关闭 |
+
+不要相加存在父子嵌套的NVTX总时间；也不要把多stream并行kernel的累计duration当GPU忙碌区间的并集。
+
+四模型重点对照：
+
+- fp8-local / fp8-official：确认是否仍是 `_w8a8_triton_block_scaled_mm` 与 `per_token_group_quant_8bit_kernel`；分别对照prefill和decode的次数、单次时间与kernel间隙。两个格式不同的模型可能分派到相同kernel家族。
+- BF16：确认实际cuBLAS/GEMV/GEMM路径，按相同阶段作基线。
+- AWQ：确认Marlin kernel，记录权重位宽和解包/反量化路径。AWQ Marlin与FP8 Marlin代表不同格式/计算路线，不只按名字比较。
+- eager / no_eager：先确认后者实际Graph回放，再比较单步GPU跨度、CPU提交数量和GPU空隙。Graph减少提交开销，不保证原GEMM本身变快。
+
+### 6.5 GUI逐步查看
+
+1. 将nsys-rep复制到Windows，用兼容该报告格式的Nsight Systems打开；SQLite只用于CLI分析，不替代原报告。
+2. 先查看Diagnostics Summary的采集器/worker警告。展开CUDA GPU行，确认正式区间确有kernel或Graph执行。
+3. 在NVTX事件中查找domain `quantization_profiling`。先看worker/load_model、worker/profile_memory、worker/compile_and_graph_capture，区分加载和内部warmup。
+4. 在benchmark进程找到controller/measure，选择并缩放到这个时间段；worker行按同一横坐标查看。
+5. 展开实际GPU worker的线程、NVTX和CUDA API行，再展开GPU的Context/Stream。prefill通常出现在请求开始，后面是多个decode步；长输入可能有多个prefill块。
+6. 选择worker/prefill或worker/decode范围，查看下方Events/Details；选择范围内CUDA launch，再定位关联GPU kernel。Graph模式则定位cudaGraphLaunch及Graph节点。
+7. 查看同一个decode步内的量化kernel、矩阵kernel、attention、sampling及中间空隙。CPU范围结束后GPU仍可能继续执行，这是异步提交行为。
+8. 在选定的正式时间窗口生成Statistics，查看CUDA GPU Kernel Summary、CUDA API Summary、NVTX GPU Projection；确认统计过滤已应用到所选区间。
+9. 打开另一模型/模式报告，对齐同等阶段和输出token数比较。不要用整份报告的总长度或全程Time %作为服务推理速度。
+
+界面名称和菜单位置可能随版本不同，判断依据是时间范围、PID/TID、关联CUDA活动和实际GPU duration。
+
+### 6.6 从JSONL读取阶段日志
+
+将BENCH_DIR替换为本次控制台打印的Artifacts目录：
+
+```bash
+BENCH_DIR=/workspace/AI_system/capstone/quantization_profiling/log/benchmark_实际ID
+python - "$BENCH_DIR" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+paths = [root / "events.jsonl", *root.glob("*/*/worker_events/worker_*.jsonl")]
+records = [json.loads(line) for path in paths if path.exists()
+           for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+for row in sorted(records, key=lambda x: x["monotonic_ns"]):
+    if row["event"] in {"stage_end", "request_end", "client_first_text"}:
+        print(json.dumps(row, ensure_ascii=False))
+PY
+```
+
+该命令合并同一主机的单调时钟时间；不能把JSONL的monotonic_ns直接当成SQLite相对时间戳。NSYS内跨进程对齐使用工具自身的时间线。
+
+## 7. 需要GPU硬件指标时，再采NCU
+
+Nsight Systems先回答“耗时在哪个阶段、哪个kernel、GPU是否有空隙”。DRAM吞吐、SM/Tensor计算占用、occupancy等，交给Nsight Compute。不要同时运行nsys和ncu。
+
+先用nsys确认实际kernel名，再在eager模式下小范围采样：
+
+```bash
+ncu --version
+ncu --list-sets
+
+# 0表示先看最早出现的匹配kernel，可能属于内部warmup，不能当作正式decode。
+# 确定要跳过的匹配次数后修改MATCH_SKIP；改负载/框架版本后重新核对。
+MATCH_SKIP=0
+ncu --target-processes all \
+  --kernel-name 'regex:.*_w8a8_triton_block_scaled_mm.*' \
+  --launch-skip "$MATCH_SKIP" --launch-count 2 \
   --set basic \
-  --replay-mode kernel \
-  --kernel-name-base demangled \
-  --kernel-name "regex:$KERNEL_RE" \
-  --launch-skip "$LAUNCH_SKIP" \
-  --launch-count 3 \
-  --export "$NCU_REPORT" \
+  -o "$OUT/ncu_eager_fp8-local_${CASE_ID}_${RUN_TAG}" \
   python capstone/quantization_profiling/scripts/benchmark.py \
-    --model "$MODEL_PROFILE" \
-    --case w128_o128 \
-    --enforce-eager true \
+    --model fp8-local --case "$CASE_ID" --enforce-eager true --nvtx \
     --requests 1 --rounds 1
 ```
 
-输出为 `${NCU_REPORT}.ncu-rep`，复制到 Windows 后用 Nsight Compute GUI 打开。先看 Duration、计算/访存利用率和 Occupancy；需要更多指标时再查详细版。
+`--launch-skip`针对匹配的kernel，不是跳过HTTP请求数。NCU只捕获少量热点；采集区间是否对应正式prefill/decode仍需验证，不能固定照抄以前的skip数。basic通过后才考虑把 `--set basic` 改为 `--set full`，多pass/replay会显著延长时间。
 
-`--launch-count 3` 是最多采 3 次匹配的 kernel 调用；`--launch-skip` 也是按匹配调用计数，都不是请求数。默认从第一个匹配调用开始，可能落在初始化或预热阶段；要分析稳定 decode，先在 nsys 中定位，再设置对应的跳过次数。本例明确使用 eager，分析其结果时记录与 Graph 模式的配置差异。
+NCU大幅拖慢服务时，用自定义benchmark配置增加 `startup_timeout_seconds` 和 `request_socket_timeout_seconds`，模型配置其余项保持同一基线。若出现ERR_NVGPUCTRPERM，需按目标机策略配置性能计数器权限；没有计数器数据就不能推断带宽瓶颈。BF16/AWQ要替换kernel过滤器，不会匹配这条Triton表达式。
 
-## 5. 常见报错与已有文件恢复
+更深入的受控实验与指标含义见 [FP8性能分析手册](nsight_fp8_performance_analysis.md)。
 
-| 现象 | 处理 |
-| --- | --- |
-| `wait_7081: command not found` | 在当前 Bash 终端重新执行第 1 节。 |
-| `Address already in use` | 执行 `ss -ltnp '( sport = :7081 )'` 核对监听者；若只有 TIME_WAIT，等待函数会重试。真实旧服务需正常停止。 |
-| `libdw.so.1` 缺失 | 在运行工具的同一系统/容器安装：Ubuntu 22.04 用 `sudo apt-get install -y libdw1`；24.04 用 `sudo apt-get install -y libdw1t64`；安装前先执行 `sudo apt-get update`。 |
-| `Generating ...qdstrm` 后报 `boost::filesystem::file_size` | 生成阶段查询文件失败，先检查原始文件是否真实存在，再按第 5.1 节排查。不能仅凭此错误断言 Graph kernel 出错。 |
-| 只有 `.qdstrm`，提示 importer 错误 | 用第 5.2 节检查恢复；转换器必须匹配采集版本。 |
-| ncu 显示 `No kernels were profiled` | 核对实际 kernel 名称，先把 `LAUNCH_SKIP` 设回 0；本例使用 `--target-processes all` 覆盖 worker。 |
-| ncu 显示 `ERR_NVGPUCTRPERM` | 需要目标机管理员开放 GPU 性能计数器权限，处理后重新采集。 |
+## 8. 常见失败与排查顺序
 
-### 5.1 `file_size: No such file or directory`：先确定失败阶段
+### 8.1 file_size / qdstrm导入失败，未生成nsys-rep
 
-典型输出：
-
-```text
-Artifacts: .../benchmark_...
-The target application terminated. One or more process it created re-parented.
-Waiting for termination of re-parented processes.
-Generating '/tmp/nsys-report-....qdstrm'
-FATAL ERROR: ... boost::filesystem::file_size: No such file or directory
-```
-
-含义：benchmark 已运行到写实验产物的末尾，随后 nsys 在收集收尾/报告生成阶段发生文件查询错误。`Artifacts:` 本身不代表所有请求成功，先检查该目录的 summary.json。re-parented 是子进程被父进程退出后重新托管的提示；`--wait=all` 正在等待这些进程，不是这次 FATAL 的直接解释。`Generating` 也不保证已经生成完整 qdstrm。
-
-目前这段错误没有给出缺失文件路径，不能确定缺失的是原始流、某个进程的中间文件，还是转换依赖；也不能直接认定是磁盘满、Graph bug 或目录权限。
-
-**A. 先读已有结果，不立即重跑**
+这是采集/导入链路失败信息，不能据此判定模型运行失败或某个GPU kernel出错。
 
 ```bash
-BENCH_DIR="/workspace/AI_system/capstone/quantization_profiling/log/benchmark_20261023T024113Z_2fea35cb"
-python -m json.tool "$BENCH_DIR/summary.json"
-
-# 查这次错误中提到的原始流。若不存在，再找输出目录和临时目录。
-ls -lh /tmp/nsys-report-458c.qdstrm
-find /tmp /workspace/AI_system/capstone/quantization_profiling/log \
-  -maxdepth 4 -type f -name '*.qdstrm' -ls 2>/dev/null
-```
-
-有非空原始流才有转换恢复的可能。没有原始流时，换 importer 无法补回采集数据；不要删除可能还有用的 qdstrm 或本次临时目录。
-
-**B. 检查工具、驱动、空间和临时目录**
-
-```bash
-type -a nsys
+# 保留完整控制台日志、版本和仍在的临时文件。
 nsys --version
-nvidia-smi
-printf 'NSYS_TMPDIR=%s\nTMPDIR=%s\n' "${NSYS_TMPDIR:-}" "${TMPDIR:-}"
-df -h /tmp /workspace
-df -i /tmp /workspace
-
-NSYS_EXE=$(readlink -f "$(command -v nsys)")
-printf 'nsys executable: %s\n' "$NSYS_EXE"
-find "$(dirname "$NSYS_EXE")/.." -maxdepth 4 -type f -name QdstrmImporter -print 2>/dev/null
+nsys status --environment
+find "$OUT" /tmp -maxdepth 4 -type f -name '*.qdstrm' -ls 2>/dev/null
+find "$NSYS_TMPDIR" -maxdepth 3 -type f -ls
+df -h "$OUT" "$NSYS_TMPDIR"
 ```
 
-`df -h` 查容量，`df -i` 查 inode。文件不存在不等于磁盘满；这些是排除项。若 nsys 是包装脚本，上述相邻目录不一定是完整安装目录，需按实际安装位置查找。
+依次核对：日志中生成的qdstrm路径是否真的存在；TMPDIR是否可写且空间足够；是否被外部清理；Linux采集器、QDSTRM importer及驱动是否兼容；worker是否被强杀或出现丢事件。临时目录已显式放在项目log下，但异常退出仍可能留下不完整文件。
 
-之前四份 eager 报告提示 CUDA 13.0 驱动使用 12.9 追踪库；如果仍是同一套采集环境，优先确认采集器版本支持目标驱动。版本兼容是待验证因素，不是当前错误的已证实根因。
+保留原qdstrm，先运行同版本QdstrmImporter的 `--help`，确认该版本的输入/输出选项后另行导入到新文件。不要把qdstrm仅改扩展名当成nsys-rep，也不要将它直接传给nsys export。若原文件已消失，单凭报错无法恢复，需重新采集。
 
-第 1 节已设置独立 NSYS_TMPDIR，并设置 TMPDIR 作为兼容回退。重跑时检查日志中的临时路径是否改变。先只保留循环中的一个模型；第 2 节会保存完整 nsys 日志和真实退出码。不要同时启动多份 profiler 来排查。
+### 8.2 等待re-parented processes
 
-**C. 一次只改一个追踪选项**
+`--wait=all` 表示等待重新托管的子进程，不是错误本身。检查对应server.log、worker_events和进程树，确认是否仍在正常退出。新版benchmark会先给进程组SIGTERM，持续检查整个组，最多15秒后才记录shutdown_escalation并SIGKILL；包装进程提前退出不会立即强杀worker。仍未实现显式cudaProfilerStop协议，因此最终以覆盖检查和Diagnostics为准。
 
-保持 `--enforce-eager false`，先只把 `--cuda-graph-trace=node` 改成 `graph`，并更换输出前缀。`graph` 记录整图，开销较低；它无法提供相同的逐节点 kernel 细节，所以这是定位采集问题的对照，不是对原采集配置已修复的证明。
+### 8.3 no_eager只有Graph Creation，没有GPU节点
 
-如果 graph 成功而 node 失败，证据指向逐节点追踪/版本兼容路径，应升级或核对采集器，并重新验证 node。不能说模型本身的 Graph 执行一定有错。
+先看report中的实际GPU执行、cudaGraphLaunch和采集警告，再看server.log中的Graph配置。确保使用node模式及受支持的Nsight/CUDA组合，并避免提前强杀worker。Graph Creation是资源元数据，不提供回放耗时。不能据此计算Graph加速比。
 
-若仍失败，在此基础上单独将 `--trace-fork-before-exec=true` 改成 `false`。该开关控制 fork 到 exec 之间的特殊追踪，不是“是否追踪所有 worker”的总开关；当前使用 spawn，正常 exec 后的子进程仍应核对是否采集。NVIDIA 提醒 fork-before-exec 追踪可能导致崩溃/死锁，因此适合作为独立排除项。
+### 8.4 找不到NVTX、prefill/decode或worker类
 
-最后再做 eager=true 对照，并记录每次改变。若相同工具/目录下 eager 成功而 Graph 失败，只能将问题范围缩小到 Graph 相关采集、运行及退出路径。
+- benchmark是否传了 `--nvtx`？默认关闭，可用 `--no-nvtx` 显式关闭；无此标记的旧报告不会自动补标记。
+- requirements-profiling是否安装在实际启动benchmark/vLLM的同一个venv？`NVTX_DISABLE`是否已取消？
+- run.json/各组summary的worker_class是否为 `profiling_worker.ProfilingWorker`？server.log是否有worker_instrumentation_ready？
+- 是否为固定的vLLM 0.14.1？自定义worker通过已有PYTHONPATH载入，不修改site-packages；换版本需重新核对hook接口。
+- 只有CPU范围无GPU活动时，不要继续解释kernel性能，先处理采集覆盖问题。
 
-**D. worker 退出和 CUDA buffer 刷新是另一项限制**
+## 9. 实现依据与进一步阅读
 
-当前 `scripts/benchmark.py` 的 `stop_process()` 先向服务进程组发 SIGTERM；等待的是 API 父进程，父进程一退出就会尝试向剩余同组进程发 SIGKILL。因此 worker 未必获得完整的 15 秒优雅退出时间。该行为可能影响 profiler 刷新，但不能仅凭当前 file_size 错误确认因果。
-
-可单独增加 `--cuda-flush-interval=1000` 作为数据保留对照，尝试每秒刷新 CUDA buffer；这会增加追踪开销，也不能保证修复缺文件错误或保住最后一次刷新之后的数据。要解决退出完整性，应让 worker 在采集停止前正常完成、或在服务退出前结束采集；不能只在 benchmark 主进程退出后加 sleep 期待已被杀死的 worker 刷新。
-
-不建议为了去掉提示直接改为 `--wait=primary`；它可能更早结束等待，却不能保证修复缺失文件，并可能丢掉仍在运行的 worker 的尾部追踪。
-
-**E. 如果仍报同样错误，查具体缺失路径**
-
-如果系统已有 strace，可将第 2 节的单模型 `nsys profile ...` 命令作为其目标，前面加上：
-
-```bash
-strace -ff -tt -s 256 -e trace=%file -o "$OUT/nsys_filetrace" \
-  nsys profile ...
-# 上面的省略号必须替换为完整命令，不能直接照抄运行。
-rg 'ENOENT|nsys-report|qdstrm|QdstrmImporter' "$OUT"/nsys_filetrace*
-```
-
-这是诊断性重跑，开销较大，不能作为性能数据。ENOENT 中有许多正常的依赖搜索失败，应结合报错时间和临时报告路径判断，不能将第一条 ENOENT 当作根因。
-
-### 5.2 原始 qdstrm 存在时恢复
-
-先确认输入文件非空，再使用与采集版本匹配的转换器。不要直接沿用另一个安装目录里的 QdstrmImporter；路径中写了 nsight-compute 不自动证明不兼容，但也不能证明与当前 nsys 配套。
-
-```bash
-RAW_QDSTRM="/替换为实际存在的报告路径.qdstrm"
-# 新版本支持 nsys import 时，优先用同一 nsys 安装执行。
-if [ ! -s "$RAW_QDSTRM" ]; then
-  echo "原始流不存在或为空，停止转换" >&2
-elif nsys import --help >/dev/null 2>&1; then
-  nsys import --input-file "$RAW_QDSTRM" \
-    --output-file "${RAW_QDSTRM%.qdstrm}_recovered_$(date +%Y%m%dT%H%M%S).nsys-rep"
-else
-  echo "当前版本无import子命令，使用下面的配套QdstrmImporter。" >&2
-fi
-```
-
-旧版没有 import 子命令时，使用 B 步定位到的配套转换器；以下先改成真实路径：
-
-```bash
-IMPORTER_BIN="/替换为同版本NsightSystems安装目录/host-linux-x64/QdstrmImporter"
-"$IMPORTER_BIN" --version
-ldd "$IMPORTER_BIN"
-
-if [ -s "$RAW_QDSTRM" ]; then
-  "$IMPORTER_BIN" -i "$RAW_QDSTRM" \
-    -o "${RAW_QDSTRM%.qdstrm}_recovered_$(date +%Y%m%dT%H%M%S).nsys-rep"
-fi
-```
-
-`ldd` 的 not found 指向依赖缺失，先补依赖再转；格式版本不匹配则换配套版本。已有完整 qdstrm 转换成功才说明该文件可恢复，不保证采集覆盖完整；打开报告后继续检查 Diagnostics Summary。
-
-参考：[NVIDIA 用户指南](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)中的临时目录、wait、Graph trace、fork-before-exec 和报告恢复说明。本文没有在远端复现该 FATAL，以上是依据日志阶段与项目代码给出的定位步骤。
-
-## 进一步阅读
-
-- [详细分析版](nsight_fp8_performance_analysis.md)：精确采集窗口、更多 NCU 指标和原理说明。
-- [vLLM 0.14.1 Profiling](https://docs.vllm.ai/en/v0.14.1/contributing/profiling/)
-- [Nsight Systems 用户指南](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
-- [Nsight Compute CLI](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html)
+- [NVIDIA Nsight Systems User Guide](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)：采集参数、Graph、CPU/Python追踪；本机 `--help` 决定实际可用参数。
+- 本机 `nsys stats --help`、`--help-reports nvtx_gpu_proj_sum`、`--help-reports nvtx_kern_sum`：过滤窗口、同线程投影与统计列。本文stats语法用本机2025.3.2帮助核对。
+- [NVTX Python API](https://nvidia.github.io/NVTX/python/reference.html)：annotate及start_range/end_range；项目使用独立domain `quantization_profiling`。
+- [vLLM 0.14.1 GPU Worker源码](https://github.com/vllm-project/vllm/blob/v0.14.1/vllm/v1/worker/gpu_worker.py)、[SchedulerOutput源码](https://github.com/vllm-project/vllm/blob/v0.14.1/vllm/v1/core/sched/output.py)：worker hook和阶段判断字段。
+- [八份历史报告对比](../reports/nsys_eight_report_comparison_20261023.md)、[四模型报告阅读方法](nsys_report_reading_20261023.md)：旧报告已有的数据与限制。

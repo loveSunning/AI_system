@@ -4,7 +4,11 @@
 
 **当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ、官方 FP8 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/官方 FP8/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
 
-**Nsight 快速运行：** [简化版：直接运行 nsys 和 ncu](docs/nsight_quickstart.md)。benchmark 使用默认冻结数据。
+**benchmark 脚本详解：** [目的、主流程、21 个函数/方法、指标公式与输出文件](docs/benchmark_script_walkthrough.md)。依据当前源码解释默认值、模型验证、进程生命周期和计时边界。
+
+**Nsight 快速运行：** [eager/no_eager、四模型配对采集、NVTX及CLI/GUI分析](docs/nsight_quickstart.md)。`benchmark.py --nvtx`标记实际worker的加载、prefill、decode；另含CUDA/OSRT基础时间线、CPU栈采集及报告覆盖检查。
+
+**八份 nsys 实测对比：** [2026-10-23 eager/Graph 数据覆盖与四模型热点分析](reports/nsys_eight_report_comparison_20261023.md)。包含逐请求窗口、耗时分解图；新增 Graph 报告缺少 GPU 执行活动，暂不能计算 Graph 加速比。
 
 **已有 nsys 报告解读：** [2026-10-23 四模型报告的实际热点、GUI 步骤与 CLI 命令](docs/nsys_report_reading_20261023.md)。包含同等 decode 周期对照、统计字段含义与采集完整性限制。
 
@@ -21,7 +25,7 @@
 1. 阅读 [详细学习与实施规划](planning.md)，按“环境与显存预算 → 数据与口径 → BF16 → Profiling → W4A16 → 质量回归 → 报告”的顺序推进。
 2. 对照 [W29–W52 每周计划与验收](../../docs/learning-plan-w29-w52.md)，保留 P1-01～P1-06 的任务编号和验收要求。
 3. 模型已下载后，按 [模型运行与库用法教程](docs/model_running.md) 打通短请求、批量推理和 HTTP 调用。
-4. 复习 [Nsight 工具手册](../../docs/profiling/nsight-tools.md) 的时间线与热点分析方法；其中现有示例面向 kernel lab，本项目的模型服务采集流程将在后续实现。
+4. 复习 [Nsight 工具手册](../../docs/profiling/nsight-tools.md) 的时间线与热点分析方法；其中示例面向kernel lab；模型服务按本项目的 [Nsight quickstart](docs/nsight_quickstart.md) 执行。
 
 计划来源为 `00.AI-system-plan-optimized-v3.xlsx` 的“案例1_量化与Profiling”，此处依据仓库已有周计划与案例说明展开。W29、W30、W32 是原学习周编号；实际补做时间和完成状态以实验记录为准。
 
@@ -528,6 +532,8 @@ python capstone/quantization_profiling/scripts/benchmark.py --all-models --round
 # 也可以选择两种模型；--model 可重复，支持上面的 qwen3 别名。
 python capstone/quantization_profiling/scripts/benchmark.py --model bf16 --model awq
 ```
+
+**诊断日志与NVTX：** 控制/请求事件写入实验根目录的 `events.jsonl`。`--nvtx`额外启用vLLM 0.14.1 worker的load/prefill/decode范围和各case的 `worker_events/` 日志，先安装 `requirements-profiling.txt`；不传则默认关闭NVTX，`--no-nvtx`可显式关闭。命令与计时边界见 [Nsight quickstart](docs/nsight_quickstart.md)。
 
 **benchmark 的执行开关：** `--enforce-eager true/false`（也支持 `--enforce-eager` / `--no-enforce-eager`）覆盖本次配置；省略时沿用配置文件。`fp8-origin` 是 `fp8-official` 的别名。`--fp8-backend marlin` 在 vLLM 0.14.1 下请求原生 FP8 loader 的 **W8A16** 路线；当前本地 compressed-tensors FP8_BLOCK 不支持这个强制开关，会明确拒绝该组合。详细命令与格式边界见 [benchmark 模型、Marlin 与 eager 开关](docs/benchmark_backends.md)。
 
