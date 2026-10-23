@@ -4,6 +4,8 @@
 
 **当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ、官方 FP8 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/官方 FP8/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
 
+**Nsight 快速运行：** [简化版：直接运行 nsys 和 ncu](docs/nsight_quickstart.md)。benchmark 使用默认冻结数据。
+
 **FP8 性能诊断与 Nsight 实操：** [官方/本地 FP8 与 BF16、AWQ 的逐步分析命令](docs/nsight_fp8_performance_analysis.md)。结合 2026-10-22 的 1×80、并发 1 结果，覆盖服务/离线采集、prefill/decode、NCU 指标与受控消融；实际 GPU 归因须在目标机采集验证。
 
 **FP8 自行量化入口：** [LLM Compressor 分块 FP8 转换与验证](docs/fp8_quantization.md)。脚本使用 `FP8_BLOCK`，导出真实 compressed-tensors 权重；当前统一环境支持量化与推理；另保留 `torch==2.8.0+cpu` 的历史 CPU 量化方案。

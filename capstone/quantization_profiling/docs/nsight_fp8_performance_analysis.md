@@ -1,5 +1,7 @@
 # Qwen3-8B：FP8 / BF16 / AWQ 的 Nsight 性能分析实操
 
+先运行命令可阅读 [Nsight 简化版](nsight_quickstart.md)，其中包含 nsys / ncu、端口等待和报告转换的最短操作流程。
+
 适用目录：`capstone/quantization_profiling`。更新日期：2026-10-22。
 
 主分析对象：`fp8-local`（下文也称 fp8local）、`fp8-official`（用户所称 fp8origin）；对照：`bf16`、`awq`。用户提到的 bf6 按本实验的 BF16 理解。
