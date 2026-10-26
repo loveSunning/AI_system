@@ -1,6 +1,6 @@
 # Nsight 快速采集：eager、no_eager、阶段日志与 NVTX
 
-适用：Linux Bash、RTX 4090D、项目固定的 vLLM 0.14.1。更新：2026-10-23。
+适用：Linux Bash、RTX 4090D、项目固定的 vLLM 0.14.1。更新：2026-10-26。
 
 先采时间线，再按需增加CPU栈或显存跟踪，最后用NCU研究单个热点。下面命令均调用现有benchmark，保留5次预热、1次正式请求、1轮。Profiler和阶段日志会增加开销，采集结果用于诊断，不代替无profiler的正式性能结果。
 
@@ -12,11 +12,15 @@
 source /workspace/venvs/vllm-0112/bin/activate
 cd /workspace/AI_system
 
+# 清除旧教程/排查命令遗留的覆盖，后续新进程使用默认临时目录。
+unset NSYS_TMPDIR TMPDIR VLLM_RPC_BASE_PATH
+
 # 只安装轻量NVTX Python注解依赖，不更换torch/vLLM。
 python -m pip install -r capstone/quantization_profiling/requirements-profiling.txt
 python -c 'import nvtx; import importlib.metadata as m; print("nvtx",m.version("nvtx"),"vllm",m.version("vllm"))'
 nsys --version
 nsys status --environment
+python -c 'import tempfile; print("Python/vLLM默认临时目录:", tempfile.gettempdir())'
 
 OUT="/workspace/AI_system/capstone/quantization_profiling/log/profiling"
 RUN_TAG=$(date -u +%Y%m%dT%H%M%SZ)
@@ -24,11 +28,9 @@ CASE_ID=w128_o128
 MODEL_PROFILE=fp8-local
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export PYTHONUNBUFFERED=1
-export NSYS_TMPDIR="$OUT/nsys_tmp_${RUN_TAG}"
-export TMPDIR="$NSYS_TMPDIR"
 # 默认只打印prefill、阶段转换和每32步decode；NVTX仍标记每一步。
 export QUANT_PROFILE_LOG_EVERY_N_STEPS=32
-mkdir -p "$OUT" "$NSYS_TMPDIR"
+mkdir -p "$OUT"
 
 wait_7081() {
   local attempt
@@ -55,6 +57,8 @@ NSYS_TIMELINE_ARGS=(
 )
 NSYS_ARGS=("${NSYS_TIMELINE_ARGS[@]}")
 ```
+
+这是本项目当前推荐的基础采集配置：只指定报告输出目录OUT，临时文件沿用系统默认位置，Linux通常为 `/tmp`；不额外设置NSYS_TMPDIR、TMPDIR或VLLM_RPC_BASE_PATH。上面的unset用于清除此前命令留下的覆盖；以Python打印的实际临时目录和nsys日志中的Generating路径为准。它只影响当前终端及随后启动的子进程。
 
 使用项目的默认冻结快照 `data/frozen`；快照必须已经存在，1个正式请求仍执行冻结的5次预热。
 
@@ -95,8 +99,8 @@ collect_one() {
 
   nsys_rc=${pipeline_status[0]}
   if [ "$nsys_rc" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ ! -s "${prefix}.nsys-rep" ]; then
-    echo "采集失败：nsys退出码=$nsys_rc，检查${prefix}.nsys.log" >&2
-    find "$OUT" -maxdepth 4 -type f -name '*.qdstrm' -ls
+    echo "本次运行失败：nsys退出码=$nsys_rc，tee退出码=${pipeline_status[1]}；检查${prefix}.nsys.log和server.log" >&2
+    find "$OUT" /tmp -maxdepth 4 -type f -name '*.qdstrm' -ls 2>/dev/null || true
     return 1
   fi
 
@@ -117,7 +121,9 @@ collect_one() {
 }
 ```
 
-PIPESTATUS必须在管道后立即读取，避免把tee成功当成nsys成功。同一RUN_TAG重复同一模式/模型会重名；重采前重新设置RUN_TAG和临时目录，不覆盖有用的原始文件。
+PIPESTATUS必须在管道后立即读取，避免把tee成功当成nsys成功。同一RUN_TAG重复同一模式/模型会重名；重采前重新设置RUN_TAG即可，无需创建或重新指定临时目录，不覆盖有用的原始文件。
+
+nsys-rep文件生成成功不代表benchmark成功；服务启动失败时，报告可能只记录失败的启动过程。本函数遇到非零退出码会停止后续SQLite导出和覆盖检查，应先排查server.log。
 
 覆盖检查退出0只表示关键数据存在，仍要看Diagnostics Summary中的丢事件警告。no_eager的Graph检查失败也可能表示框架实际没有使用Graph，应结合server.log判断，不能只归因于采集器。
 
@@ -155,6 +161,21 @@ done
 失败会停止后续实验，保留已有文件。只采本地/官方FP8时，将列表改成 `fp8-local fp8-official`。
 
 改变负载只需先设置 `CASE_ID=w1024_o128`、`w4096_o256`、`w8192_o128`或`w1024_o512`，文件名和命令会同步变化。
+
+### 3.4 在原终端重跑一次
+
+已定义第2节collect_one后，重跑时使用新的RUN_TAG。若原终端执行过旧文档或临时目录排查命令，先清除残留覆盖：
+
+```bash
+unset NSYS_TMPDIR TMPDIR VLLM_RPC_BASE_PATH
+RUN_TAG=$(date -u +%Y%m%dT%H%M%SZ)
+MODEL_PROFILE=fp8-local
+
+collect_one eager true "$MODEL_PROFILE" && \
+  collect_one no_eager false "$MODEL_PROFILE"
+```
+
+第一份采集与覆盖检查通过后才开始第二份；两份报告共用该RUN_TAG，前缀区分模式。eager在本版本日志中还会将优化等级覆盖为-O0，比较结果不能全部归因于CUDA Graph。
 
 ## 4. 日志和NVTX里新增了什么
 
@@ -398,12 +419,11 @@ NCU大幅拖慢服务时，用自定义benchmark配置增加 `startup_timeout_se
 # 保留完整控制台日志、版本和仍在的临时文件。
 nsys --version
 nsys status --environment
-find "$OUT" /tmp -maxdepth 4 -type f -name '*.qdstrm' -ls 2>/dev/null
-find "$NSYS_TMPDIR" -maxdepth 3 -type f -ls
-df -h "$OUT" "$NSYS_TMPDIR"
+find "$OUT" /tmp -maxdepth 4 -type f -name '*.qdstrm' -ls 2>/dev/null || true
+df -h "$OUT" /tmp
 ```
 
-依次核对：日志中生成的qdstrm路径是否真的存在；TMPDIR是否可写且空间足够；是否被外部清理；Linux采集器、QDSTRM importer及驱动是否兼容；worker是否被强杀或出现丢事件。临时目录已显式放在项目log下，但异常退出仍可能留下不完整文件。
+先根据nsys日志中Generating给出的实际路径查找qdstrm，再核对默认临时目录是否可写且空间足够、文件是否被外部清理、Linux采集器与QDSTRM importer及驱动是否兼容、worker是否被强杀或出现丢事件。成功导入后临时文件可能已被自动清理，find没有结果本身不代表异常。常规命令继续使用默认目录，不为排查此错误预先增加临时目录覆盖。
 
 保留原qdstrm，先运行同版本QdstrmImporter的 `--help`，确认该版本的输入/输出选项后另行导入到新文件。不要把qdstrm仅改扩展名当成nsys-rep，也不要将它直接传给nsys export。若原文件已消失，单凭报错无法恢复，需重新采集。
 
@@ -422,6 +442,23 @@ df -h "$OUT" "$NSYS_TMPDIR"
 - run.json/各组summary的worker_class是否为 `profiling_worker.ProfilingWorker`？server.log是否有worker_instrumentation_ready？
 - 是否为固定的vLLM 0.14.1？自定义worker通过已有PYTHONPATH载入，不修改site-packages；换版本需重新核对hook接口。
 - 只有CPU范围无GPU活动时，不要继续解释kernel性能，先处理采集覆盖问题。
+
+### 8.5 ZMQ ipc path is longer than 107 characters
+
+2026-10-26的日志曾在服务启动时出现该异常：旧命令把通用TMPDIR指向过深的Nsight目录，vLLM继承后拼接UUID，IPC路径达到129字节，超过该socket的107字节限制。错误发生在创建EngineCore通信socket时，尚未进入GPU模型加载和推理。
+
+在原Bash终端执行第3.4节：清除NSYS_TMPDIR、TMPDIR、VLLM_RPC_BASE_PATH的覆盖，生成新RUN_TAG并重新启动benchmark。恢复默认目录即可，无需再创建专用IPC目录。若这些旧export已写入shell启动文件，也删除相应旧行。
+
+只读确认新进程实际使用的目录及可能遗留的环境变量：
+
+```bash
+python -c 'import tempfile; print(tempfile.gettempdir())'
+printenv | grep -E '^(NSYS_TMPDIR|TMPDIR|TEMP|TMP|VLLM_RPC_BASE_PATH)=' || true
+```
+
+Python还会考虑系统已有的TEMP/TMP，因此以实际打印结果为准；若它们也被旧排查命令改成长路径，清除对应覆盖后再启动。新的unset不会改变已运行服务的环境。
+
+若nsys-rep已生成而benchmark标记passed=false，仍属于失败实验，不能据此分析prefill/decode性能。改变模型精度、eager或端口无法解决IPC路径长度问题。
 
 ## 9. 实现依据与进一步阅读
 
