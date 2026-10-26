@@ -6,24 +6,44 @@ No site-packages patch, forward hook, or per-step CUDA synchronization is used.
 from contextlib import contextmanager
 import os
 from pathlib import Path
-from vllm.v1.worker.gpu_worker import Worker
+import sys
 import profiling_trace as trace
 from profiling_stages import StepClassifier
 
 
+def _configure_worker_logging():
+    directory = os.environ.get("QUANT_PROFILE_EVENT_DIR")
+    path = Path(directory)/f"worker_{os.getpid()}.jsonl" if directory else None
+    trace.configure_logging(path)
+
+
+# This opt-in module is loaded by vLLM. Any earlier vLLM imports remain outside
+# this range; report cache state rather than claiming to time the entire import.
+_configure_worker_logging()
+trace.log_event("worker_module_entry", module=__name__)
+with trace.stage("worker/nvtx_init"):
+    trace.require_nvtx()
+with trace.stage("worker/import_gpu_worker", nvtx=True,
+                 module="vllm.v1.worker.gpu_worker",
+                 already_imported="vllm.v1.worker.gpu_worker" in sys.modules):
+    from vllm.v1.worker.gpu_worker import Worker
+
+
 class ProfilingWorker(Worker):
     def __init__(self, *args, **kwargs):
-        directory = os.environ.get("QUANT_PROFILE_EVENT_DIR")
-        path = Path(directory)/f"worker_{os.getpid()}.jsonl" if directory else None
-        trace.configure_logging(path)
-        trace.require_nvtx()
+        _configure_worker_logging()
         self._stage_classifier = StepClassifier()
         self._stage_step = 0
         self._stage_last_phase = None
         self._stage_log_interval = max(1, int(os.environ.get("QUANT_PROFILE_LOG_EVERY_N_STEPS", "32")))
-        super().__init__(*args, **kwargs)
+        with trace.stage("worker/base_init", nvtx=True):
+            super().__init__(*args, **kwargs)
         trace.log_event("worker_instrumentation_ready", rank=self.rank,
                         nvtx_domain=trace.DOMAIN, worker_class=type(self).__name__)
+
+    def init_device(self, *args, **kwargs):
+        with trace.stage("worker/init_device", nvtx=True, rank=self.rank):
+            return super().init_device(*args, **kwargs)
 
     def load_model(self, *args, **kwargs):
         with trace.stage("worker/load_model", nvtx=True, rank=self.rank):

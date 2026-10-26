@@ -1,10 +1,12 @@
 """Offline request/protocol checks; fake engines never read weights or use CUDA."""
 from __future__ import annotations
 
+import builtins
 import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -82,6 +84,13 @@ class FakeTensor:
 class FakeBatch(dict):
     def to(self, device):
         return self
+
+
+def fake_server(returncode=0, pid=24680):
+    process = MagicMock()
+    process.pid = pid
+    process.wait.return_value = returncode
+    return process
 
 
 class RunnerTests(unittest.TestCase):
@@ -215,8 +224,8 @@ class RunnerTests(unittest.TestCase):
                 (directory / "config.json").write_text(json.dumps({"model_type": "qwen3", "quantization_config": quant}), encoding="utf-8")
                 (directory / "model.safetensors").write_bytes(b"fake")
                 with patch.dict(runner.os.environ, {"MODEL_ROOT": str(self.root)}), \
-                     patch.object(runner.subprocess, "call", return_value=0) as call, \
-                     contextlib.redirect_stdout(io.StringIO()):
+                     patch.object(runner.subprocess, "Popen", return_value=fake_server()) as call, \
+                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(runner.main(["--model", alias, "--serve"]), 0)
                 command = call.call_args.args[0]
                 self.assertEqual(command[command.index("--model") + 1], str(directory.resolve()))
@@ -400,7 +409,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(command[command.index("--port") + 1], "7081")
 
     def test_server_uses_active_interpreter_and_propagates_exit_code(self):
-        with patch.object(runner.subprocess, "call", return_value=7) as call, \
+        with patch.object(runner.subprocess, "Popen", return_value=fake_server(7)) as call, \
              patch.dict(runner.os.environ, {}, clear=False):
             status = self.invoke("--serve", "--port", "8123", "--served-model-name", "test-model")
         self.assertEqual(status, 7)
@@ -423,10 +432,10 @@ class RunnerTests(unittest.TestCase):
             observed.append(runner.os.environ["VLLM_TEST_FORCE_FP8_MARLIN"])
             self.assertNotIn("--enforce-eager", command)
             self.assertNotIn("--fp8-backend", command)  # project flag, not a vLLM loader name
-            return 0
+            return fake_server()
         with patch.dict(runner.os.environ, {"VLLM_BATCH_INVARIANT": "0", "VLLM_MARLIN_INPUT_DTYPE": ""}), \
              patch.object(runner.importlib.metadata, "version", return_value="0.14.1"), \
-             patch.object(runner.subprocess, "call", side_effect=start):
+             patch.object(runner.subprocess, "Popen", side_effect=start):
             self.assertEqual(self.invoke("--serve", "--fp8-backend", "marlin", "--no-enforce-eager"), 0)
         self.assertEqual(observed, ["1"])
 
@@ -434,9 +443,67 @@ class RunnerTests(unittest.TestCase):
         (self.model_dir / "config.json").write_text(json.dumps({"quantization_config":
             {"quant_method": "fp8", "fmt": "e4m3"}}))
         with patch.object(runner.importlib.metadata, "version", return_value="0.11.0"), \
-             patch.object(runner.subprocess, "call") as start:
+             patch.object(runner.subprocess, "Popen") as start:
             self.assertEqual(self.invoke("--serve", "--fp8-backend", "marlin"), 1)
         start.assert_not_called()
+
+
+    def test_server_logs_spawn_pid_and_lifetime_without_importing_cuda(self):
+        original_import = builtins.__import__
+        def cpu_only_import(name, *args, **kwargs):
+            if name.split(".")[0] in {"torch", "vllm"}:
+                raise AssertionError("Wrapper imported a GPU library: " + name)
+            return original_import(name, *args, **kwargs)
+        output = io.StringIO()
+        process = fake_server(7, pid=24680)
+        with patch.object(runner.subprocess, "Popen", return_value=process) as start, \
+             patch.object(builtins, "__import__", side_effect=cpu_only_import), \
+             patch.dict(os.environ, {"VLLM_API_KEY": "secret-stage-key"}), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(output):
+            status = runner.main(["--model", str(self.model_dir), "--serve"])
+        self.assertEqual(status, 7)
+        self.assertEqual(start.call_args.args[0][:3],
+                         [sys.executable, "-m", "vllm.entrypoints.openai.api_server"])
+        process.wait.assert_called_once_with()
+        process.kill.assert_not_called()
+        records = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()
+                   if line.startswith("[quant-profile] ")]
+        self.assertTrue(records)
+        stages = {x.get("stage") for x in records}
+        self.assertTrue({"run_model/parse_args", "run_model/resolve_paths",
+                         "run_model/runtime_metadata", "run_model/nvtx_init",
+                         "run_model/build_server_command", "run_model/spawn_api_server",
+                         "run_model/server_lifetime"}.issubset(stages))
+        spawned = next(x for x in records if x["event"] == "api_server_spawned")
+        self.assertEqual(spawned["child_pid"], 24680)
+        ended = next(x for x in records if x["event"] == "api_server_exited")
+        self.assertEqual(ended["returncode"], 7)
+        self.assertNotIn("secret-stage-key", output.getvalue())
+        self.assertTrue(all("utc" in x and "monotonic_ns" in x and "pid" in x for x in records))
+        durations = [x["cpu_wall_seconds"] for x in records if x["event"] == "stage_end"]
+        self.assertTrue(all(value >= 0 for value in durations))
+
+    def test_interrupted_wait_kills_child_and_preserves_exit_contract(self):
+        process = fake_server()
+        process.wait.side_effect = KeyboardInterrupt()
+        with patch.object(runner.subprocess, "Popen", return_value=process):
+            self.assertEqual(self.invoke("--serve"), 130)
+        process.kill.assert_called_once_with()
+
+    def test_resolve_failure_is_logged_before_spawning_server(self):
+        output = io.StringIO()
+        with patch.object(runner.subprocess, "Popen") as start, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(output):
+            result = runner.main(["--model", str(self.root / "missing"), "--serve"])
+        self.assertEqual(result, 1)
+        start.assert_not_called()
+        records = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()
+                   if line.startswith("[quant-profile] ")]
+        failed = [x for x in records if x.get("stage") == "run_model/resolve_paths"
+                  and x["event"] == "stage_end"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["status"], "failed")
+
 
 
 if __name__ == "__main__":

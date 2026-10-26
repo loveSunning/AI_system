@@ -50,8 +50,9 @@ def log_event(event, **fields):
     if not LOGGER.isEnabledFor(logging.INFO) or not LOGGER.handlers:
         return
     record = {"utc": datetime.now(timezone.utc).isoformat(),
-              "monotonic_ns": time.monotonic_ns(), "pid": os.getpid(),
-              "thread_id": threading.get_ident(), "event": event, **fields}
+              "monotonic_ns": time.monotonic_ns(), "pid": os.getpid(), "ppid": os.getppid(),
+              "thread_id": threading.get_ident(), "native_thread_id": threading.get_native_id(),
+              "event": event, **fields}
     message = json.dumps(record, ensure_ascii=False, default=str)
     secret = os.environ.get("VLLM_API_KEY", "")
     if secret:

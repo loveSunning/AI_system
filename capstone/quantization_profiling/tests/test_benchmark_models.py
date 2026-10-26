@@ -177,16 +177,76 @@ class BenchmarkModelsTests(unittest.TestCase):
     def test_bf16_changed_source_fails_but_quantized_shards_have_independent_hashes(self):
         with contextlib.redirect_stdout(io.StringIO()):
             base = bench.verify_model(self.config("bf16"), self.source)
+            self.assertEqual(base["weight_verification"]["status"], "passed")
+            self.assertEqual(base["weight_verification"]["mode"], "sha256")
             for profile in ("awq", "fp8-official", "fp8-local"):
                 config = self.quantized(profile)
                 model = bench.verify_model(config, self.source)
                 bench.validate(config, self.protocol, model)
                 self.assertEqual(model["profile"], profile)
+                self.assertEqual(model["weight_verification"]["status"], "passed")
+                self.assertEqual(model["weight_verification"]["mode"], "sha256")
                 self.assertNotEqual(model["files"]["model.safetensors"], base["files"]["model.safetensors"])
                 self.assertEqual(model["tokenizer_path"], base["tokenizer_path"])
             (self.source_path / "model.safetensors").write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "changed since freeze"):
                 bench.verify_model(self.config("bf16"), self.source)
+
+
+    def test_metadata_inspection_skips_weight_tokenizer_hashes_and_conversion_manifest(self):
+        configs = [self.config("bf16")] + [self.quantized(profile) for profile in
+                   ("awq", "fp8-official", "fp8-local")]
+        # These changes are deliberately unverified in metadata-only mode.
+        (self.source_path / "model.safetensors").write_bytes(b"changed since freeze")
+        write(self.source_path / "tokenizer.json", {"different_vocab": True})
+        (Path(configs[-1]["model"]) / "quantization_manifest.json").write_text("invalid JSON", encoding="utf-8")
+        with patch.object(bench, "digest", side_effect=AssertionError("metadata inspection must not hash files")), \
+             patch.object(bench, "hash_model_file", side_effect=AssertionError("metadata inspection must not read model files")), \
+             patch.object(bench, "read", wraps=read) as reader, contextlib.redirect_stdout(io.StringIO()):
+            for config in configs:
+                with self.subTest(profile=config["profile"]):
+                    model = bench.verify_model(config, self.source, verify_weights=False)
+                    self.assertEqual(model["files"], {})
+                    self.assertEqual(model["tokenizer_sha256"], {})
+                    self.assertEqual(model["weight_verification"]["status"], "skipped")
+                    self.assertEqual(model["weight_verification"]["mode"], "metadata_only")
+                    self.assertEqual(model["base_source_verification"],
+                                     "architecture_only; weight_and_tokenizer_hashes_skipped")
+                    self.assertNotIn("conversion_manifest_sha256", model)
+        self.assertEqual([Path(call.args[0]).name for call in reader.call_args_list], ["config.json"] * 4)
+
+    def test_metadata_inspection_still_requires_weights_architecture_and_valid_runtime(self):
+        for profile in ("bf16", "awq", "fp8-official", "fp8-local"):
+            config = self.config(profile) if profile == "bf16" else self.quantized(profile)
+            directory = Path(config["model"])
+            actual = read(directory / "config.json")
+            write(directory / "config.json", dict(actual, hidden_size=999))
+            with self.subTest(profile=profile), patch.object(bench, "digest") as hash_file:
+                with self.assertRaisesRegex(ValueError, "architecture differs"):
+                    bench.verify_model(config, self.source, verify_weights=False)
+                hash_file.assert_not_called()
+            write(directory / "config.json", actual)
+            (directory / "model.safetensors").unlink()
+            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "No local model weights"):
+                bench.verify_model(config, self.source, verify_weights=False)
+        config = self.config("fp8-official")
+        config["fp8_backend"] = "unsupported"
+        with patch.object(bench, "digest") as hash_file, self.assertRaises(ValueError):
+            bench.verify_model(config, self.source, verify_weights=False)
+        hash_file.assert_not_called()
+
+    def test_explicit_full_verification_checks_changed_weights_and_tokenizer(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            model = bench.verify_model(self.config("bf16"), self.source, verify_weights=True)
+            self.assertEqual(model["weight_verification"]["status"], "passed")
+            self.assertEqual(model["weight_verification"]["mode"], "sha256")
+            (self.source_path / "model.safetensors").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "changed since freeze"):
+                bench.verify_model(self.config("bf16"), self.source, verify_weights=True)
+            config = self.quantized("awq")
+            write(self.source_path / "tokenizer.json", {"different_vocab": True})
+            with self.assertRaisesRegex(ValueError, "Reference tokenizer changed"):
+                bench.verify_model(config, self.source, verify_weights=True)
 
     def test_changed_tokenizer_or_wrong_model_architecture_is_rejected(self):
         config = self.quantized("awq")
@@ -248,7 +308,7 @@ class BenchmarkModelsTests(unittest.TestCase):
         def launch(command, stdout, **kwargs):
             stdout.write("Initializing a V1 LLM engine with config: dtype=torch.bfloat16, quantization=awq_marlin, seed=42\n")
             stdout.flush()
-            return SimpleNamespace(poll=lambda: None)
+            return SimpleNamespace(pid=12345, poll=lambda: None)
         calls = []
         def phase(args, cfg, group, round_id, stage, concurrency, output):
             calls.append((round_id, stage, [x["id"] for x in group]))
@@ -261,6 +321,12 @@ class BenchmarkModelsTests(unittest.TestCase):
             record = bench.run_case(config, dict(self.protocol, rounds=2), self.case, selected, self.root,
                                     {"config": dict(self.base_config, quantization_config={"quant_method": "awq"})})
         self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["startup"]["status"], "ready")
+        self.assertEqual(record["server_pid"], 12345)
+        self.assertEqual(record["startup"]["health_attempts"], 1)
+        for field in ("spawn_seconds", "health_probe_seconds", "retry_sleep_seconds",
+                      "health_wait_seconds", "engine_verification_seconds", "total_seconds"):
+            self.assertGreaterEqual(record["startup"][field], 0)
         self.assertEqual([len(x[2]) for x in calls], [5, 50, 5, 50])
         self.assertEqual(calls[1][2], calls[3][2])
         self.assertEqual(record["artifact_directory"], "awq/" + self.case["id"])
@@ -271,7 +337,7 @@ class BenchmarkModelsTests(unittest.TestCase):
         config = self.config("fp8-local")
         def launch(command, stdout, **kwargs):
             stdout.write("CUDA out of memory\n"); stdout.flush()
-            return SimpleNamespace(poll=lambda: 1)
+            return SimpleNamespace(pid=12345, poll=lambda: 1)
         with patch.object(bench, "GPURecorder", FakeGPU), patch.object(bench.subprocess, "Popen", side_effect=launch), \
              patch.object(bench, "stop_process") as stop:
             record = bench.run_case(config, self.protocol, self.case, [], self.root, {"config": {}})
@@ -301,7 +367,7 @@ class BenchmarkModelsTests(unittest.TestCase):
                 write(Path(command[command.index("--output") + 1]), {"checks": {"torch": {"runtime": {
                     "devices": [{"name": "RTX 4090D", "bf16_supported": True}]}}}})
             return SimpleNamespace(stdout="synthetic", returncode=0)
-        def verify(config, source):
+        def verify(config, source, *, verify_weights=True):
             if config["profile"] == "awq": raise ValueError("missing AWQ files")
             actual = self.base_config if config["profile"] == "bf16" else dict(
                 self.base_config, quantization_config=NATIVE_FP8_CONFIG if config["profile"] == "fp8-official" else FP8_CONFIG)
@@ -325,6 +391,76 @@ class BenchmarkModelsTests(unittest.TestCase):
         self.assertEqual((run["snapshot_protocol"]["requests"], run["protocol"]["requests"]), (100, 50))
         self.assertEqual(len(run["selected_ids"]), 55)
 
+
+
+    def test_cli_defaults_to_metadata_and_full_verification_failure_never_passes(self):
+        snapshot, _ = self.frozen()
+        config_path = self.root / "bf16.json"
+        write(config_path, self.config("bf16"))
+        def environment(command, **kwargs):
+            if "--output" in command:
+                write(Path(command[command.index("--output") + 1]), {"checks": {"torch": {"runtime": {
+                    "devices": [{"name": "RTX 4090D", "bf16_supported": True}]}}}})
+            return SimpleNamespace(stdout="synthetic", returncode=0)
+        def case_run(config, protocol, case, items, directory, model):
+            return {"case": case["id"], "model_profile": config["profile"], "rounds": [], "status": "passed"}
+        def safe_digest(path):
+            path = Path(path)
+            if path.parent == self.source_path:
+                raise AssertionError("default benchmark must not hash model or tokenizer files")
+            return digest(path)
+        common = ["--snapshot", str(snapshot), "--config", str(config_path)]
+        with patch.object(bench, "ROOT", self.root), patch.object(bench.sys, "platform", "linux"), \
+             patch.object(bench, "check_runtime_versions", return_value={"versions": {"vllm": "0.14.1"}}), \
+             patch.object(bench.socket, "socket"), patch.object(bench.subprocess, "run", side_effect=environment), \
+             patch.object(bench, "run_case", side_effect=case_run) as runner, \
+             contextlib.redirect_stdout(io.StringIO()):
+            for flags in ([], ["--no-verify-weights"]):
+                with self.subTest(flags=flags), patch.object(bench, "digest", side_effect=safe_digest), \
+                     patch.object(bench, "hash_model_file", side_effect=AssertionError("weight hashing disabled")):
+                    self.assertEqual(bench.main(common + flags), 0)
+                    model = runner.call_args.args[-1]
+                    self.assertEqual(model["weight_verification"]["status"], "skipped")
+                    self.assertEqual(model["files"], {})
+            runner.reset_mock()
+            (self.source_path / "model.safetensors").write_bytes(b"changed after freeze")
+            self.assertEqual(bench.main(common + ["--verify-weights"]), 1)
+            runner.assert_not_called()
+        runs = [read(path / "run.json") for path in (self.root / "log").iterdir()]
+        skipped = [run for run in runs if not run["models"][0].get("validation_error")]
+        self.assertEqual(len(skipped), 2)
+        self.assertTrue(all(not run["models"][0]["config"]["verify_weights"] for run in skipped))
+        failed = next(run for run in runs if run["models"][0].get("validation_error"))
+        self.assertTrue(failed["models"][0]["config"]["verify_weights"])
+        self.assertIn("changed since freeze", failed["models"][0]["validation_error"])
+        status = (failed["models"][0].get("model") or {}).get("weight_verification", {}).get("status")
+        self.assertNotEqual(status, "passed")
+
+    def test_bf16_verified_requires_successful_sha256_verification(self):
+        config = self.config("bf16")
+        def launch(command, stdout, **kwargs):
+            stdout.write("Initializing a V1 LLM engine with config: dtype=torch.bfloat16, quantization=None, seed=42\n")
+            stdout.flush()
+            return SimpleNamespace(pid=12345, poll=lambda: None)
+        def phase(args, cfg, group, round_id, stage, concurrency, output):
+            return {"round": round_id, "phase": stage, "successful_requests": len(group),
+                    "total_requests": len(group), "failed_requests": 0}
+        for iteration, (verification, expected) in enumerate(((None, False), ({"status": "skipped", "mode": "metadata_only"}, False),
+                ({"status": "failed", "mode": "sha256"}, False),
+                ({"status": "passed", "mode": "metadata_only"}, False),
+                ({"status": "passed", "mode": "sha256"}, True))):
+            model = {"config": self.base_config}
+            if verification is not None:
+                model["weight_verification"] = verification
+            with self.subTest(verification=verification), patch.object(bench, "GPURecorder", FakeGPU), \
+                 patch.object(bench.subprocess, "Popen", side_effect=launch), \
+                 patch.object(bench.Client, "health", return_value={}), \
+                 patch.object(bench, "phase", side_effect=phase), \
+                 patch.object(bench.time, "sleep"), patch.object(bench, "stop_process"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                record = bench.run_case(config, dict(self.protocol, rounds=1), self.case,
+                                        self.items(1), self.root / str(iteration), model)
+            self.assertEqual(record.get("bf16_verified", False), expected)
 
     def test_eager_cli_overrides_are_applied_without_changing_configs(self):
         snapshot, _ = self.frozen()
@@ -407,7 +543,7 @@ class BenchmarkModelsTests(unittest.TestCase):
             if method == "fp8":
                 stdout.write("Weight-only FP8 compression will be used leveraging the Marlin kernel.\n")
             stdout.flush()
-            return SimpleNamespace(poll=lambda: None)
+            return SimpleNamespace(pid=12345, poll=lambda: None)
         def phase(args, cfg, group, round_id, stage, concurrency, output):
             return {"round": round_id, "phase": stage, "successful_requests": len(group),
                     "total_requests": len(group), "failed_requests": 0}

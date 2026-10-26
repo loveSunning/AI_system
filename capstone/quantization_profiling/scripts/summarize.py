@@ -68,6 +68,24 @@ def completion(run, summary):
     return not issues, issues
 
 
+
+def weight_verification_details(descriptor):
+    """Report recorded file verification, never infer it from a successful run."""
+    model = descriptor.get("model") or {}
+    verification = model.get("weight_verification") or descriptor.get("weight_verification") or {}
+    status = verification.get("status", "unknown")
+    mode = verification.get("mode", "未记录")
+    if descriptor.get("validation_error"):
+        return "failed", mode, "模型预检失败：" + str(descriptor["validation_error"])
+    if status == "passed" and mode == "sha256":
+        return status, mode, "所记录的权重与 Tokenizer SHA256 校验通过；来源范围见 base_source_verification。"
+    if status == "skipped" and mode == "metadata_only":
+        return status, mode, "仅检查配置、文件存在性和架构；权重、Tokenizer 哈希与转换清单未校验。"
+    if status == "failed":
+        return status, mode, str(verification.get("error") or "文件校验失败；查看 run.json。")
+    return "unknown", mode, "未记录完整校验结果，无法据此认定权重或 Tokenizer 校验通过。"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
@@ -104,6 +122,15 @@ def main(argv=None):
                 LABELS.get(descriptor["profile"], descriptor["profile"]),
                 config["enforce_eager"], backend, precision)) + "|")
         lines += ["", "后端列记录请求配置；Marlin 初始化核验见各组 summary.json，实际 CUDA kernel 仍需 Nsight 确认。"]
+    descriptors = run.get("models") or [{"profile": "bf16", "model": run.get("model") or {}}]
+    lines += ["", "## 权重与 Tokenizer 校验", "",
+              "| 模型 | 校验状态 | 模式 | 说明 |", "|---|---|---|---|"]
+    for descriptor in descriptors:
+        status, mode, detail = weight_verification_details(descriptor)
+        lines.append("|" + "|".join(cell(value) for value in (
+            LABELS.get(descriptor["profile"], descriptor["profile"]), status, mode, detail)) + "|")
+    lines += ["", "校验状态独立于下方请求协议完成性。skipped / unknown 不表示文件校验通过；"
+              "passed 仅表示已记录的 SHA256 文件校验通过，不代表质量、CUDA kernel 或完整项目验收。"]
     lines += ["", "| 模型 | 负载 | 状态 | 轮次 | 成功/总数 | 吞吐 token/s | E2E p95(s) | TTFT文本事件 p95(s) |",
               "|---|---|---|---|---|---|---|---|"]
     records, paths = [], set()

@@ -6,6 +6,8 @@
 
 新增 `benchmark.py --nvtx` 会同时标记控制进程和实际GPU worker；默认关闭，不在父进程导入torch/CUDA。worker扩展按vLLM 0.14.1接口实现，其他版本不能直接套用。
 
+benchmark 默认不扫描全部权重做 SHA256：先完成模型配置、架构、文件存在性和后端请求的轻量预检，再启动服务。需要核对冻结权重身份时显式加 `--verify-weights`；`--no-verify-weights` 明确选择默认的轻量模式。快照和请求子集的哈希检查仍照常执行。服务健康、case passed、采集覆盖通过，都不能替代权重身份的全量哈希验证。
+
 ## 1. 一次性准备：在同一个 Bash 终端执行
 
 ```bash
@@ -149,6 +151,15 @@ collect_one no_eager false "$MODEL_PROFILE"
 
 要采官方模型，改成 `MODEL_PROFILE=fp8-official`；`fp8-origin`是其benchmark别名。BF16/AWQ分别用bf16/awq。函数支持追加benchmark参数，例如 `collect_one eager_marlin true fp8-official --fp8-backend marlin`；当前compressed-tensors本地FP8_BLOCK加载路径不接受此请求。
 
+需要全量核对权重身份时，同一个函数直接追加开关：
+
+```bash
+collect_one eager_verified true fp8-local --verify-weights
+collect_one no_eager_verified false fp8-local --verify-weights
+```
+
+这会在服务启动前读取权重和相关参考文件计算 SHA256，耗时可能较长；相应 I/O 会进入整段 Nsight 记录，但不进入正式请求吞吐分母。普通采集不传开关即可，显式 `--no-verify-weights` 也是轻量模式；不要把两种模式的整段启动墙钟混为模型加载耗时。
+
 ### 3.3 四模型完整配对
 
 ```bash
@@ -181,8 +192,19 @@ collect_one eager true "$MODEL_PROFILE" && \
 
 | 范围/日志 | 所在进程 | 含义 |
 | --- | --- | --- |
-| controller/verify_weights | benchmark | 哈希/身份验证，不是GPU模型加载 |
+| controller/inspect_model | benchmark | 默认轻量模型预检，不读取全部权重做哈希 |
+| controller/verify_weights | benchmark | 仅显式全量哈希/身份验证，不是GPU模型加载 |
+| controller/read_model_config、list_model_files、check_architecture | benchmark | 配置/后端、文件列表和架构检查；默认也执行 |
+| controller/check_tokenizer_files | benchmark | 轻量模式仅检查冻结 tokenizer 参考文件是否存在 |
+| controller/hash_weights、hash_file、verify_tokenizer、verify_conversion_manifest | benchmark | 严格模式下的模型文件哈希、逐文件进度、参考 tokenizer 和转换清单校验 |
 | controller/server_startup | benchmark | 启动子进程到服务健康和引擎配置核验 |
+| controller/prepare_server_environment、spawn_server | benchmark | 准备子进程环境、创建 run_model 包装进程 |
+| controller/wait_for_health、health_probe、verify_engine | benchmark | 整体健康等待、单次探测、引擎配置日志核验 |
+| run_model/parse_args、resolve_paths、runtime_metadata、nvtx_init | run_model | 早期 log-only 阶段；此时尚未启用 NVTX |
+| run_model/build_server_command、spawn_api_server | run_model | 构造命令、创建 API 子进程；创建不等于 ready |
+| run_model/server_lifetime | run_model | log-only 的 API 子进程存活等待；避免包装进程收到 SIGTERM 后遗留未闭合 NVTX |
+| worker/nvtx_init | GPU worker | NVTX 初始化的 log-only 阶段 |
+| worker/import_gpu_worker、base_init、init_device | GPU worker | 基类模块导入、构造、CUDA/通信设备初始化 |
 | worker/load_model | GPU worker | 实际模型构造、权重加载和该方法内初始化 |
 | worker/profile_memory | GPU worker | 初始化显存探测/dummy profile |
 | worker/initialize_kv_cache | GPU worker | KV cache初始化 |
@@ -212,7 +234,41 @@ log/profiling/<prefix>.nsys.log                benchmark与nsys控制台输出
 log/profiling/<prefix>.audit.json              数据覆盖检查
 ```
 
-JSON日志带UTC、monotonic_ns、PID、线程ID、阶段及请求/轮次等字段。worker的cpu_wall_seconds是方法/调度步的CPU墙钟，不是纯GPU kernel时间；实际load范围在worker行，server_startup还包括服务初始化等工作。
+JSON日志带 UTC、monotonic_ns、PID、PPID、线程 ID、native_thread_id、阶段及请求/轮次等字段。worker的cpu_wall_seconds是方法/调度步的CPU墙钟，不是纯GPU kernel时间；实际load范围在worker行，server_startup还包括服务初始化等工作。
+
+`worker/import_gpu_worker` 的 `already_imported` 说明模块是否已在缓存中；此范围只覆盖自定义 worker 模块里这一处导入，不能当作完整 vLLM/API 模块导入时间。`worker/init_device` 覆盖基类 CUDA 与通信初始化，没有增加 CUDA synchronize。
+
+权重检查另看 `run.json` 的 `models[].weight_verification`（成功预检后也在 `models[].model.weight_verification`）与各 case `summary.json` 的 `weight_verification`：`status=skipped` 表示本次没有做完整权重 SHA256 验证，不表示模型轻量预检失败；`status=passed` 才表示本次显式全量验证通过。不要因服务可以生成回答就把 skipped 改写为 passed。`compare_quality.py` 的直接 `verify_model()` 调用继续默认严格验证，不随 benchmark 的默认值变化。
+
+### 4.1 启动看起来很久时，按子阶段查
+
+`controller/inspect_model` 是默认轻量预检；只有 `--verify-weights` 才出现 `controller/verify_weights` 与哈希进度。启动失败不会自动改成严格模式或重新计算哈希。
+
+| 观察的事件/字段 | 要判断什么 |
+| --- | --- |
+| `hash_file_progress` | 当前 `file`、用途 `purpose`、已读 `bytes_hashed` / `total_bytes`、`progress_percent`、`elapsed_seconds`、`mib_per_second`；仅显式严格模式 |
+| `weight_verification_skipped` / `weight_verification_complete` | 本次是否跳过完整 SHA256，或已完成严格验证 |
+| `server_spawned.server_pid` | run_model 包装进程已创建；不代表 vLLM/GPU worker 健康 |
+| `health_probe_result` | `attempt`、`status=ok/not_ready`、单次 `probe_seconds`、累计 `elapsed_seconds`、`error_type/error`、`server_log_bytes` |
+| `server_waiting_for_health` | 每约 10 秒的汇总提示；逐次失败原因要看 `health_probe_result` |
+| `api_server_spawned.child_pid` | API 服务子进程已创建；继续用 PPID/PID 对齐 worker 初始化 |
+| `worker_module_entry` / `worker_instrumentation_ready` | 自定义 worker 模块开始执行 / 基类构造完成；加载状态继续看后续 worker 范围 |
+| `server_ready` / case `summary.json.startup` | health 与 engine 核验通过，或在哪段失败；没有替权重身份背书 |
+
+哈希进度在完成数据块读取后按约 1 秒节流输出；小文件可能只有 `hash_file_complete`，阻塞中的文件读取无法保证每秒心跳。health probe 最多等待 2 秒（剩余启动预算不足时更短），失败后的约 1 秒重试睡眠另外计时。连接拒绝的快速失败通常是服务尚未监听；应结合增长中的 server.log 和 worker 阶段判断实际工作。`server_log_bytes` 增长本身也不是 GPU 加载完成证据。
+
+case 的 `startup` 包含 `status=starting/ready/failed`、`spawn_seconds`、`health_attempts`、`health_probe_seconds`、`retry_sleep_seconds`、`health_wait_seconds`、`engine_verification_seconds`、`total_seconds`；失败时可能只有已执行到的字段。`health_wait_seconds` 包含探测、重试和日志等开销，不能将整个等待都算到 GPU load。
+
+另开终端只读跟踪当前实验，BENCH_DIR 必须取控制台本次 Artifacts 路径：
+
+```bash
+BENCH_DIR=/workspace/AI_system/capstone/quantization_profiling/log/benchmark_实际ID
+tail -f "$BENCH_DIR/events.jsonl"
+# 在另一个终端看对应模型/负载；Ctrl+C 仅停止 tail。
+tail -f "$BENCH_DIR/fp8-local/$CASE_ID/server.log"
+```
+
+默认不开 NVTX 时没有 `worker_events/` 是预期行为，控制事件仍在 events.jsonl，vLLM 启动输出仍在 server.log。若 `weight_verification.status=failed`，同时读 `mode` 和 error：`metadata_only` 失败是轻量预检失败，不能称为“权重哈希不匹配”；`sha256` 也可能在全量哈希前的配置/架构检查失败，须以具体子阶段为准。
 
 ## 5. 更全面的CPU栈与调度采集：单独做一次
 
@@ -373,7 +429,10 @@ paths = [root / "events.jsonl", *root.glob("*/*/worker_events/worker_*.jsonl")]
 records = [json.loads(line) for path in paths if path.exists()
            for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 for row in sorted(records, key=lambda x: x["monotonic_ns"]):
-    if row["event"] in {"stage_end", "request_end", "client_first_text"}:
+    if row["event"] in {"stage_start", "stage_end", "request_end", "client_first_text",
+                         "hash_file_progress", "hash_file_complete",
+                         "weight_verification_skipped", "weight_verification_complete",
+                         "server_spawned", "health_probe_result", "server_ready"}:
         print(json.dumps(row, ensure_ascii=False))
 PY
 ```

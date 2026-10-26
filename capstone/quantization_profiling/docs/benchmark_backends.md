@@ -18,6 +18,15 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 
 省略 `--case` 测五组负载；指定 `--case w1024_o128` 只测一组。`--model` 可重复；选择同一模型的两个别名会因重复选择被拒绝。
 
+benchmark 默认轻量预检模型配置、架构、文件存在性与 backend 请求，跳过完整权重 SHA256 扫描；`--no-verify-weights` 可显式选择这一默认行为。需要冻结权重身份核验时追加 `--verify-weights`，例如：
+
+```bash
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --model fp8-local --case w1024_o128 --requests 80 --verify-weights
+```
+
+开关不改变 eager、backend、请求或临时目录策略。快照哈希仍校验；启动成功仅证明运行路径可用，不能替代完整权重身份验证。质量对比的直接 verify_model() 调用仍默认严格。
+
 ## 2. 控制 enforce_eager
 
 | benchmark 参数 | 本次 enforce_eager | 含义 |
@@ -110,11 +119,14 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 |---|---|
 | `--plan-only` JSON | 模型、eager、backend 请求、实际命令、受控环境覆盖 |
 | `run.json` → models[].config | 本次生效的 `enforce_eager` 与 `fp8_backend` |
-| 各组 `summary.json` | eager/backend 请求、环境覆盖、初始化核验 |
+| 各组 `summary.json` | eager/backend 请求、环境覆盖、初始化核验、`weight_verification` |
+| `run.json` → models[].weight_verification / models[].model.weight_verification | 状态 skipped/passed，区分默认轻量检查与本次完整哈希通过；失败另读 mode/error |
+| 实验根 `events.jsonl` | 模型检查、显式哈希进度和服务启动/health 子阶段 |
+| 各组 `worker_events/` | `--nvtx` 开启时的实际 worker 初始化、加载、prefill/decode 日志 |
 | `server.log` | 入口请求信息、vLLM 实际 dtype/loader、Marlin 初始化信息 |
 | `Week1_Report.md` | eager/backend 设置表；Marlin 标为 W8A16 |
 
-Marlin 请求必须在服务启动日志中出现其权重准备阶段的信息，缺失时该组失败。`backend_initialization_verified=true` 只证明初始化证据；`cuda_kernel_verified` 仍为 false，实际 kernel 用 Nsight 确认。
+`weight_verification.status=skipped` 不是模型预检失败，也不因 case passed 自动变成 passed；显式全量验证通过才记录 passed。Marlin 请求必须在服务启动日志中出现其权重准备阶段的信息，缺失时该组失败。`backend_initialization_verified=true` 只证明初始化证据；`cuda_kernel_verified` 仍为 false，实际 kernel 用 Nsight 确认。
 
 vLLM 的 Marlin 初始化 warning 可能写着 GPU 没有原生 FP8 支持；显式强制时也会使用这条通用文案，不能据此推断 4090D 不支持 FP8。
 

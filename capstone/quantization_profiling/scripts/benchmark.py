@@ -296,6 +296,7 @@ def load_configs(args, source_model):
             config["tokenizer"] = config["model"] if config["profile"] == "bf16" else source_model["path"]
         config["tokenizer"] = resolve_model_alias(config["tokenizer"])
         config.setdefault("nvtx", False)
+        config["verify_weights"] = getattr(args, "verify_weights", False)
         if getattr(args, "nvtx", None) is not None:
             config["nvtx"] = args.nvtx
         if getattr(args, "enforce_eager", None) is not None:
@@ -311,55 +312,125 @@ def load_configs(args, source_model):
     return configs
 
 
-def verify_model(config, source_model):
-    """Hash the selected weights separately from the BF16 workload source."""
+def hash_model_file(path, *, nvtx=False, model_profile, purpose):
+    """Read once with bounded progress logs; do not import torch or touch CUDA."""
+    started = time.perf_counter()
+    total_bytes = path.stat().st_size
+    fields = {"model_profile": model_profile, "file": str(path), "purpose": purpose,
+              "total_bytes": total_bytes}
+    completed = 0
+    next_progress = started + 1
+    h = hashlib.sha256()
+    with trace_stage("controller/hash_file", nvtx=nvtx, **fields):
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                h.update(block)
+                completed += len(block)
+                current = time.perf_counter()
+                if current >= next_progress:
+                    elapsed = current - started
+                    log_event("hash_file_progress", **fields, bytes_hashed=completed,
+                              progress_percent=100 * completed / total_bytes if total_bytes else 100,
+                              elapsed_seconds=elapsed,
+                              mib_per_second=completed / (1024 ** 2) / elapsed if elapsed else None)
+                    next_progress = current + 1
+    elapsed = time.perf_counter() - started
+    result = {"file": str(path), "purpose": purpose, "bytes_hashed": completed,
+              "cpu_wall_seconds": elapsed, "sha256": h.hexdigest()}
+    log_event("hash_file_complete", **fields, bytes_hashed=completed, elapsed_seconds=elapsed,
+              mib_per_second=completed / (1024 ** 2) / elapsed if elapsed else None)
+    return result
+
+
+def verify_model(config, source_model, *, verify_weights=True):
+    """Inspect metadata; optionally hash files. Direct quality callers stay strict."""
+    started = time.perf_counter()
     directory = Path(config["model"])
-    actual = read(directory / "config.json")
-    profile = validate_model_profile(actual, config["profile"])
-    validate_fp8_backend(actual, config.get("fp8_backend", "auto"))
-    runtime = resolve_runtime_options(actual, config["dtype"], config.get("quantization") or "auto")
-    config.update(dtype=runtime["dtype"], quantization=runtime["quantization"])
-    if not any(directory.glob("*.safetensors")) and not any(directory.glob("*.bin")):
-        raise ValueError("No local model weights found: " + str(directory))
-    print("Hashing selected model:", profile, directory, flush=True)
-    files = {f.name: digest(f) for f in sorted(directory.iterdir())
-             if f.is_file() and f.suffix in (".safetensors", ".bin", ".json", ".jinja", ".txt")}
-    if profile == "bf16":
-        for name, sha in source_model["files"].items():
-            if files.get(name) != sha:
-                raise ValueError("Model/tokenizer changed since freeze: " + name)
-    else:
-        for key in ("model_type", "vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers",
-                    "num_attention_heads", "num_key_value_heads", "head_dim", "tie_word_embeddings",
-                    "rope_theta", "rope_scaling", "max_position_embeddings"):
-            if key in source_model["config"] and actual.get(key) != source_model["config"][key]:
-                raise ValueError("Quantized model architecture differs from frozen source: " + key)
-    # Verify tokenizer/config files at the explicit base tokenizer location; do not
-    # compare quantized shards with BF16 hashes or re-tokenize using another vocab.
+    nvtx = config.get("nvtx", False)
+    context = {"model_profile": config["profile"]}
+    with trace_stage("controller/read_model_config", nvtx=nvtx, **context):
+        actual = read(directory / "config.json")
+        profile = validate_model_profile(actual, config["profile"])
+        validate_fp8_backend(actual, config.get("fp8_backend", "auto"))
+        runtime = resolve_runtime_options(actual, config["dtype"], config.get("quantization") or "auto")
+        config.update(dtype=runtime["dtype"], quantization=runtime["quantization"])
+    with trace_stage("controller/list_model_files", nvtx=nvtx, **context):
+        paths = [f for f in sorted(directory.iterdir())
+                 if f.is_file() and f.suffix in (".safetensors", ".bin", ".json", ".jinja", ".txt")]
+        weights = [f for f in paths if f.suffix in (".safetensors", ".bin")]
+        if not weights:
+            raise ValueError("No local model weights found: " + str(directory))
+        weight_bytes = sum(f.stat().st_size for f in weights)
+        log_event("model_files_listed", **context, weight_files=len(weights), weight_bytes=weight_bytes,
+                  hash_candidate_files=len(paths), verify_weights=verify_weights)
+    with trace_stage("controller/check_architecture", nvtx=nvtx, **context):
+        if profile != "bf16" or not verify_weights:
+            for key in ("model_type", "vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers",
+                        "num_attention_heads", "num_key_value_heads", "head_dim", "tie_word_embeddings",
+                        "rope_theta", "rope_scaling", "max_position_embeddings"):
+                if key in source_model["config"] and actual.get(key) != source_model["config"][key]:
+                    raise ValueError("Model architecture differs from frozen source: " + key)
     tokenizer_files = {name: sha for name, sha in source_model["files"].items()
                        if not name.endswith((".safetensors", ".bin")) and "safetensors.index" not in name}
     if not any(name in tokenizer_files for name in ("tokenizer.json", "vocab.json", "tokenizer.model")):
         raise ValueError("Frozen source has no tokenizer fingerprint")
-    for name, sha in tokenizer_files.items():
-        if digest(Path(config["tokenizer"]) / name) != sha:
-            raise ValueError("Reference tokenizer changed since freeze: " + name)
+    if not verify_weights:
+        with trace_stage("controller/check_tokenizer_files", nvtx=nvtx, **context):
+            for name in tokenizer_files:
+                if not (Path(config["tokenizer"]) / name).is_file():
+                    raise ValueError("Reference tokenizer file missing: " + name)
+        verification = {"status": "skipped", "mode": "metadata_only", "files_hashed": 0,
+                        "bytes_hashed": 0, "cpu_wall_seconds": time.perf_counter() - started,
+                        "reason": "full SHA256 verification disabled; server startup is not an identity check"}
+        log_event("weight_verification_skipped", **context, **verification)
+        return {"path": str(directory.resolve()), "profile": profile, "config": actual, "files": {},
+                "quant_method": quant_method(actual), "tokenizer_path": str(Path(config["tokenizer"]).resolve()),
+                "tokenizer_sha256": {}, "weight_files": [f.name for f in weights], "weight_bytes": weight_bytes,
+                "weight_verification": verification,
+                "base_source_verification": "architecture_only; weight_and_tokenizer_hashes_skipped"}
+    print("Hashing selected model:", profile, directory, flush=True)
+    timings = []
+
+    def fingerprint(path, purpose):
+        result = hash_model_file(path, nvtx=nvtx, model_profile=profile, purpose=purpose)
+        timings.append(result)
+        return result["sha256"]
+
+    with trace_stage("controller/hash_weights", nvtx=nvtx, **context):
+        files = {f.name: fingerprint(f, "selected_model") for f in paths}
+        if profile == "bf16":
+            for name, sha in source_model["files"].items():
+                if files.get(name) != sha:
+                    raise ValueError("Model/tokenizer changed since freeze: " + name)
+    with trace_stage("controller/verify_tokenizer", nvtx=nvtx, **context):
+        for name, sha in tokenizer_files.items():
+            if fingerprint(Path(config["tokenizer"]) / name, "reference_tokenizer") != sha:
+                raise ValueError("Reference tokenizer changed since freeze: " + name)
     identity = {"path": str(directory.resolve()), "profile": profile, "config": actual, "files": files,
         "quant_method": quant_method(actual), "tokenizer_path": str(Path(config["tokenizer"]).resolve()),
         "tokenizer_sha256": tokenizer_files,
         "base_source_verification": "exact_frozen_files" if profile == "bf16" else "architecture_only; original base revision unproven"}
     manifest_path = directory / "quantization_manifest.json"
-    if profile == "fp8-local" and manifest_path.exists():
-        conversion = read(manifest_path)
-        if conversion.get("status") != "complete":
-            raise ValueError("Local FP8 conversion manifest is not complete")
-        if any(conversion.get("source_sha256", {}).get(name) != sha for name, sha in source_model["files"].items()):
-            raise ValueError("Local FP8 conversion source differs from frozen BF16 source")
-        expected = conversion.get("output_sha256", {})
-        current = {name: sha for name, sha in files.items() if name != "quantization_manifest.json"}
-        if not expected or current != expected:
-            raise ValueError("Local FP8 weights/config differ from conversion manifest")
-        identity["base_source_verification"] = "conversion_manifest_matches_frozen_source"
-        identity["conversion_manifest_sha256"] = files["quantization_manifest.json"]
+    with trace_stage("controller/verify_conversion_manifest", nvtx=nvtx, **context):
+        if profile == "fp8-local" and manifest_path.exists():
+            conversion = read(manifest_path)
+            if conversion.get("status") != "complete":
+                raise ValueError("Local FP8 conversion manifest is not complete")
+            if any(conversion.get("source_sha256", {}).get(name) != sha for name, sha in source_model["files"].items()):
+                raise ValueError("Local FP8 conversion source differs from frozen BF16 source")
+            expected = conversion.get("output_sha256", {})
+            current = {name: sha for name, sha in files.items() if name != "quantization_manifest.json"}
+            if not expected or current != expected:
+                raise ValueError("Local FP8 weights/config differ from conversion manifest")
+            identity["base_source_verification"] = "conversion_manifest_matches_frozen_source"
+            identity["conversion_manifest_sha256"] = files["quantization_manifest.json"]
+    identity["weight_verification"] = {
+        "status": "passed", "mode": "sha256", "files_hashed": len(timings),
+        "bytes_hashed": sum(f["bytes_hashed"] for f in timings),
+        "hash_wall_seconds": sum(f["cpu_wall_seconds"] for f in timings),
+        "cpu_wall_seconds": time.perf_counter() - started, "file_timings": timings}
+    log_event("weight_verification_complete", **context,
+              **{k: v for k, v in identity["weight_verification"].items() if k != "file_timings"})
     return identity
 
 
@@ -389,6 +460,60 @@ def verify_engine(startup, config, model):
     return verified
 
 
+def wait_for_server(process, args, log_path, config, case, timings):
+    """Log each bounded health probe separately from the one-second retry wait."""
+    started = time.monotonic()
+    deadline = started + config["startup_timeout_seconds"]
+    next_progress = started
+    context = {"model_profile": config["profile"], "case": case["id"], "server_pid": process.pid}
+    probe_args = SimpleNamespace(**vars(args))
+    timings.update(health_attempts=0, health_probe_seconds=0, retry_sleep_seconds=0)
+    with trace_stage("controller/wait_for_health", nvtx=config.get("nvtx", False), **context):
+        try:
+            while True:
+                returncode = process.poll()
+                if returncode is not None:
+                    log_event("server_exited_before_ready", **context, returncode=returncode,
+                              elapsed_seconds=time.monotonic() - started)
+                    raise RuntimeError("Server startup failed: " + log_path.read_text(encoding="utf-8", errors="replace")[-12000:])
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Server startup timeout; inspect server.log and health_probe_result events")
+                probe_args.timeout = min(2, remaining)
+                timings["health_attempts"] += 1
+                attempt = timings["health_attempts"]
+                probe_started = time.monotonic()
+                error = None
+                try:
+                    with trace_stage("controller/health_probe", nvtx=config.get("nvtx", False),
+                                     attempt=attempt, timeout_seconds=probe_args.timeout, **context):
+                        Client(probe_args).health()
+                except Exception as caught:
+                    error = caught
+                probe_seconds = time.monotonic() - probe_started
+                timings["health_probe_seconds"] += probe_seconds
+                elapsed = time.monotonic() - started
+                log_event("health_probe_result", **context, attempt=attempt,
+                          status="ok" if error is None else "not_ready", probe_seconds=probe_seconds,
+                          elapsed_seconds=elapsed, error_type=type(error).__name__ if error else None,
+                          error=str(error) if error else None, server_log_bytes=log_path.stat().st_size)
+                if error is None:
+                    return
+                if time.monotonic() >= next_progress:
+                    log_event("server_waiting_for_health", **context, elapsed_seconds=elapsed,
+                              health_attempts=attempt, last_error=str(error),
+                              server_log=str(log_path), server_log_bytes=log_path.stat().st_size)
+                    next_progress = time.monotonic() + 10
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Server startup timeout: " + str(error))
+                sleep_started = time.monotonic()
+                time.sleep(min(1, remaining))
+                timings["retry_sleep_seconds"] += time.monotonic() - sleep_started
+        finally:
+            timings["health_wait_seconds"] = time.monotonic() - started
+
+
 def run_case(config, protocol, case, items, directory, model):
     case_dir = directory / config["profile"] / case["id"]
     case_dir.mkdir(parents=True)
@@ -396,6 +521,7 @@ def run_case(config, protocol, case, items, directory, model):
         "artifact_directory": case_dir.relative_to(directory).as_posix(),
         "status": "incomplete", "rounds": [], "command": launch_command(config, case),
         "enforce_eager": config["enforce_eager"],
+        "weight_verification": model.get("weight_verification", {"status": "unknown", "mode": "unknown"}),
         "nvtx_enabled": config.get("nvtx", False),
         "nvtx_domain": NVTX_DOMAIN if config.get("nvtx", False) else None,
         "worker_class": "profiling_worker.ProfilingWorker" if config.get("nvtx", False) else "auto",
@@ -410,40 +536,42 @@ def run_case(config, protocol, case, items, directory, model):
             gpu.phase = "loading"
             with trace_stage("controller/server_startup", nvtx=config.get("nvtx", False),
                              model_profile=config["profile"], case=case["id"]):
-                child_env = fp8_backend_environment(config.get("fp8_backend", "auto"))
-                child_env["QUANT_PROFILE_NVTX"] = "1" if config.get("nvtx", False) else "0"
-                if config.get("nvtx", False):
-                    child_env["QUANT_PROFILE_EVENT_DIR"] = str((case_dir / "worker_events").resolve())
-                else:
-                    child_env.pop("QUANT_PROFILE_EVENT_DIR", None)
-                log_event("server_launch", model_profile=config["profile"], case=case["id"],
+                startup_started = time.monotonic()
+                startup_timings = record["startup"] = {"status": "starting"}
+                context = {"model_profile": config["profile"], "case": case["id"]}
+                with trace_stage("controller/prepare_server_environment", nvtx=config.get("nvtx", False), **context):
+                    child_env = fp8_backend_environment(config.get("fp8_backend", "auto"))
+                    child_env["QUANT_PROFILE_NVTX"] = "1" if config.get("nvtx", False) else "0"
+                    child_env["PYTHONUNBUFFERED"] = "1"
+                    if config.get("nvtx", False):
+                        child_env["QUANT_PROFILE_EVENT_DIR"] = str((case_dir / "worker_events").resolve())
+                    else:
+                        child_env.pop("QUANT_PROFILE_EVENT_DIR", None)
+                log_event("server_launch", **context,
                           nvtx=config.get("nvtx", False), enforce_eager=config["enforce_eager"],
                           server_log=str(case_dir / "server.log"))
-                process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT,
-                                           start_new_session=True, env=child_env)
-                startup_started = time.monotonic()
-                next_progress = startup_started
-                deadline = startup_started + config["startup_timeout_seconds"]
-                probe_args = SimpleNamespace(**vars(args)); probe_args.timeout = 2
-                while True:
-                    if process.poll() is not None:
-                        raise RuntimeError("Server startup failed: " + (case_dir / "server.log").read_text(encoding="utf-8")[-12000:])
-                    try:
-                        Client(probe_args).health()
-                        break
-                    except Exception:
-                        if time.monotonic() >= next_progress:
-                            log_event("server_waiting_for_health", model_profile=config["profile"],
-                                      case=case["id"], elapsed_seconds=time.monotonic()-startup_started)
-                            next_progress = time.monotonic() + 10
-                        if time.monotonic() > deadline:
-                            raise TimeoutError("Server startup timeout")
-                        time.sleep(1)
-                startup = (case_dir / "server.log").read_text(encoding="utf-8")
-                record["engine_verification"] = verify_engine(startup, config, model)
-                record["bf16_verified"] = config["profile"] == "bf16"
-            log_event("server_ready", model_profile=config["profile"], case=case["id"],
-                      engine_verification=record["engine_verification"])
+                spawn_started = time.monotonic()
+                with trace_stage("controller/spawn_server", nvtx=config.get("nvtx", False), **context):
+                    process = subprocess.Popen(record["command"], stdout=log, stderr=subprocess.STDOUT,
+                                               start_new_session=True, env=child_env)
+                startup_timings["spawn_seconds"] = time.monotonic() - spawn_started
+                record["server_pid"] = process.pid
+                log_event("server_spawned", **context, server_pid=process.pid,
+                          spawn_seconds=startup_timings["spawn_seconds"], server_log=str(case_dir / "server.log"))
+                wait_for_server(process, args, case_dir / "server.log", config, case, startup_timings)
+                verify_started = time.monotonic()
+                with trace_stage("controller/verify_engine", nvtx=config.get("nvtx", False),
+                                 server_pid=process.pid, **context):
+                    startup = (case_dir / "server.log").read_text(encoding="utf-8", errors="replace")
+                    record["engine_verification"] = verify_engine(startup, config, model)
+                startup_timings.update(status="ready", engine_verification_seconds=time.monotonic() - verify_started,
+                                       total_seconds=time.monotonic() - startup_started)
+                record["bf16_verified"] = (config["profile"] == "bf16"
+                    and record["weight_verification"].get("status") == "passed"
+                    and record["weight_verification"].get("mode") == "sha256")
+            log_event("server_ready", **context, server_pid=process.pid,
+                      startup=record["startup"], engine_verification=record["engine_verification"],
+                      weight_verification_status=record["weight_verification"]["status"])
             gpu.phase = "loaded"
             time.sleep(max(1, config["gpu_sample_interval_seconds"] * 2))
             for round_id in range(1, protocol["rounds"] + 1):
@@ -458,6 +586,8 @@ def run_case(config, protocol, case, items, directory, model):
                         raise RuntimeError("Warmup failed; inspect requests.jsonl; formal round not started")
             record["status"] = "passed" if all(not x["failed_requests"] for x in record["rounds"]) else "failed"
     except Exception as error:
+        if record.get("startup", {}).get("status") == "starting":
+            record["startup"].update(status="failed", total_seconds=time.monotonic() - startup_started)
         record.update(status="failed", error=redact(str(error), os.environ.get("VLLM_API_KEY", "")), failure_kind=failure_kind(str(error)))
     finally:
         with trace_stage("controller/shutdown", nvtx=config.get("nvtx", False),
@@ -529,6 +659,8 @@ def main(argv=None):
                    help="FP8 models only: auto follows vLLM dispatch; marlin requests native-FP8 W8A16 (v0.14.1)")
     p.add_argument("--nvtx", action=argparse.BooleanOptionalAction, default=None,
                    help="optional controller + vLLM 0.14.1 GPU worker stage annotations; requires nvtx")
+    p.add_argument("--verify-weights", action=argparse.BooleanOptionalAction, default=False,
+                   help="full SHA256 verification of model/tokenizer and conversion manifest (default: skipped; metadata checks remain)")
     p.add_argument("--plan-only", action="store_true", help="validate snapshot hashes and print plan without loading/hash-checking model weights")
     a = p.parse_args(argv)
     with trace_stage("controller/read_snapshot", snapshot=str(a.snapshot)):
@@ -552,7 +684,10 @@ def main(argv=None):
                       "environment_overrides": {"VLLM_TEST_FORCE_FP8_MARLIN":
                           "1" if config.get("fp8_backend") == "marlin" else "0"}}
                      for config in configs for case in cases],
-        "model_verification": "pending: actual weights and engine settings checked during execution"}, ensure_ascii=False, indent=2), flush=True)
+        "model_verification": "pending: metadata and engine settings checked during execution",
+        "verify_weights": a.verify_weights,
+        "weight_verification": {"status": "pending" if a.verify_weights else "skipped",
+                                "mode": "sha256" if a.verify_weights else "metadata_only"}}, ensure_ascii=False, indent=2), flush=True)
     if a.plan_only:
         return 0
     if sys.platform != "linux":
@@ -576,7 +711,9 @@ def main(argv=None):
               nvtx_domain=NVTX_DOMAIN, runtime=runtime)
     run = {"schema_version": 2, "run_id": run_id, "started": now(),
         "runtime": runtime,
-        "models": [{"profile": c["profile"], "config": c, "model": None} for c in configs],
+        "models": [{"profile": c["profile"], "config": c, "model": None,
+                     "weight_verification": {"status": "pending" if a.verify_weights else "skipped",
+                                             "mode": "sha256" if a.verify_weights else "metadata_only"}} for c in configs],
         "protocol": protocol, "snapshot_protocol": frozen_protocol,
         "manifest_sha256": digest(a.snapshot / "manifest.json"),
         "selected_requests_sha256": subset_sha, "selected_ids": [x["id"] for x in items],
@@ -606,12 +743,20 @@ def main(argv=None):
     for descriptor in run["models"]:
         config = descriptor["config"]
         try:
-            with trace_stage("controller/verify_weights", nvtx=config.get("nvtx", False),
-                             model_profile=config["profile"], model_path=config["model"]):
-                descriptor["model"] = verify_model(config, source_model)
+            verification_stage = "controller/verify_weights" if a.verify_weights else "controller/inspect_model"
+            with trace_stage(verification_stage, nvtx=config.get("nvtx", False),
+                             model_profile=config["profile"], model_path=config["model"],
+                             verify_weights=a.verify_weights):
+                descriptor["model"] = verify_model(config, source_model, verify_weights=a.verify_weights)
                 validate(config, protocol, descriptor["model"])
+                descriptor["weight_verification"] = descriptor["model"].get("weight_verification", {
+                    "status": "unknown", "mode": "unknown"})
         except Exception as error:
-            descriptor["validation_error"] = str(error)
+            descriptor["validation_error"] = redact(str(error), os.environ.get("VLLM_API_KEY", ""))
+            descriptor["weight_verification"] = {"status": "failed", "mode": "sha256" if a.verify_weights else "metadata_only",
+                                                 "error": descriptor["validation_error"]}
+            log_event("model_precheck_failed", model_profile=config["profile"],
+                      verify_weights=a.verify_weights, error=descriptor["validation_error"])
         write(directory / "run.json", run)
         for case in cases:
             if "validation_error" in descriptor:

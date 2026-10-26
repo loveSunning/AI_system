@@ -1,10 +1,8 @@
 # benchmark.py 逐函数详解：目的、流程、原理与指标口径
 
-分析日期：2026-10-23。依据当前源码，`benchmark.py` 共 633 行，16 个顶层函数，1 个类及其 5 个方法。
+更新日期：2026-10-26。依据当前源码，说明默认轻量模型预检、显式全量权重验证、阶段日志、NVTX和进程组退出逻辑；本次没有执行GPU benchmark或加载模型。
 
-源码 SHA256：`a6b8923ee6d89cc16b63bfcd954c5932b35b83b32a7bb99d57a002b403f65128`。本文同步了阶段日志、NVTX和进程组退出逻辑；本次没有执行GPU benchmark或加载模型。
-
-入口源码：[benchmark.py](../scripts/benchmark.py)。函数行号均对应上述版本；后续修改后应重新核对。
+入口源码：[benchmark.py](../scripts/benchmark.py)。本文用函数名定位实现，避免代码增改后固定行号失效；实际运行的脚本 SHA256 另由 `code.json` 记录。
 
 ## 1. 脚本要解决什么问题
 
@@ -12,7 +10,7 @@
 
 1. 读取已经冻结的输入 token ID、生成长度和协议。
 2. 解析 BF16、AWQ、官方 FP8、本地 FP8 的部署配置。
-3. 检查权重身份、基础 tokenizer、运行环境和服务启动参数。
+3. 检查模型配置、架构、必要文件、基础 tokenizer、运行环境和服务启动参数；按显式开关决定是否全量验证权重身份。
 4. 为每个模型/负载启动一个独立 vLLM 服务。
 5. 先预热，再发固定长度的流式请求，记录每请求原始结果。
 6. 汇总成功率、吞吐、延迟分位数和整卡显存采样峰值。
@@ -20,7 +18,7 @@
 
 设计目标是让模型比较尽量满足“相同输入、相同输出长度、相同生成参数、可追溯的运行配置”。它管理服务和客户端；真正的 GPU 计算由另外启动的 vLLM API/worker 进程执行。
 
-它不执行量化转换，不做质量评分，不自动运行 Nsight，也不检查 `.nsys-rep` 是否完整。`passed` 是本脚本的请求/协议验收结果，不代表 kernel、性能提升或 profiler 数据已经验收。
+它不执行量化转换，不做质量评分，不自动运行 Nsight，也不检查 `.nsys-rep` 是否完整。`passed` 是本脚本的请求/协议验收结果，不代表权重 SHA256 身份、kernel、性能提升或 profiler 数据已经验收。权重验证必须另读 `weight_verification.status`。
 
 ## 2. 先认清四个数据对象
 
@@ -29,7 +27,7 @@
 | config | 一个模型的部署与服务参数 | configs/*.yaml、自定义 JSON 配置、命令行覆盖 | profile、model、tokenizer、dtype、quantization、enforce_eager、fp8_backend、port |
 | protocol | 本次实际执行的负载协议 | 冻结 workloads.yaml，加 requests/rounds 覆盖 | cases、requests、warmup、rounds、concurrency、seed |
 | item | 一个冻结请求 | 冻结 requests.jsonl | id、case、phase、prompt_token_ids、input_tokens、output_tokens |
-| model / identity | 本次选中的权重身份 | verify_model() 读取、哈希并验证 | config、files、quant_method、tokenizer_sha256、base_source_verification |
+| model / identity | 本次选中模型的预检结果与身份验证范围 | verify_model()；benchmark 默认轻量，显式开关才完整哈希 | config、quant_method、weight_verification；严格模式另有文件哈希与来源验证 |
 
 注意同名 `args`：main() 中是 argparse 命令行结果；client_args() 返回的 args 是给 HTTP Client 使用的小对象。`phase` 也同时出现在函数名和阶段字符串中，应按上下文区分。
 
@@ -65,7 +63,7 @@ flowchart TD
     F -- 是 --> G[退出 0]
     F -- 否 --> H[Linux / 版本 / 端口检查]
     H --> I[创建 run 目录并保存环境与代码依据]
-    I --> J[逐模型验证权重和 tokenizer]
+    I --> J[逐模型轻量预检 / 显式全量验证]
     J --> K[逐负载 run_case]
     K --> L[启动采样与服务 /health / 引擎配置验证]
     L --> M[每轮 warmup 再 measure]
@@ -83,10 +81,10 @@ flowchart TD
 主循环相当于：
 
 ```python
-for model in selected_models:
-    verify_model_once(model)
+for config in selected_models:
+    identity = verify_model(config, source_model, verify_weights=cli.verify_weights)
     for case in selected_cases:
-        start_a_fresh_server(model, case)
+        start_a_fresh_server(config, case)
         for round_id in range(1, rounds + 1):
             run_warmup_requests()
             run_formal_requests()
@@ -110,15 +108,15 @@ selected_requests.jsonl 不为模型和轮次重复存相同请求。本次子�
 
 ## 4. 参数解析与配置函数
 
-### 4.1 positive_int(value)，496–500行
+### 4.1 positive_int(value)
 
 argparse 的类型转换器，把字符串转成 int，并拒绝小于1的值，用于 --requests 和 --rounds。格式错误也会经 argparse 报参数错误；不会默默把0改成默认值。
 
-### 4.2 boolean_value(value)，503–509行
+### 4.2 boolean_value(value)
 
 接受忽略大小写和首尾空白的 true/false、1/0，返回 Python bool；其它字符串报错。不能直接用 bool("false")，因为非空字符串在 Python 中会变成 True。
 
-### 4.3 load_configs(args, source_model)，264–311行
+### 4.3 load_configs(args, source_model)
 
 输入：CLI 参数、冻结 BF16 源模型元数据。输出：本次模型 config 列表。
 
@@ -138,9 +136,9 @@ argparse 的类型转换器，把字符串转成 int，并拒绝小于1的值，
 - --model 用于本脚本支持的 profile/别名，任意新模型目录应通过 --config 指定。
 - 普通 --model 路径中，读完 YAML 后会把 model 字段更新为 profile 对应的别名展开结果；其根目录可由 MODEL_ROOT 控制。只修改默认 YAML 的 model 字段，不保证改变该路径；自定义 --config 会保留显式模型目录。冻结source_model.path也是保存的绝对路径，迁移模型目录时只改MODEL_ROOT不会自动迁移它，量化模型的tokenizer应显式核对。
 
-### 4.4 validate(config, protocol, model=None)，208–237行
+### 4.4 validate(config, protocol, model=None)
 
-分两次使用：执行前只查 config/protocol；verify_model 后再带 actual model.config 检查格式和运行参数。
+分两次使用：执行前只查 config/protocol；verify_model() 完成轻量或严格预检后，再带 actual model.config 检查格式和运行参数。
 
 它要求：
 
@@ -158,7 +156,7 @@ argparse 的类型转换器，把字符串转成 int，并拒绝小于1的值，
 
 这不是所有 vLLM 参数的完整验证，也不是 GPU kernel 可用性验证。具体硬件和加载支持还要到服务启动时检查。
 
-### 4.5 select_requests(items, snapshot_protocol, cases, requests=50, rounds=1)，240–261行
+### 4.5 select_requests(items, snapshot_protocol, cases, requests=50, rounds=1)
 
 从冻结数据中选确定性前缀，不修改原快照：
 
@@ -174,34 +172,56 @@ case顺序仍来自冻结cases列表，--case只是筛选，不按CLI参数出�
 
 ## 5. 模型身份与运行环境验证
 
-### 5.1 verify_model(config, source_model)，314–363行
+### 5.1 verify_model(config, source_model, *, verify_weights=True)
 
-输出模型 identity，并可能修改 config 中的 dtype、quantization，使其与解析后的实际格式匹配。
+这个函数返回模型 identity，并可能规范化 config 中的 dtype、quantization。**函数直接调用仍默认严格；benchmark CLI 默认传入轻量模式。** `compare_quality.py` 的直接调用继续严格验证，不能把 benchmark 的默认值理解成整个项目不再核验权重。
 
-执行步骤：
+benchmark 的两种模式：
 
-1. 读实际模型 config.json，验证所选 profile 与量化格式一致，检查 backend 请求。
-2. resolve_runtime_options() 确定 dtype/quantization，并更新 config。
-3. 确认目录下有 safetensors 或 bin 权重。
-4. 对该目录顶层的 .safetensors、.bin、.json、.jinja、.txt 文件逐一做SHA256。
-5. BF16：要求冻结源模型已记录的文件哈希逐一匹配。
-6. 量化模型：比较 model_type、hidden_size、层数、头数、rope等架构字段；不拿量化权重哈希与BF16权重强行比较。
-7. 对显式基础tokenizer目录中的冻结参考文件核验哈希，防止换词表/模板。
-8. 本地FP8若有 quantization_manifest.json，进一步验证状态complete、源哈希匹配冻结BF16、输出哈希匹配当前产物。
+| CLI | 权重验证 | 目的 |
+| --- | --- | --- |
+| 不传开关，或 `--no-verify-weights` | `weight_verification.status=skipped` | 轻量检查通过后尽快启动；不宣称完整权重身份已核对 |
+| `--verify-weights` | 成功后 `weight_verification.status=passed` | 恢复完整 SHA256 身份验证；验证失败则不启动该模型服务 |
 
-身份可信度有区别：
+两种模式都读取真实 config.json，验证 profile/量化格式和 FP8 backend 请求，用 resolve_runtime_options() 确定 dtype/quantization，并确认本地权重文件存在。默认轻量模式还按冻结源核对架构字段，检查 tokenizer 参考文件存在；它不计算 tokenizer 内容哈希。严格模式对量化模型检查架构，BF16 则用完整冻结文件哈希核对。文件存在、元数据合理和 backend 请求被接受，仍不能证明每个 tensor 未损坏或来源相同。
+
+显式严格模式还执行原有完整校验：
+
+1. 对模型目录顶层的 .safetensors、.bin、.json、.jinja、.txt 文件逐一做 SHA256。
+2. BF16：冻结源模型已记录的文件哈希必须逐一匹配；量化模型不与 BF16 权重字节强行比较。
+3. 对显式基础 tokenizer 目录中的冻结参考文件核验哈希，防止换词表/模板。
+4. 本地 FP8 若带 quantization_manifest.json，要求状态 complete、清单源哈希匹配冻结 BF16、输出哈希匹配当前产物。
+
+权重哈希按文件分块读取，不把整份大权重一次读入内存；每秒的进度用于区分“仍在顺序读取大文件”与“尚未进入服务启动”。完整扫描仍受磁盘、网络挂载和页缓存影响。它发生在正式请求计时之外，但外层 nsys 从启动采集时会记录这段 CPU/I/O。
+
+按函数内子阶段定位具体耗时：
+
+| stage / 事件 | 模式与作用 |
+| --- | --- |
+| `controller/read_model_config` | 两种模式：读取配置、格式/后端校验、运行参数规范化 |
+| `controller/list_model_files` | 两种模式：枚举候选文件、确认权重存在；`model_files_listed` 记录个数/字节数 |
+| `controller/check_architecture` | 轻量模式检查架构；严格量化模型同样检查，严格 BF16 依赖冻结完整文件哈希 |
+| `controller/check_tokenizer_files` | 仅轻量模式：参考文件必须存在 |
+| `controller/hash_weights` → `controller/hash_file` | 仅严格模式：模型候选文件逐一完整哈希 |
+| `controller/verify_tokenizer` | 仅严格模式：参考 tokenizer 完整哈希 |
+| `controller/verify_conversion_manifest` | 严格模式：本地 FP8 清单存在时校验来源/输出；无适用清单时是短的空检查 |
+| `weight_verification_skipped` / `weight_verification_complete` | 最终跳过/完成事件，记录模式和验证范围 |
+
+`hash_model_file()` 每完成一批分块读取后检查节流时间，约每秒输出 `hash_file_progress`：`file`、`purpose`、`total_bytes`、`bytes_hashed`、`progress_percent`、`elapsed_seconds`、`mib_per_second`。结束另有 `hash_file_complete`。小文件不一定有中间进度；阻塞在某次 read 时也不能保证每秒输出。
+
+验证结果位于 `run.json.models[].weight_verification`，预检成功后也在 `models[].model.weight_verification`；各 case `summary.json.weight_verification` 与根 summary 的对应 case 记录保留状态。失败时还要看 `mode`：`metadata_only/status=failed` 是轻量预检失败；`sha256/status=failed` 说明严格流程失败，但仍须按实际子阶段/error 判断是否真的发生哈希不匹配。`pending` 只表示严格验证尚未完成，不能当作 passed。
+
+严格模式的来源证据仍有区别：
 
 | base_source_verification | 表示什么 |
 | --- | --- |
-| exact_frozen_files | BF16与冻结文件一致 |
-| architecture_only; original base revision unproven | 量化模型架构匹配，未证明它来自同一原始revision |
+| exact_frozen_files | BF16 与冻结文件一致 |
+| architecture_only; original base revision unproven | 量化模型架构匹配，未证明它来自同一原始 revision |
 | conversion_manifest_matches_frozen_source | 本地量化清单与冻结源及当前输出匹配 |
 
-本地FP8转换清单存在时必须一致，但当前代码不强制所有本地FP8都带清单；没有清单时不会自动获得第三种来源证明。
+`skipped` 模式不能获得“本次已完整核对权重字节”的结论；即使 identity 中保留冻结来源信息，也要按 weight_verification 的实际状态理解。本地 FP8 不带转换清单时，不会自动获得清单来源证明。哈希匹配固定本地内容，不等于证明官方发布来源；本函数也不把 tensor 加载到 GPU 或进行质量评分。
 
-文件哈希固定本地内容，不等于证明官方发布来源；官方FP8 profile也是部署标签和格式约束，不能仅凭名称证明发布方身份。本函数不把权重tensor加载到GPU，不进行数值质量比较。
-
-### 5.2 check_runtime_versions()，481–493行
+### 5.2 check_runtime_versions()
 
 用 importlib.metadata 读取安装版本，当前只接受两套完整组合：
 
@@ -212,7 +232,7 @@ case顺序仍来自冻结cases列表，--case只是筛选，不按CLI参数出�
 
 这是项目当前源码的白名单，不是对这些库所有版本的兼容性结论。main() 还要求显式 FP8 Marlin及NVTX worker使用0.14.1。这里只读取包元数据，不在benchmark父进程导入torch并初始化CUDA。
 
-### 5.3 verify_engine(startup, config, model)，366–389行
+### 5.3 verify_engine(startup, config, model)
 
 从 server.log 找最后一条同时包含“LLM engine”和“config:”的初始化日志，用正则提取dtype与quantization，再与期望值比较。
 
@@ -222,15 +242,17 @@ FP8 backend=marlin时，还要求启动日志包含“leveraging the Marlin kern
 
 它证明启动日志中的引擎设置符合预期，不证明每个实际kernel是什么；也没有在这里核验Graph回放、enforce_eager实际配置或所有调度参数。日志格式变了可能验证失败，即使服务已经能健康响应。
 
+case 的历史字段 `bf16_verified` 还要求 BF16 的 `weight_verification.status=passed` 且 `mode=sha256`。默认轻量模式下它为 false，不表示实际引擎 dtype 一定不对；应分别读 engine_verification 与 weight_verification。
+
 ## 6. 请求构造、并发和指标汇总
 
-### 6.1 now()，30–31行
+### 6.1 now()
 
 返回带UTC时区的ISO时间，用于 submitted_utc、run.started、GPU采样时间等人可读记录。
 
 计时使用perf_counter()/monotonic()；UTC时间用于关联日志，不直接用于计算请求耗时，避免系统时间校准影响duration。
 
-### 6.2 client_args(config)，73–75行
+### 6.2 client_args(config)
 
 将服务配置转换为Client需要的SimpleNamespace：
 
@@ -243,7 +265,7 @@ no_proxy = True
 
 服务可以监听0.0.0.0，benchmark仍从本机loopback访问。Client显式禁用代理，并从环境取API Key。timeout传给urllib/socket，不是脚本额外实现的严格总请求墙钟截止时间。
 
-### 6.3 perform(args, config, item, round_id, phase)，126–182行
+### 6.3 perform(args, config, item, round_id, phase)
 
 作用：完成一个请求，返回一条可写入JSONL的entry，而不是直接写文件。
 
@@ -288,7 +310,7 @@ HTTP 200不等于本脚本成功；长度不符或profiling指标缺失，都会
 
 普通异常在此转为error和failure_kind；最后记录finished_monotonic、外层elapsed_seconds，对entry中的API Key做替换脱敏，再返回。这里没有自动重试请求，失败会被保留。
 
-### 6.4 phase(args, config, items, round_id, phase_name, concurrency, output)，185–205行
+### 6.4 phase(args, config, items, round_id, phase_name, concurrency, output)
 
 作用：执行一个warmup或measure阶段，并聚合阶段统计。
 
@@ -328,13 +350,13 @@ wall_seconds = 最晚 finished_monotonic − 最早 started_monotonic
 
 它是一个上下文管理器：`with GPURecorder(...)`进入时开始采样，离开时停止后台线程。
 
-| 方法 | 行号 | 职责 |
-| --- | --- | --- |
-| __init__(path, interval) | 34–39 | 保存路径和间隔，phase=before_load，建立停止Event、内存samples列表和daemon线程 |
-| sample() | 41–55 | 调nvidia-smi，解析整卡显存/利用率，追加内存列表和gpu.jsonl；查询/解析错误保存为error |
-| run() | 57–59 | 等待interval后采样，直到stop Event被设置 |
-| __enter__() | 61–64 | 立即采样一次，再启动后台线程，返回self |
-| __exit__() | 66–68 | 设置stop，join最多7秒；返回None，不吞掉外层异常 |
+| 方法（在 GPURecorder 中按名称定位） | 职责 |
+| --- | --- |
+| __init__(path, interval) | 保存路径和间隔，phase=before_load，建立停止Event、内存samples列表和daemon线程 |
+| sample() | 调nvidia-smi，解析整卡显存/利用率，追加内存列表和gpu.jsonl；查询/解析错误保存为error |
+| run() | 等待interval后采样，直到stop Event被设置 |
+| __enter__() | 立即采样一次，再启动后台线程，返回self |
+| __exit__() | 设置stop，join最多7秒；返回None，不吞掉外层异常 |
 
 sample()的查询：
 
@@ -363,7 +385,7 @@ round_2_measure
 
 ## 8. 服务启动与退出
 
-### 8.1 launch_command(config, case)，106–123行
+### 8.1 launch_command(config, case)
 
 返回字符串列表，交给Popen直接执行，不通过shell拼接。使用sys.executable确保run_model.py使用与benchmark相同的Python解释器。
 
@@ -386,7 +408,7 @@ w128_o128对应max_model_len=256；w8192_o128对应8320。输入长度大于max_
 
 run_model.py还会：关闭prefix caching，启用chunked prefill，加载ProfilingMiddleware，要求usage，设置generation-config=vllm，并启动vLLM的OpenAI API服务。eager=False时它不向vLLM追加enforce-eager强制标志，允许框架按配置使用Graph，不能保证所有计算都进入Graph。
 
-### 8.2 run_case(config, protocol, case, items, directory, model)，392–478行
+### 8.2 run_case(config, protocol, case, items, directory, model)
 
 这是“一个模型×一个负载”的完整生命周期，返回case record。
 
@@ -395,16 +417,33 @@ run_model.py还会：关闭prefix caching，启用chunked prefill，加载Profil
 1. 创建`实验目录/profile/case/`；记录初始status=incomplete、命令和选项。
 2. 建立GPURecorder和本地HTTP客户端参数。
 3. 进入`with gpu, server.log`，先记录before_load采样，再切换loading。
-4. Popen启动run_model.py，stdout/stderr都写server.log，start_new_session=True；传入隔离的FP8后端环境。
-5. 循环检查包装子进程是否提前退出，并访问/health；探测请求timeout=2秒，失败后每秒重试，直至启动超时。
-6. 服务健康后读取server.log，调用verify_engine。
-7. 切换loaded，等待max(1秒,2×采样间隔)。
-8. 每轮先warmup再measure，每个phase后把结果追加到record.rounds，写summary.json，打印成功/总数。
-9. 若warmup有失败，立即终止该case，不开始这一轮正式phase；若measure有失败，记失败但不在这里立即中断后续轮次。
-10. 所有阶段均无失败时先设passed，否则failed。其它普通异常由except记录到case。
-11. 离开with时停止采样；finally调用stop_process，按phase+UUID求used_mib最大值，写最终case summary。
+4. 在 `controller/prepare_server_environment` 准备隔离的 FP8 后端/worker 环境，并设置 PYTHONUNBUFFERED=1。
+5. `controller/spawn_server` 中 Popen 启动 run_model.py；stdout/stderr 写 server.log，start_new_session=True，随后记录 `server_spawned.server_pid`。
+6. `wait_for_server()` 在 `controller/wait_for_health` 中检查包装进程是否提前退出，逐次用 `controller/health_probe` 访问 /health；单次 timeout 最多 2 秒，预算不足时缩短，失败后另等最多 1 秒再试。
+7. 服务健康后在 `controller/verify_engine` 读取 server.log、核对实际引擎设置；通过才记录 server_ready。
+8. 切换loaded，等待max(1秒,2×采样间隔)。
+9. 每轮先warmup再measure，每个phase后把结果追加到record.rounds，写summary.json，打印成功/总数。
+10. 若warmup有失败，立即终止该case，不开始这一轮正式phase；若measure有失败，记失败但不在这里立即中断后续轮次。
+11. 所有阶段均无失败时先设passed，否则failed。其它普通异常由except记录到case。
+12. 离开with时停止采样；finally调用stop_process，按phase+UUID求used_mib最大值，写最终case summary。
 
 `record['rounds']`名字容易误导：它存的是phase结果。2轮会有4条：warmup1、measure1、warmup2、measure2；不能直接把len(rounds)当成正式轮数。
+
+`startup` 汇总与单次探测要分开读：
+
+| 字段/事件 | 含义 |
+| --- | --- |
+| `startup.status` | starting → ready，或失败时 failed；与权重验证状态独立 |
+| `spawn_seconds` | 创建 run_model 包装进程的墙钟，不是模型加载时间 |
+| `health_attempts` / `health_probe_seconds` | 探测次数 / 所有单次 probe 耗时之和 |
+| `retry_sleep_seconds` / `health_wait_seconds` | 重试睡眠累计 / 整体 health 等待，后者还包含探测和日志等开销 |
+| `engine_verification_seconds` / `total_seconds` | 引擎日志核验 / controller/server_startup 总墙钟 |
+| `health_probe_result` | attempt、ok/not_ready、probe_seconds、elapsed_seconds、error_type/error、server_log_bytes，并带 server_pid |
+| `server_waiting_for_health` | 每约 10 秒摘要；不替代逐次 health_probe_result |
+
+启动失败时 startup 仅保留已执行到的字段，并不会自动启动权重哈希或将 skipped 改为 passed。连接尚未建立时，异常类型和错误会保留；若包装进程已退出，另记录 `server_exited_before_ready`。health_wait 不应全部归入 GPU load，具体加载要对齐 worker/load_model。
+
+`server_pid` 是 benchmark 直接创建的 run_model 包装进程；`api_server_spawned.child_pid` 是其 API 子进程，GPU worker 又是后续进程。结合日志的 pid/ppid 和 native_thread_id 还原关系，不能把 wrapper spawn 当作 worker ready。
 
 三个线程/进程关系：
 
@@ -421,7 +460,7 @@ GPURecorder在with退出时已停，stop_process在后面的finally才执行，�
 
 run_case只有普通请求/服务错误被捕获；finally中的stop_process或写文件自身若抛出异常，仍可能向上冒泡，不能认为“任何失败都必然保存完整最终summary”。
 
-### 8.3 stop_process(process)，78–103行
+### 8.3 stop_process(process)
 
 目标是清理本次Popen创建的进程组，同时保留worker关闭时间：
 
@@ -440,7 +479,7 @@ Popen持有的是run_model.py包装进程，不是GPU worker。新版不再把�
 
 nsys的wait=all独立控制采集器等待子进程；该函数仍没有显式cudaProfilerStop或GPU同步，不能把进程组清理完成等同于采集数据完整。外层run_case新增controller/shutdown范围。
 
-## 9. main(argv=None)：完整控制流程，513–629行
+## 9. main(argv=None)：完整控制流程
 
 main负责连接前面所有函数。它本身不实现HTTP解析或量化kernel。
 
@@ -459,6 +498,7 @@ main负责连接前面所有函数。它本身不实现HTTP解析或量化kernel
 | --no-enforce-eager | 覆盖为false，与前一个参数互斥 |
 | --fp8-backend | auto/marlin；默认None保留配置 |
 | --nvtx / --no-nvtx | 覆盖本次NVTX配置；默认保留配置，内置配置默认关闭。GPU worker标记仅支持0.14.1 |
+| --verify-weights / --no-verify-weights | 完整权重 SHA256 验证开关；CLI 默认关闭，两者互斥 |
 | --plan-only | 验证快照和基本配置，打印计划后退出 |
 
 ### 9.2 准备计划
@@ -474,9 +514,9 @@ load_snapshot
     -> plan-only则return 0
 ```
 
-打印计划发生在verify_model和verify_engine之前。此时model_verification仍为pending，计划中的命令还可能在实际模型格式解析后发生规范化调整。
+打印计划发生在 verify_model() 和 verify_engine() 之前。计划记录本次权重验证请求，但不表示轻量或严格预检已经执行；命令还可能在实际模型格式解析后发生规范化调整。
 
-plan-only不会启动服务、完整哈希模型权重、检查GPU、检查固定软件栈或验证实际kernel。它需要可用且哈希一致的快照；自定义配置若需要从真实config.json推断profile，仍可能访问模型目录，不能理解成完全不访问模型文件的模式。
+即使同时指定 --verify-weights，plan-only 也不会启动服务、完整哈希模型权重、检查GPU、检查固定软件栈或验证实际kernel。它需要可用且哈希一致的快照；自定义配置若需要从真实config.json推断profile，仍可能访问模型目录，不能理解成完全不访问模型文件的模式。
 
 ### 9.3 运行前检查
 
@@ -496,11 +536,11 @@ bind成功后立即关闭socket，只证明那一刻端口可绑定，不是持�
 
 ### 9.5 真正执行模型和case
 
-逐模型verify_model并二次validate。若模型预检失败，给该模型所选每个case写failed/model_precheck记录，不启动服务，仍继续处理后面的模型。
+逐模型调用 verify_model() 并二次 validate()；benchmark 默认显式选择轻量模式，只有 --verify-weights 才扫描完整权重。若模型预检失败，给该模型所选每个case写failed/model_precheck记录，不启动服务，仍继续处理后面的模型。
 
 模型预检通过则逐case调用run_case。每完成一个case更新实验级summary.json，保留已完成结果。run_case里的普通失败通常转成record，允许主循环继续；但未被捕获的IO/清理异常仍可能中断。
 
-模型权重哈希是每个模型一次，服务启动是每个模型/负载一次；不要把二者混同。
+模型轻量预检或显式全量权重验证是每个模型一次，服务启动是每个模型/负载一次。默认 controller/inspect_model 与显式 controller/verify_weights 不属于 GPU 加载阶段；不要把二者混同。
 
 ### 9.6 最后退出
 
@@ -589,15 +629,17 @@ log/benchmark_<run_id>/
 ├── environment.log             环境采集stdout/stderr
 ├── code.json                   脚本哈希、git commit、工作区状态
 ├── pip-freeze.txt              包版本列表
-├── summary.json                实验级case状态列表，逐case更新
+├── events.jsonl                控制/请求事件、模型检查与启动进度
+├── summary.json                实验级case状态列表及验证状态，逐case更新
 └── <profile>/<case>/
     ├── server.log              run_model/vLLM/worker启动与错误日志
+    ├── worker_events/          --nvtx 时的 worker_<pid>.jsonl
     ├── gpu.jsonl               带phase和UUID的整卡采样
     ├── requests.jsonl          每个实际请求的原始entry，含round/phase
-    └── summary.json            本case的各阶段统计、引擎验证、显存峰值
+    └── summary.json            本case各阶段、weight_verification、引擎验证与显存峰值
 ```
 
-完整性链条：冻结manifest检查输入文件；subset SHA确定实际请求；selected JSONL留原文；权重/tokenizer哈希确定本地内容；run/code/environment确定运行依据；逐请求JSONL支持重算；两级summary用于查看结果。
+完整性链条：冻结 manifest 检查输入文件；subset SHA 确定实际请求；selected JSONL 留原文；run/code/environment 确定运行依据；逐请求 JSONL 支持重算；两级 summary 用于查看结果。只有显式严格验证通过时，才能将本次权重/tokenizer 的完整哈希作为已核对的本地内容证据；默认 skipped 要在结论中保留。
 
 它不是带数字签名的来源认证系统，也不是自动把所有外部依赖与GPU内核完整归档的系统。JSON写入使用write_text而非原子替换，异常中断可能留下未完成文件；原始请求与已完成case记录仍是排查依据。
 
@@ -654,7 +696,7 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 2. 解析fp8-local目录，共享BF16 tokenizer；eager改为false，FP8 backend保留auto。
 3. 打印计划；正式执行则检查Linux、版本、端口和4090D。
 4. 建实验目录，保存环境、代码、包版本和请求子集。
-5. 哈希/验证本地FP8及tokenizer，决定实际加载格式。
+5. 轻量检查本地 FP8 的配置、架构和文件，决定实际加载格式；默认 weight_verification.status=skipped。追加 --verify-weights 才全量哈希。
 6. 启动一次服务，max_model_len=256，验证引擎日志。
 7. 第一轮5次预热+80次正式，第二轮仍然5次预热+同样80次正式。
 8. 正常完整执行实际170次请求，但服务只启动一次；case.rounds有4条phase汇总。
@@ -665,11 +707,11 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 
 ## 14. 读结果时必须保留的边界
 
-1. 主脚本是实验管理器，实际服务为子进程；模型加载、权重哈希、环境采集不进入phase吞吐分母，但会进入从启动benchmark开始的整段nsys记录。
+1. 主脚本是实验管理器，实际服务为子进程；模型加载、轻量预检、显式权重哈希、环境采集不进入 phase 吞吐分母，但会进入从启动 benchmark 开始的整段 nsys 记录。
 2. 每case重启服务，同case多轮复用；这不是每轮都重新加载模型的冷启动实验。
 3. 协议的requests/rounds来自CLI覆盖，warmup/concurrency来自冻结协议；不能只读原冻结文件就声称本次跑了200请求。
 4. 强制固定输出长度用于性能可比，不能把输出文本作为质量评测结果；质量应走独立评估流程。
-5. 验证引擎日志≠验证实际CUDA kernel，eager=false≠所有算子都使用Graph，case passed≠Nsight完整。
+5. 服务启动/生成成功不等于权重哈希身份已验证；验证引擎日志不等于验证实际 CUDA kernel，eager=false 不等于所有算子都使用 Graph，case passed 不等于 Nsight 完整。
 6. 阶段吞吐、单请求吞吐、服务端吞吐是不同的分母；不能混用，亦不能把CPU API与GPU duration简单相加。
 7. 预热不是跨轮重复；单轮1个请求的p95只是单个值，不提供尾延迟证据。
 8. 显存只是整卡定时采样，当前代码只要求至少存在有效采样，没有逐阶段、逐目标UUID的完整性验收。
@@ -678,29 +720,31 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 
 ## 15. 函数索引
 
-| 定义 | 行号 | 一句话职责 |
-| --- | --- | --- |
-| now | 30 | UTC时间标签 |
-| GPURecorder.__init__ | 36 | 准备后台采样状态 |
-| GPURecorder.sample | 43 | 采集一次整卡GPU信息 |
-| GPURecorder.run | 59 | 周期采样循环 |
-| GPURecorder.__enter__ | 63 | 初采样并启动线程 |
-| GPURecorder.__exit__ | 68 | 停止并等待线程 |
-| client_args | 73 | 构造HTTP客户端参数 |
-| stop_process | 78 | 终止本次进程组并回收直接子进程 |
-| launch_command | 106 | 构造run_model.py启动命令 |
-| perform | 126 | 执行/验收单个流式请求 |
-| phase | 185 | 并发执行并汇总一个阶段 |
-| validate | 208 | 校验模型配置和有效协议 |
-| select_requests | 240 | 选择冻结请求子集并生成指纹 |
-| load_configs | 264 | 解析模型选择、配置和CLI覆盖 |
-| verify_model | 314 | 权重、架构、tokenizer与转换清单验证 |
-| verify_engine | 366 | 从启动日志验证实际dtype/quantization |
-| run_case | 392 | 管理模型×负载的服务与多轮生命周期 |
-| check_runtime_versions | 481 | 固定软件栈白名单验证 |
-| positive_int | 496 | 正整数CLI转换 |
-| boolean_value | 503 | 明确的bool字符串转换 |
-| main | 513 | 实验总控制与退出状态 |
+| 定义（在 benchmark.py 中按函数名定位） | 一句话职责 |
+| --- | --- |
+| now | UTC时间标签 |
+| GPURecorder.__init__ | 准备后台采样状态 |
+| GPURecorder.sample | 采集一次整卡GPU信息 |
+| GPURecorder.run | 周期采样循环 |
+| GPURecorder.__enter__ | 初采样并启动线程 |
+| GPURecorder.__exit__ | 停止并等待线程 |
+| client_args | 构造HTTP客户端参数 |
+| stop_process | 终止本次进程组并回收直接子进程 |
+| launch_command | 构造run_model.py启动命令 |
+| perform | 执行/验收单个流式请求 |
+| phase | 并发执行并汇总一个阶段 |
+| validate | 校验模型配置和有效协议 |
+| select_requests | 选择冻结请求子集并生成指纹 |
+| load_configs | 解析模型选择、配置和CLI覆盖 |
+| verify_model | 轻量预检或完整权重、tokenizer与转换清单验证；直接调用默认严格 |
+| hash_model_file | 分块完整 SHA256、约每秒进度、逐文件耗时与字节数 |
+| verify_engine | 从启动日志验证实际dtype/quantization |
+| wait_for_server | 有界 health 探测、逐次错误/耗时、重试睡眠与累计等待 |
+| run_case | 管理模型×负载的服务与多轮生命周期 |
+| check_runtime_versions | 固定软件栈白名单验证 |
+| positive_int | 正整数CLI转换 |
+| boolean_value | 明确的bool字符串转换 |
+| main | 实验总控制与退出状态 |
 
 ## 16. 阶段日志与NVTX扩展
 
@@ -716,12 +760,14 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 | profiling_worker.ProfilingWorker | 保留固定vLLM接口调用，对load、显存探测、KV cache、编译、调度步和sampling标记 |
 | check_nsys_capture.inspect_capture | 只读SQLite，验收GPU活动、正式请求窗口及可选Graph回放；不是benchmark通过条件 |
 
-benchmark为快照读取写controller/read_snapshot日志；启用NVTX后新增controller/verify_weights、server_startup、warmup、measure、shutdown范围，以及request_start/end、client_first_text等事件；服务健康等待期间每10秒输出进度。启动计划与case summary保留nvtx_enabled、domain及worker_class信息。
+benchmark 为快照读取写 controller/read_snapshot 日志；模型默认走 controller/inspect_model，显式 --verify-weights 才走 controller/verify_weights，并提供配置、枚举、架构、tokenizer/清单和逐文件哈希子阶段。服务启动分为 prepare_server_environment、spawn_server、wait_for_health、health_probe、verify_engine。health_probe_result 每次记录结果，server_waiting_for_health 约每 10 秒摘要；不是只有摘要才有进度。普通阶段日志在 NVTX 关闭时仍输出；启用 --nvtx 才同时形成这些 NVTX 范围。启动计划与 case summary 保留 nvtx_enabled、domain 及 worker_class 信息。
 
 Client在第一个非空文本事件时调用回调，结束client/wait_first_text并开始client/first_text_to_stream_end。该分段包含网络/排队/响应处理，不能称为GPU prefill/decode。perform的外层elapsed也包含新增日志/标记开销。
 
 真实阶段由worker的annotate_profile hook标记：worker/prefill、worker/decode、worker/mixed、unknown/idle；最后一个只有1token的prefill块不会误判成decode。默认记录所有prefill和阶段转换，decode每32步打印一次；QUANT_PROFILE_LOG_EVERY_N_STEPS=1可逐步打印，每步NVTX不受打印频率限制。
 
+run_model 的 parse_args、resolve_paths、runtime_metadata、nvtx_init 为早期 log-only 阶段；build_server_command、spawn_api_server 在 NVTX 启用时标范围；server_lifetime 保持 log-only，避免包装进程收到 SIGTERM 后遗留未闭合的整段存活 NVTX 范围。api_server_spawned 只表示 child_pid 创建，api_server_exited 记录 returncode，不自行判为 ready。worker/nvtx_init 也是 log-only；worker/import_gpu_worker、base_init、init_device 区分模块导入、构造与 CUDA/通信初始化。import_gpu_worker 的 already_imported 表示缓存命中，它不覆盖之前的全部 vLLM/API 导入。
+
 实际加载位于worker/load_model；controller/server_startup还包含进程创建、服务初始化和健康检查。worker/compile_and_graph_capture包含内部warmup，不纳入正式请求性能。所有范围测CPU作用域，不加逐步CUDA synchronize；GPU duration以关联kernel/Graph活动为准。
 
-新增产物为实验根events.jsonl及各case的worker_events/worker_<pid>.jsonl；server.log仍保留worker日志。正式性能测量保持默认关闭NVTX，诊断采集显式打开并记录开销。
+新增产物为实验根 events.jsonl 及 --nvtx 启用时各 case 的 worker_events/worker_<pid>.jsonl；server.log 仍保留 run_model/vLLM/worker 日志。每条结构化日志带 UTC、monotonic_ns、pid、ppid、thread_id、native_thread_id，可在同一主机按单调时钟串联进程链。正式性能测量保持默认关闭NVTX，诊断采集显式打开并记录开销。

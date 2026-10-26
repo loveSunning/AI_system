@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import sys
 import tempfile
+import threading
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -97,6 +98,138 @@ class InstrumentationTests(unittest.TestCase):
                 with trace.stage("worker/prefill",nvtx=True):raise ValueError("boom")
         self.assertEqual(fake.ranges,["worker/prefill"])
         self.assertFalse(fake.open_ranges)
+
+
+    def test_hash_file_reports_bytes_progress_throughput_and_balanced_nvtx(self):
+        from experiment_utils import digest
+        fake = FakeNVTX()
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "model.safetensors"
+            path.write_bytes(b"synthetic weights")
+            expected = digest(path)
+            ticks = iter(range(0, 100, 2))
+            with patch.object(trace, "require_nvtx", return_value=fake), \
+                 patch.object(bench.time, "perf_counter", side_effect=lambda: next(ticks)), \
+                 patch.object(bench, "log_event") as event:
+                result = bench.hash_model_file(path, nvtx=True, model_profile="bf16", purpose="selected_model")
+            self.assertEqual(result["sha256"], expected)
+            self.assertEqual(result["bytes_hashed"], path.stat().st_size)
+            self.assertGreater(result["cpu_wall_seconds"], 0)
+            progress = [call.kwargs for call in event.call_args_list if call.args[0] == "hash_file_progress"]
+            complete = [call.kwargs for call in event.call_args_list if call.args[0] == "hash_file_complete"]
+            self.assertTrue(progress)
+            self.assertEqual(len(complete), 1)
+            self.assertEqual(progress[-1]["progress_percent"], 100)
+            for entry in progress + complete:
+                self.assertEqual(entry["file"], str(path))
+                self.assertEqual(entry["purpose"], "selected_model")
+                self.assertEqual(entry["bytes_hashed"], path.stat().st_size)
+                self.assertEqual(entry["total_bytes"], path.stat().st_size)
+                self.assertGreater(entry["elapsed_seconds"], 0)
+                self.assertGreater(entry["mib_per_second"], 0)
+        self.assertEqual(fake.ranges, ["controller/hash_file"])
+        self.assertFalse(fake.open_ranges)
+
+    def test_hash_file_read_failure_closes_range_and_never_emits_completion(self):
+        fake = FakeNVTX()
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "model.safetensors"
+            path.write_bytes(b"synthetic weights")
+            with patch.object(trace, "require_nvtx", return_value=fake), \
+                 patch.object(Path, "open", side_effect=PermissionError("read blocked")), \
+                 patch.object(bench, "log_event") as event:
+                with self.assertRaisesRegex(PermissionError, "read blocked"):
+                    bench.hash_model_file(path, nvtx=True, model_profile="bf16", purpose="selected_model")
+            self.assertNotIn("hash_file_complete", [call.args[0] for call in event.call_args_list])
+        self.assertEqual(fake.ranges, ["controller/hash_file"])
+        self.assertFalse(fake.open_ranges)
+
+    def test_health_wait_distinguishes_probe_time_from_retry_sleep_and_preserves_timeout(self):
+        fake = FakeNVTX()
+        clock = {"now": 0}
+        attempts = []
+        def health():
+            clock["now"] += .25
+            if len(attempts) == 1:
+                raise ConnectionError("not listening")
+        def client(args):
+            attempts.append(args.timeout)
+            return SimpleNamespace(health=health)
+        def sleep(seconds):
+            clock["now"] += seconds
+        args = SimpleNamespace(timeout=900, base_url="http://localhost", no_proxy=True)
+        config = {"profile": "fp8-local", "nvtx": True, "startup_timeout_seconds": 10}
+        timings = {}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "server.log"
+            path.write_text("worker loading\n", encoding="utf-8")
+            with patch.object(trace, "require_nvtx", return_value=fake), \
+                 patch.object(bench.time, "monotonic", side_effect=lambda: clock["now"]), \
+                 patch.object(bench.time, "sleep", side_effect=sleep), \
+                 patch.object(bench, "Client", side_effect=client), patch.object(bench, "log_event") as event:
+                bench.wait_for_server(SimpleNamespace(pid=12345, poll=lambda: None), args,
+                                      path, config, {"id": "w128_o128"}, timings)
+            probes = [call.kwargs for call in event.call_args_list if call.args[0] == "health_probe_result"]
+            self.assertEqual([probe["status"] for probe in probes], ["not_ready", "ok"])
+            self.assertEqual([probe["attempt"] for probe in probes], [1, 2])
+            self.assertEqual(probes[0]["error_type"], "ConnectionError")
+            self.assertEqual(probes[0]["error"], "not listening")
+            self.assertIsNone(probes[1]["error"])
+            self.assertTrue(all(probe["server_pid"] == 12345 for probe in probes))
+            self.assertTrue(all(probe["server_log_bytes"] == path.stat().st_size for probe in probes))
+        self.assertEqual(args.timeout, 900)
+        self.assertEqual(attempts, [2, 2])
+        self.assertEqual(timings["health_attempts"], 2)
+        self.assertEqual(timings["health_probe_seconds"], .5)
+        self.assertEqual(timings["retry_sleep_seconds"], 1)
+        self.assertEqual(timings["health_wait_seconds"], 1.5)
+        self.assertEqual(fake.ranges, ["controller/wait_for_health", "controller/health_probe",
+                                      "controller/health_probe"])
+        self.assertFalse(fake.open_ranges)
+
+    def test_health_timeout_caps_each_probe_and_keeps_failure_timings(self):
+        fake = FakeNVTX()
+        clock = {"now": 0}
+        attempts = []
+        def health():
+            clock["now"] += .25
+            raise ConnectionError("still loading")
+        def client(args):
+            attempts.append(args.timeout)
+            return SimpleNamespace(health=health)
+        def sleep(seconds):
+            clock["now"] += seconds
+        config = {"profile": "fp8-official", "nvtx": True, "startup_timeout_seconds": .5}
+        timings = {}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "server.log"
+            path.write_text("loading\n", encoding="utf-8")
+            with patch.object(trace, "require_nvtx", return_value=fake), \
+                 patch.object(bench.time, "monotonic", side_effect=lambda: clock["now"]), \
+                 patch.object(bench.time, "sleep", side_effect=sleep), \
+                 patch.object(bench, "Client", side_effect=client), patch.object(bench, "log_event"):
+                with self.assertRaisesRegex(TimeoutError, "Server startup timeout"):
+                    bench.wait_for_server(SimpleNamespace(pid=12345, poll=lambda: None),
+                        SimpleNamespace(timeout=900), path, config, {"id": "w128_o128"}, timings)
+        self.assertEqual(attempts, [.5])
+        self.assertEqual(timings["health_attempts"], 1)
+        self.assertEqual(timings["health_probe_seconds"], .25)
+        self.assertEqual(timings["retry_sleep_seconds"], .25)
+        self.assertEqual(timings["health_wait_seconds"], .5)
+        self.assertFalse(fake.open_ranges)
+
+    def test_events_include_parent_process_and_native_thread_for_profiler_correlation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "events.jsonl"
+            with contextlib.redirect_stderr(io.StringIO()):
+                trace.configure_logging(path)
+                trace.log_event("synthetic_event")
+                trace.close_logging()
+            event = json.loads(path.read_text(encoding="utf-8").strip())
+        self.assertEqual(event["pid"], os.getpid())
+        self.assertEqual(event["ppid"], os.getppid())
+        self.assertEqual(event["native_thread_id"], threading.get_native_id())
+        self.assertGreater(event["monotonic_ns"], 0)
 
     def test_request_first_text_callback_and_failure_end_all_ranges(self):
         fake=FakeNVTX()
@@ -203,7 +336,8 @@ class InstrumentationTests(unittest.TestCase):
             self.assertEqual(worker.execute_model(output([new_request()],scheduled={'a':128})),'forward')
             self.assertEqual(worker.execute_model(output(cached=['a'],positions=[128],scheduled={'a':1})),'forward')
             self.assertEqual(worker.sample_tokens('sample'),'sample')
-        self.assertEqual(fake.ranges,['worker/load_model','worker/prefill','worker/decode','worker/sampling'])
+        self.assertEqual(fake.ranges,['worker/import_gpu_worker','worker/base_init','worker/load_model',
+                                      'worker/prefill','worker/decode','worker/sampling'])
 
 
 if __name__=='__main__':unittest.main()

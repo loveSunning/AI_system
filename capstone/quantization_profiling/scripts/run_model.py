@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 
+import profiling_trace as trace
 from model_profiles import (inspect_model_config, resolve_model_alias, resolve_runtime_options,
                             profile_from_model_name, validate_model_profile, FP8_BACKENDS,
                             validate_fp8_backend, fp8_backend_environment)
@@ -410,44 +411,78 @@ def package_versions():
     return result
 
 
+def run_server_process(command, *, nvtx=False):
+    """Keep the original python -m entry point; measure spawn separately from lifetime."""
+    with trace.stage("run_model/spawn_api_server", nvtx=nvtx):
+        process = subprocess.Popen(command)
+    trace.log_event("api_server_spawned", child_pid=process.pid,
+                    entrypoint="vllm.entrypoints.openai.api_server")
+    with process:
+        # The benchmark may terminate this wrapper with SIGTERM. Keep this
+        # lifetime timer log-only rather than leaving an open NVTX range behind.
+        with trace.stage("run_model/server_lifetime", child_pid=process.pid):
+            try:
+                returncode = process.wait()
+            except BaseException:
+                # Match subprocess.call's cleanup if waiting is interrupted.
+                process.kill()
+                raise
+    trace.log_event("api_server_exited", child_pid=process.pid, returncode=returncode)
+    return returncode
+
+
+@trace.managed_logging
 def main(argv=None):
-    args = parse_args(argv)
+    trace.log_event("run_model_entry", python=sys.executable)
+    with trace.stage("run_model/parse_args"):
+        args = parse_args(argv)
     try:
-        config = resolve_paths(args)
+        with trace.stage("run_model/resolve_paths"):
+            config = resolve_paths(args)
         print(f"Model profile: {args.model_profile}; dtype: {args.dtype}; "
               f"vLLM quantization option: {args.quantization}", flush=True)
         print("Checkpoint quantization metadata:",
               json.dumps(args.model_quantization_config, ensure_ascii=False, sort_keys=True), flush=True)
-        if args.backend == "vllm" and not args.tokenize_only:
-            if args.fp8_backend == "marlin" and importlib.metadata.version("vllm").split("+")[0] != "0.14.1":
-                raise ValueError("--fp8-backend marlin is audited for vLLM 0.14.1; use the unified runtime")
-            backend_env = fp8_backend_environment(args.fp8_backend)
-            os.environ["VLLM_TEST_FORCE_FP8_MARLIN"] = backend_env["VLLM_TEST_FORCE_FP8_MARLIN"]
-            print(f"FP8 backend request: {args.fp8_backend}; "
-                  f"force_marlin={backend_env['VLLM_TEST_FORCE_FP8_MARLIN']}; "
-                  f"execution={'W8A16' if args.fp8_backend == 'marlin' else 'checkpoint/platform dispatch'}; "
-                  "CUDA kernel verification requires profiling.", flush=True)
-            # No torch.cuda calls in the parent before vLLM starts its workers.
-            os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        if args.nvtx:
-            if not args.serve or args.backend != "vllm":
-                raise ValueError("--nvtx worker stage tracing requires --serve --backend vllm")
-            if importlib.metadata.version("vllm").split("+")[0] != "0.14.1":
-                raise ValueError("--nvtx worker instrumentation is audited for vLLM 0.14.1 only")
-            from profiling_trace import require_nvtx
-            require_nvtx()
+        with trace.stage("run_model/runtime_metadata"):
+            runtime_vllm_version = None
+            if args.backend == "vllm" and not args.tokenize_only:
+                try:
+                    runtime_vllm_version = importlib.metadata.version("vllm")
+                except importlib.metadata.PackageNotFoundError:
+                    runtime_vllm_version = None
+                if args.fp8_backend == "marlin" and (runtime_vllm_version or "").split("+")[0] != "0.14.1":
+                    raise ValueError("--fp8-backend marlin is audited for vLLM 0.14.1; use the unified runtime")
+                backend_env = fp8_backend_environment(args.fp8_backend)
+                os.environ["VLLM_TEST_FORCE_FP8_MARLIN"] = backend_env["VLLM_TEST_FORCE_FP8_MARLIN"]
+                print(f"FP8 backend request: {args.fp8_backend}; "
+                      f"force_marlin={backend_env['VLLM_TEST_FORCE_FP8_MARLIN']}; "
+                      f"execution={'W8A16' if args.fp8_backend == 'marlin' else 'checkpoint/platform dispatch'}; "
+                      "CUDA kernel verification requires profiling.", flush=True)
+                # No torch.cuda calls in the parent before vLLM starts its workers.
+                os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            trace.log_event("run_model_runtime_metadata", backend=args.backend,
+                            vllm_version=runtime_vllm_version, model_profile=args.model_profile,
+                            dtype=args.dtype, quantization=args.quantization, nvtx=args.nvtx)
+        with trace.stage("run_model/nvtx_init", enabled=args.nvtx):
+            if args.nvtx:
+                if not args.serve or args.backend != "vllm":
+                    raise ValueError("--nvtx worker stage tracing requires --serve --backend vllm")
+                if (runtime_vllm_version or "").split("+")[0] != "0.14.1":
+                    raise ValueError("--nvtx worker instrumentation is audited for vLLM 0.14.1 only")
+                trace.require_nvtx()
         os.environ["QUANT_PROFILE_NVTX"] = "1" if args.nvtx else "0"
         if args.serve:
-            command = server_command(args)
-            # Make the sibling middleware importable in the separate API process.
-            scripts_path = str(Path(__file__).resolve().parent)
-            python_path = os.environ.get("PYTHONPATH", "")
-            os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (scripts_path, python_path)))
+            with trace.stage("run_model/build_server_command", nvtx=args.nvtx):
+                command = server_command(args)
+                # Make the sibling middleware importable in the separate API process.
+                scripts_path = str(Path(__file__).resolve().parent)
+                python_path = os.environ.get("PYTHONPATH", "")
+                os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (scripts_path, python_path)))
             print("Starting:", shlex.join(command), flush=True)
             print(f"Scheduler concurrency: {args.max_num_seqs}; API responses include profiling metrics.",
                   flush=True)
-            return subprocess.call(command)
+            return run_server_process(command, nvtx=args.nvtx)
 
         from transformers import AutoTokenizer
 

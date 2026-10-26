@@ -154,6 +154,63 @@ class SummarizeModelsTests(unittest.TestCase):
                              (directory / "bf16/w128_o128/requests.jsonl").resolve())
 
 
+
+    def test_weight_verification_statuses_are_explicit_and_separate_from_request_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, summary = self.fixture(directory)
+            statuses = (("passed", "sha256"), ("skipped", "metadata_only"),
+                        ("failed", "sha256"), ("unknown", "sha256"))
+            for descriptor, (status, mode) in zip(run["models"], statuses):
+                descriptor["model"]["weight_verification"] = {"status": status, "mode": mode}
+            write(directory / "run.json", run)
+            report = self.render(directory)
+            self.assertIn("|BF16|passed|sha256|", report)
+            self.assertIn("|AWQ/W4A16|skipped|metadata_only|", report)
+            self.assertIn("|官方 FP8|failed|sha256|", report)
+            self.assertIn("|本地 FP8|unknown|sha256|", report)
+            self.assertIn("权重、Tokenizer 哈希与转换清单未校验", report)
+            self.assertIn("校验状态独立于下方请求协议完成性", report)
+            self.assertTrue(completion(run, summary)[0])
+            self.assertIn("有效协议：True", report)
+
+    def test_missing_legacy_verification_or_config_request_never_implies_passed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, _ = self.fixture(directory, profiles=("bf16",))
+            run["models"][0]["config"]["verify_weights"] = True
+            run["models"][0]["model"]["base_source_verification"] = "exact_frozen_files"
+            write(directory / "run.json", run)
+            report = self.render(directory)
+            self.assertIn("|BF16|unknown|未记录|", report)
+            self.assertNotIn("|BF16|passed|sha256|", report)
+            self.assertIn("无法据此认定权重或 Tokenizer 校验通过", report)
+            self.fixture(directory, profiles=("bf16",), legacy=True)
+            report = self.render(directory)
+            self.assertIn("|BF16|unknown|未记录|", report)
+            self.assertIn("有效协议：True", report)
+
+    def test_precheck_failure_overrides_stale_passed_verification_and_escapes_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, _ = self.fixture(directory, profiles=("fp8-local",))
+            run["models"][0].update(validation_error="SHA256 mismatch | bad\ncontent",
+                model={"weight_verification": {"status": "passed", "mode": "sha256"}})
+            write(directory / "run.json", run)
+            report = self.render(directory)
+            self.assertIn("|本地 FP8|failed|sha256|模型预检失败：SHA256 mismatch \\| bad content|", report)
+            self.assertNotIn("|本地 FP8|passed|sha256|", report)
+
+    def test_passed_without_sha256_mode_is_reported_as_unknown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            run, _ = self.fixture(directory, profiles=("awq",))
+            run["models"][0]["model"]["weight_verification"] = {"status": "passed", "mode": "metadata_only"}
+            write(directory / "run.json", run)
+            report = self.render(directory)
+            self.assertIn("|AWQ/W4A16|unknown|metadata_only|", report)
+            self.assertNotIn("|AWQ/W4A16|passed|", report)
+
     def test_execution_settings_distinguish_marlin_w8a16_from_auto(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)

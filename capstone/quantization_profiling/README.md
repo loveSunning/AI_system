@@ -4,7 +4,7 @@
 
 **当前状态：用户提供的 BF16 五组负载 × 3 轮 × 100 请求实验已通过；现已扩展 BF16、AWQ、官方 FP8 和本地 FP8 的统一运行与 benchmark。** 新测试默认每组每轮 5 次预热、50 次正式请求、1 轮，可通过参数选择轮次和请求数。AWQ/官方 FP8/本地 FP8 的真实 4090D 推理、性能和质量回归仍需目标机验证；Profiler 诊断仍待完成。
 
-**benchmark 脚本详解：** [目的、主流程、21 个函数/方法、指标公式与输出文件](docs/benchmark_script_walkthrough.md)。依据当前源码解释默认值、模型验证、进程生命周期和计时边界。
+**benchmark 脚本详解：** [目的、主流程、函数职责、指标公式与输出文件](docs/benchmark_script_walkthrough.md)。依据当前源码解释默认值、模型验证、进程生命周期和计时边界。
 
 **Nsight 快速运行：** [eager/no_eager、四模型配对采集、NVTX及CLI/GUI分析](docs/nsight_quickstart.md)。`benchmark.py --nvtx`标记实际worker的加载、prefill、decode；另含CUDA/OSRT基础时间线、CPU栈采集及报告覆盖检查。
 
@@ -536,7 +536,19 @@ python capstone/quantization_profiling/scripts/benchmark.py --all-models --round
 python capstone/quantization_profiling/scripts/benchmark.py --model bf16 --model awq
 ```
 
-**诊断日志与NVTX：** 控制/请求事件写入实验根目录的 `events.jsonl`。`--nvtx`额外启用vLLM 0.14.1 worker的load/prefill/decode范围和各case的 `worker_events/` 日志，先安装 `requirements-profiling.txt`；不传则默认关闭NVTX，`--no-nvtx`可显式关闭。命令与计时边界见 [Nsight quickstart](docs/nsight_quickstart.md)。
+**权重验证模式：** benchmark 默认做模型配置、架构、文件存在性和后端请求的轻量预检，跳过完整权重 SHA256 扫描；可用 `--no-verify-weights` 显式选择。需核对冻结权重身份时追加 `--verify-weights`，恢复完整哈希及对应清单验证。`run.json` 和各组 `summary.json` 的 `weight_verification.status` 会区分 `skipped` 与 `passed`；服务健康、请求成功都不能将 skipped 当作身份已验证。快照和请求子集的哈希检查仍保留，`compare_quality.py` 直接调用的 `verify_model()` 继续默认严格。
+
+```bash
+# 轻量预检后启动，适合先采集启动/推理时间线。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --model fp8-local --case w128_o128 --requests 1 --no-verify-weights
+
+# 需要完整身份核对时显式启用；哈希时间不进入正式吞吐分母。
+python capstone/quantization_profiling/scripts/benchmark.py \
+  --model fp8-local --case w128_o128 --requests 1 --verify-weights
+```
+
+**诊断日志与NVTX：** 控制/请求事件、默认轻量预检、显式哈希进度及启动/health 子阶段写入实验根目录的 `events.jsonl`。`--nvtx`额外启用vLLM 0.14.1 worker的load/prefill/decode范围和各case的 `worker_events/` 日志，先安装 `requirements-profiling.txt`；不传则默认关闭NVTX，`--no-nvtx`可显式关闭。命令与计时边界见 [Nsight quickstart](docs/nsight_quickstart.md)。
 
 **benchmark 的执行开关：** `--enforce-eager true/false`（也支持 `--enforce-eager` / `--no-enforce-eager`）覆盖本次配置；省略时沿用配置文件。`fp8-origin` 是 `fp8-official` 的别名。`--fp8-backend marlin` 在 vLLM 0.14.1 下请求原生 FP8 loader 的 **W8A16** 路线；当前本地 compressed-tensors FP8_BLOCK 不支持这个强制开关，会明确拒绝该组合。详细命令与格式边界见 [benchmark 模型、Marlin 与 eager 开关](docs/benchmark_backends.md)。
 
@@ -556,7 +568,7 @@ python capstone/quantization_profiling/scripts/benchmark.py \
 
 旧的 100 请求/3 轮快照无需重建：本次默认确定性地选择每组前 50 个正式请求，所有模型和轮次使用相同子集；原协议、本次有效协议和请求子集 hash 会另行记录，实际选中的记录保存为 selected_requests.jsonl。要重跑旧的 3×100 协议，使用包含 100 条正式请求的旧快照并显式设置 `--rounds 3 --requests 100`。不传生成参数时新快照默认每组50个正式请求，可用 prepare_workloads.py --requests N 扩大容量。
 
-日志位于 `log/benchmark_<ID>/<模型>/<负载>/`，保留每种模型的原始请求、启动日志、实际引擎 dtype/量化方法和显存；根目录记录 run.json 和 summary.json。单轮结果可用于初步对照，但不能判断跨轮波动；50 个样本的 p95 也比原 100 样本更不稳定。历史 3×100 BF16 报告保留原实验 ID、协议和结果。
+日志位于 `log/benchmark_<ID>/<模型>/<负载>/`，保留每种模型的原始请求、`server.log` 启动日志、实际引擎 dtype/量化方法和显存；启用 `--nvtx` 时另有 `worker_events/worker_<pid>.jsonl`。根目录 `events.jsonl` 可跟踪进度，`run.json` 与两级 `summary.json` 记录对应模型/组的权重验证状态。单轮结果可用于初步对照，但不能判断跨轮波动；50 个样本的 p95 也比原 100 样本更不稳定。历史 3×100 BF16 报告保留原实验 ID、协议和结果。
 
 ### benchmark 结束后生成报告
 
