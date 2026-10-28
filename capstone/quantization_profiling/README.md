@@ -6,11 +6,15 @@
 
 **benchmark 脚本详解：** [目的、主流程、函数职责、指标公式与输出文件](docs/benchmark_script_walkthrough.md)。依据当前源码解释默认值、模型验证、进程生命周期和计时边界。
 
+**非 server NSYS / NCU：** [共用 LLM.generate 的离线采集与测试方案](docs/offline_nsight.md)。支持四模型 eager/Graph，NSYS 完整启动或稳态窗口、NCU 自定义 kernel，以及无 profiler 对照。[完整参数说明](docs/offline_nsight_parameters.md)。
+
 **Nsight 快速运行：** [eager/no_eager、四模型配对采集、NVTX及CLI/GUI分析](docs/nsight_quickstart.md)。`benchmark.py --nvtx`标记实际worker的加载、prefill、decode；另含CUDA/OSRT基础时间线、CPU栈采集及报告覆盖检查。
 
 **八份 nsys 实测对比：** [2026-10-23 eager/Graph 数据覆盖与四模型热点分析](reports/nsys_eight_report_comparison_20261023.md)。包含逐请求窗口、耗时分解图；新增 Graph 报告缺少 GPU 执行活动，暂不能计算 Graph 加速比。
 
 **已有 nsys 报告解读：** [2026-10-23 四模型报告的实际热点、GUI 步骤与 CLI 命令](docs/nsys_report_reading_20261023.md)。包含同等 decode 周期对照、统计字段含义与采集完整性限制。
+
+**FP8-local 对 BF16 的 kernel 归因与 NCU：** [2026-10-28 投影耗时拆分、核心瓶颈与采集命令](docs/fp8_local_bf16_ncu_20261028.md)。基于 128→128 的完整窗口，定位 down/o 投影退化，并提供预热后逐 kernel NCU 入口。
 
 **FP8 性能诊断与 Nsight 实操：** [官方/本地 FP8 与 BF16、AWQ 的逐步分析命令](docs/nsight_fp8_performance_analysis.md)。结合 2026-10-22 的 1×80、并发 1 结果，覆盖服务/离线采集、prefill/decode、NCU 指标与受控消融；实际 GPU 归因须在目标机采集验证。
 

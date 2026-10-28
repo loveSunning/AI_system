@@ -12,7 +12,9 @@ GRAPH_TABLE = "CUPTI_ACTIVITY_KIND_GRAPH_TRACE"
 API_TABLES = ("CUPTI_ACTIVITY_KIND_RUNTIME", "CUPTI_ACTIVITY_KIND_DRIVER")
 
 
-def inspect_capture(path, require_worker_ranges=False, expect_graph=False):
+def inspect_capture(path, require_worker_ranges=False, expect_graph=False,
+                    measure_range="controller/measure", require_load_model=True,
+                    fail_on_incomplete_cuda=False):
     uri = Path(path).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -32,7 +34,7 @@ def inspect_capture(path, require_worker_ranges=False, expect_graph=False):
             for name, start, end in rows:
                 if name:
                     names[name] = names.get(name, 0) + 1
-                    if name == "controller/measure" and end is not None and end > start:
+                    if name == measure_range and end is not None and end > start:
                         measure.append((start, end))
 
         def in_measure(table, predicate="1"):
@@ -51,6 +53,7 @@ def inspect_capture(path, require_worker_ranges=False, expect_graph=False):
                 measure_launches += in_measure(table, launch_predicate)
 
         result = {
+            "measure_range": measure_range,
             "kernel_records": count(KERNEL_TABLE),
             "gpu_graph_records": count(GRAPH_TABLE),
             "graph_resource_records": count("CUDA_GRAPH_EVENTS"),
@@ -68,13 +71,16 @@ def inspect_capture(path, require_worker_ranges=False, expect_graph=False):
         if not result["kernel_records"] and not result["gpu_graph_records"]:
             errors.append("No GPU execution data; Graph Creation markers are not execution timing.")
         if require_worker_ranges:
-            for name in ("worker/load_model", "worker/prefill", "worker/decode"):
+            required = ["worker/prefill", "worker/decode"]
+            if require_load_model:
+                required.append("worker/load_model")
+            for name in required:
                 if not names.get(name):
                     errors.append("Missing NVTX range: " + name)
             if not measure:
-                errors.append("Missing completed controller/measure range.")
+                errors.append(f"Missing completed {measure_range} range.")
             elif not result["measure_gpu_records"]:
-                errors.append("No GPU execution data inside controller/measure.")
+                errors.append(f"No GPU execution data inside {measure_range}.")
         if expect_graph:
             # With new annotations, require evidence in the measured phase;
             # graph replay during internal warmup alone is insufficient.
@@ -84,6 +90,8 @@ def inspect_capture(path, require_worker_ranges=False, expect_graph=False):
             graph_nodes = result[scoped + "graph_node_kernel_records"]
             if not graph_launches or not (gpu_graphs or graph_nodes):
                 errors.append("CUDA Graph replay was not demonstrated; check capture completeness and actual runtime configuration.")
+        if fail_on_incomplete_cuda and result["incomplete_cuda_warnings"]:
+            errors.append("CUDA event-loss diagnostics present; capture is incomplete.")
         result["errors"] = errors
         result["key_data_present"] = not errors
         result["note"] = "Coverage check only; inspect worker diagnostics for event loss. CPU NVTX scopes are not GPU durations."
@@ -95,8 +103,15 @@ def main(argv=None):
     parser.add_argument("sqlite", type=Path)
     parser.add_argument("--require-worker-ranges", action="store_true")
     parser.add_argument("--expect-graph", action="store_true")
+    parser.add_argument("--measure-range", default="controller/measure")
+    parser.add_argument("--skip-load-model-range", action="store_true",
+                        help="steady capture intentionally excludes model loading")
+    parser.add_argument("--fail-on-incomplete-cuda", action="store_true")
     args = parser.parse_args(argv)
-    result = inspect_capture(args.sqlite, args.require_worker_ranges, args.expect_graph)
+    result = inspect_capture(args.sqlite, args.require_worker_ranges, args.expect_graph,
+                             measure_range=args.measure_range,
+                             require_load_model=not args.skip_load_model_range,
+                             fail_on_incomplete_cuda=args.fail_on_incomplete_cuda)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["key_data_present"] else 1
 

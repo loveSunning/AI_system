@@ -1,5 +1,7 @@
 # Nsight 快速采集：eager、no_eager、阶段日志与 NVTX
 
+**非 server 入口已统一：** [LLM.generate 的 NSYS / NCU 测试方案](offline_nsight.md)。两个工具共用 profile_kernels.py、冻结快照校验和 ProfilingWorker；原 server 方案与历史数据保留供对照。
+
 适用：Linux Bash、RTX 4090D、项目固定的 vLLM 0.14.1。更新：2026-10-26。
 
 先采时间线，再按需增加CPU栈或显存跟踪，最后用NCU研究单个热点。下面命令均调用现有benchmark，保留5次预热、1次正式请求、1轮。Profiler和阶段日志会增加开销，采集结果用于诊断，不代替无profiler的正式性能结果。

@@ -70,5 +70,25 @@ class CaptureCoverageTests(unittest.TestCase):
         self.assertTrue(any("CUDA Graph replay" in error for error in result["errors"]))
 
 
+    def test_offline_steady_range_does_not_require_loading_in_capture(self):
+        path = self.make_db("node")
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("UPDATE NVTX_EVENTS SET text='offline/measure' WHERE text='controller/measure'")
+            db.execute("DELETE FROM NVTX_EVENTS WHERE text='worker/load_model'")
+        result = check.inspect_capture(path, True, True, measure_range="offline/measure",
+                                       require_load_model=False)
+        self.assertTrue(result["key_data_present"])
+        self.assertEqual(result["measure_range"], "offline/measure")
+
+    def test_offline_capture_rejects_reported_cuda_event_loss(self):
+        path = self.make_db("node")
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("CREATE TABLE DIAGNOSTIC_EVENT(text TEXT)")
+            db.execute("INSERT INTO DIAGNOSTIC_EVENT VALUES('Not all CUDA events were collected')")
+        result = check.inspect_capture(path, fail_on_incomplete_cuda=True)
+        self.assertFalse(result["key_data_present"])
+        self.assertTrue(any("event-loss" in error for error in result["errors"]))
+
+
 if __name__ == "__main__":
     unittest.main()
