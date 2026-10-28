@@ -15,8 +15,11 @@ services:
     restart: unless-stopped
     init: true
     stdin_open: true
+    privileged: true
     tty: true
     ipc: host
+    cap_add:
+      - SYS_ADMIN
     shm_size: ${SHM_SIZE:-16gb}
     working_dir: /workspace
     ports:
