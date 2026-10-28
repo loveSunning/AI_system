@@ -23,6 +23,24 @@ class OfflineProfilerCommandTests(unittest.TestCase):
         self.requests = self.base / 'requests.jsonl'
         self.requests.write_text('', encoding='utf-8')
         self.args_log = self.base / 'arguments.bin'
+        self.sudo_log = self.base / 'sudo.bin'
+        self.env_log = self.base / 'environment.bin'
+        self.tools = self.base / 'tools'
+        self.tools.mkdir()
+        mock_sudo = self.tools / 'sudo'
+        mock_sudo.write_text("""#!/usr/bin/env bash
+set -e
+printf '%s\\0' "$@" >> "$MOCK_SUDO_LOG"
+printf '\\n' >> "$MOCK_SUDO_LOG"
+if [[ "$1" == -v ]]; then exit "${MOCK_SUDO_VALIDATE_EXIT:-0}"; fi
+[[ "$1" == -E ]] || exit 99
+shift
+# Model sudo's secure_path and dynamic-loader environment stripping.
+unset LD_LIBRARY_PATH
+PATH=/usr/bin:/bin
+exec "$@"
+""", encoding='utf-8', newline='\n')
+        mock_sudo.chmod(0o755)
         self.builder = self.base / 'make_sqlite.py'
         self.builder.write_text("""import os,sqlite3,sys
 db=sqlite3.connect(sys.argv[1])
@@ -48,6 +66,8 @@ db.close()
         self.mock = self.base / 'mock_profiler.sh'
         self.mock.write_text("""#!/usr/bin/env bash
 set -e
+printf '%s\\0' "${MODEL_ROOT:-}" "${CUDA_VISIBLE_DEVICES:-}" "${LD_LIBRARY_PATH:-}" "${VLLM_WORKER_MULTIPROC_METHOD:-}" >> "$MOCK_ENV_LOG"
+printf '\\n' >> "$MOCK_ENV_LOG"
 printf '%s\\0' "$@" >> "$MOCK_ARG_LOG"
 printf '\\n' >> "$MOCK_ARG_LOG"
 if [[ "$1" == --version ]]; then echo MOCK_ONLY; exit 0; fi
@@ -69,13 +89,17 @@ done
 echo MOCK_ONLY_NO_GPU
 """, encoding='utf-8', newline='\n')
         self.mock.chmod(0o755)
-        self.environment = dict(os.environ, REQUESTS=self.requests.as_posix(),
+        self.environment = dict(os.environ,
+                                PATH=str(self.tools) + os.pathsep + os.environ.get('PATH', ''),
+                                REQUESTS=self.requests.as_posix(),
                                 NSYS_OUT=(self.base / 'nsys').as_posix(),
                                 NCU_OUT=(self.base / 'ncu').as_posix(),
                                 NSYS_BIN=self.mock.as_posix(), NCU_BIN=self.mock.as_posix(),
                                 PYTHON_BIN=Path(sys.executable).as_posix(),
                                 MOCK_SQLITE_BUILDER=self.builder.as_posix(),
                                 MOCK_ARG_LOG=self.args_log.as_posix(),
+                                MOCK_SUDO_LOG=self.sudo_log.as_posix(),
+                                MOCK_ENV_LOG=self.env_log.as_posix(),
                                 PROFILE_CASE='w128_o128', PROFILE_COUNT='1',
                                 PROFILE_BATCH_SIZE='1', PROFILE_BATCH_TOKENS='2048',
                                 NCU_GRAPH='1')
@@ -181,6 +205,50 @@ echo MOCK_ONLY_NO_GPU
         self.assertIn('SourceCounters', command)
         self.assertEqual(command[command.index('--nvtx-include')+1],
                          r'quantization_profiling@worker\/decode/')
+
+    def test_ncu_preserves_virtualenv_and_runtime_environment_through_sudo(self):
+        virtualenv = self.base / 'venv tools'
+        virtualenv.mkdir()
+        python = virtualenv / 'python-ncu-test'
+        python.write_text('#!/usr/bin/env bash\nexit 99\n', encoding='utf-8', newline='\n')
+        python.chmod(0o755)
+        result, commands = self.run_wrapper('profile_offline_ncu.sh', [
+            '--model', 'fp8-local', '--phase', 'decode'],
+            PYTHON_BIN=python.name,
+            PATH=str(virtualenv) + os.pathsep + self.environment['PATH'],
+            MODEL_ROOT='/models/custom weights', CUDA_VISIBLE_DEVICES='2',
+            LD_LIBRARY_PATH='/custom/cuda/lib:/custom/torch/lib')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        command = next(row for row in commands if '--export' in row)
+        driver_index = next(i for i, arg in enumerate(command) if arg.endswith('profile_kernels.py'))
+        self.assertTrue(command[driver_index-1].endswith('/venv tools/python-ncu-test'), command)
+        self.assertEqual(len(commands), 4)  # version, capture, raw export, details export
+        environments = [row.split(b'\0')[:-1] for row in self.env_log.read_bytes().split(b'\n') if row]
+        self.assertEqual(len(environments), 4)
+        for environment in environments:
+            self.assertEqual(environment, [b'/models/custom weights', b'2',
+                                          b'/custom/cuda/lib:/custom/torch/lib', b'spawn'])
+        uid = subprocess.check_output([BASH, '-c', 'printf "%s" "$EUID"'],
+                                      env=self.environment, text=True)
+        sudo_calls = self.sudo_log.read_bytes().splitlines() if self.sudo_log.exists() else []
+        if uid == '0':
+            self.assertEqual(sudo_calls, [])
+        else:
+            self.assertEqual(len(sudo_calls), 5)
+            self.assertEqual(sudo_calls[0], b'-v\0')
+            for call in sudo_calls[1:]:
+                self.assertTrue(call.startswith(b'-E\0env\0PATH='), call)
+
+    def test_ncu_sudo_failure_stops_before_starting_profiler(self):
+        uid = subprocess.check_output([BASH, '-c', 'printf "%s" "$EUID"'],
+                                      env=self.environment, text=True)
+        if uid == '0':
+            self.skipTest('Root does not need sudo validation')
+        result, commands = self.run_wrapper('profile_offline_ncu.sh', ['--model', 'bf16'],
+                                            MOCK_SUDO_VALIDATE_EXIT='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(commands, [])
+        self.assertEqual(self.sudo_log.read_bytes(), b'-v\0\n')
 
     def test_nsys_named_options_override_environment(self):
         result, commands = self.run_wrapper('profile_offline_nsys.sh', [

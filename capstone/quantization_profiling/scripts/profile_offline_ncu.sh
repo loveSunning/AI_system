@@ -36,6 +36,9 @@ Environment fallback:
   MODEL_ROOT, REQUESTS, NCU_OUT, NCU_GRAPH, NCU_CACHE_CONTROL,
   NCU_CLOCK_CONTROL, PROFILE_CASE, PROFILE_BATCH_SIZE, PROFILE_BATCH_TOKENS,
   NCU_BIN, PYTHON_BIN. Explicit command-line options take precedence.
+Permissions:
+  Non-root callers run NCU through sudo; root callers run it directly.
+  The current Python environment and runtime environment are preserved.
 HELP
 }
 die() { echo "Error: $*" >&2; exit 2; }
@@ -158,6 +161,17 @@ graph_args=()
 if [[ "$engine_mode" == graph ]]; then graph_args=(--graph); fi
 # '/' inside the literal worker range name must be escaped for NCU NVTX syntax.
 nvtx_filter="quantization_profiling@worker\\/$phase/"
+# Resolve the active virtualenv executables before sudo changes PATH.
+# Keep the Python entry point as-is: resolving its symlink can lose the venv.
+ncu_path="$(command -v "$ncu_bin")" || die "NCU executable not found: $ncu_bin"
+python_path="$(command -v "$python_bin")" || die "Python executable not found: $python_bin"
+ncu_cmd=("$ncu_path")
+if (( EUID != 0 )); then
+  command -v sudo >/dev/null 2>&1 || die "sudo is required to access GPU performance counters"
+  sudo -v
+  # sudo can strip LD_LIBRARY_PATH even with -E; restore it explicitly.
+  ncu_cmd=(sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" "$ncu_path")
+fi
 mkdir -p "$output_root"
 tag="$(date -u +%Y%m%dT%H%M%SZ)_$$"
 prefix="$output_root/${model}_${phase}_${selection_label}_${level}_${engine_mode}_${tag}"
@@ -165,13 +179,13 @@ prefix="$output_root/${model}_${phase}_${selection_label}_${level}_${engine_mode
 unset VLLM_TORCH_CUDA_PROFILE VLLM_TORCH_PROFILER_DIR
 unset VLLM_PROFILER_DELAY_ITERS VLLM_PROFILER_MAX_ITERS
 export VLLM_WORKER_MULTIPROC_METHOD=spawn PYTHONUNBUFFERED=1
-"$ncu_bin" --version > "${prefix}.version.txt"
+"${ncu_cmd[@]}" --version > "${prefix}.version.txt"
 printf 'model=%s\nphase=%s\nlevel=%s\nselector=%s\ntarget=%s\nkernel_filter=%s\nkernel_name_base=%s\nmatching_skip=%s\nmatching_count=%s\ndelay_iters=%s\nmax_iters=%s\nmode=%s\ncache_control=%s\nclock_control=%s\ncase=%s\nbatch_size=%s\nbatch_tokens=%s\nwarmup=%s\nrequests=%s\nnvtx_filter=%s\n' \
   "$model" "$phase" "$level" "$selector" "$target" "$kernel_filter" "$name_base" \
   "$skip" "$count" "$delay" "$max_iters" "$engine_mode" "$cache_mode" "$clock_mode" \
   "$case_id" "$batch_size" "$batch_tokens" "$warmup" "$requests" "$nvtx_filter" > "${prefix}.settings.txt"
 
-"$ncu_bin" \
+"${ncu_cmd[@]}" \
   --target-processes all --profile-from-start off \
   --replay-mode kernel --graph-profiling node \
   --nvtx --nvtx-include "$nvtx_filter" \
@@ -179,7 +193,7 @@ printf 'model=%s\nphase=%s\nlevel=%s\nselector=%s\ntarget=%s\nkernel_filter=%s\n
   --filter-mode global --launch-skip "$skip" --launch-count "$count" \
   --cache-control "$cache_mode" --clock-control "$clock_mode" \
   "${sections[@]}" --export "$prefix" \
-  "$python_bin" "$script_dir/profile_kernels.py" \
+  "$python_path" "$script_dir/profile_kernels.py" \
   --profile "$model" --requests-file "$requests" --case "$case_id" \
   --count 1 --batch-size "$batch_size" --warmup "$warmup" --batch-tokens "$batch_tokens" \
   --profiler cuda --delay-iters "$delay" --max-iters "$max_iters" "${graph_args[@]}" \
@@ -190,6 +204,6 @@ if [[ ! -f "${prefix}.ncu-rep" ]]; then
   echo "No NCU report. Check kernel filter, worker phase, profiler window and ${prefix}.log." >&2
   exit 1
 fi
-"$ncu_bin" --import "${prefix}.ncu-rep" --page raw --csv > "${prefix}.metrics.csv"
-"$ncu_bin" --import "${prefix}.ncu-rep" --page details > "${prefix}.details.txt"
+"${ncu_cmd[@]}" --import "${prefix}.ncu-rep" --page raw --csv > "${prefix}.metrics.csv"
+"${ncu_cmd[@]}" --import "${prefix}.ncu-rep" --page details > "${prefix}.details.txt"
 printf 'Report: %s\n' "${prefix}.ncu-rep"
