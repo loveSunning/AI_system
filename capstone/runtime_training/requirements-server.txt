@@ -1,0 +1,20 @@
+# Standalone W31 serving environment. Install into a fresh Linux x86_64
+# Python 3.10-3.12 venv: python -m pip install -r requirements-server.txt
+# Use an NVIDIA driver supporting the official vLLM 0.14.1 CUDA wheel.
+# Official dependency source:
+# https://github.com/vllm-project/vllm/blob/v0.14.1/requirements/cuda.txt
+# The vLLM release requires torch/torchaudio 2.9.1 and torchvision 0.24.1.
+# No sibling project, quantization tool, or custom middleware is required.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+vllm==0.14.1
+torch==2.9.1+cu128
+torchaudio==2.9.1+cu128
+torchvision==0.24.1+cu128
+transformers==4.57.3
+tokenizers==0.22.2
+compressed-tensors==0.13.0
+numpy==2.2.6
+httpx==0.28.1
+
+# Record all transitive versions after installation with python -m pip freeze.

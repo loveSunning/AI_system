@@ -1,0 +1,16 @@
+{
+  "model": "qwen3-8b",
+  "served_model_name": "qwen3-8b",
+  "dtype": "bfloat16",
+  "host": "127.0.0.1",
+  "port": 7081,
+  "max_model_len": 2048,
+  "max_num_seqs": 4,
+  "max_num_batched_tokens": 2048,
+  "gpu_memory_utilization": 0.85,
+  "tensor_parallel_size": 1,
+  "enforce_eager": true,
+  "seed": 42,
+  "quantization": "auto",
+  "trust_remote_code": false
+}
