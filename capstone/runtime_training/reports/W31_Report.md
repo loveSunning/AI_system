@@ -134,3 +134,12 @@
 执行命令：`python -m unittest discover -s capstone/runtime_training/tests -v`
 
 本机未安装 vLLM。以上测试使用本地模拟 API 和临时文件，不能代替真实模型加载、GPU 推理、实际 attention backend 或性能测量。所有 GPU 验收项继续保留待实测。
+
+## 9. Windows 局域网访问配置与检查
+
+2026-11-10，按本次要求将服务配置和启动器默认 host 改为 0.0.0.0，端口 7081；客户端和压测默认 URL 改为 http://192.168.88.91:7081。
+
+- 启动 dry-run 已确认生成 --host 0.0.0.0。
+- 本机完整回归：34 项测试全部通过。
+- 从当前 Windows 对 192.168.88.91:7081 发起 TCP 连接，返回 ConnectionRefusedError / WinError 10061，未进入 HTTP 或生成测试。
+- 远程访问验收尚未完成。服务器同步本次代码、重启服务并确认监听/容器端口映射后，再按 README 执行 Windows TCP、健康接口、模型接口和流式请求检查。

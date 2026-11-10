@@ -52,8 +52,12 @@ python "$P3/scripts/serve.py" --config "$P3/configs/server_w31.json" --dry-run
 python "$P3/scripts/serve.py" --config "$P3/configs/server_w31.json"
 ```
 
-默认服务是 `http://127.0.0.1:7081`，API 模型名称为 `qwen3-8b`；模型别名通过本项目 `scripts/model_config.py` 查找本地权重。基线固定 `max_model_len=2048`、`max_num_seqs=4`、eager 开、prefix caching 关、chunked prefill 开。以 `--dry-run` 的实际命令和启动日志为准，并把实际 attention backend 填入报告。
+服务器默认监听 `0.0.0.0:7081`，Windows 客户端默认访问 `http://192.168.88.91:7081`，API 模型名称为 `qwen3-8b`；模型别名通过本项目 `scripts/model_config.py` 查找本地权重。基线固定 `max_model_len=2048`、`max_num_seqs=4`、eager 开、prefix caching 关、chunked prefill 开。以 `--dry-run` 的实际命令和启动日志为准，并把实际 attention backend 填入报告。
 
+
+配置修改后需要重启正在运行的服务才能生效。如果旧进程仍在运行，先在它的终端按 `Ctrl+C` 停止，再执行上面的正式启动命令，核对日志中的监听地址和端口。
+
+若服务运行在容器内，容器还需将端口发布到宿主机，例如在原有 `docker run` 命令中加入 `-p 7081:7081`。`192.168.88.91` 应为 Windows 可达的服务宿主机地址；端口映射、路由和防火墙问题按下文步骤排查。
 如果 BF16 无法稳定容纳此负载，可在本项目中核验本地 AWQ W4A16 权重后，改用对应别名并重新记录完整基线：
 
 ```bash
@@ -62,14 +66,34 @@ python "$P3/scripts/serve.py" --config "$P3/configs/server_w31.json" --model qwe
 
 本周服务支持本地 BF16／FP16 未量化权重与 AWQ INT4 权重；AWQ 的自动选择使用 `awq_marlin`，实际 backend 与执行精度仍需 GPU 日志验证。权重别名与 API 名称是不同概念；客户端继续使用配置中的 `served_model_name`。若改服务配置，另存配置并记录差异，避免把 BF16 与量化结果放进同一组。
 
+## 在 Windows 访问远程 GPU 服务
+
+Windows 只运行标准库客户端，不需要安装 `torch` 或 `vllm`。先确认 Linux 服务已按上述配置重启，再在 PowerShell 检查 TCP、HTTP 和模型名称。
+
+```powershell
+$p3 = 'D:\workspace\learing\AI_system\capstone\runtime_training'
+$apiBase = 'http://192.168.88.91:7081'
+Test-NetConnection 192.168.88.91 -Port 7081
+$apiHeaders = @{}
+if ($env:VLLM_API_KEY) { $apiHeaders['Authorization'] = "Bearer $env:VLLM_API_KEY" }
+Invoke-RestMethod -Uri "$apiBase/health" -Headers $apiHeaders
+Invoke-RestMethod -Uri "$apiBase/v1/models" -Headers $apiHeaders
+python "$p3\scripts\client.py" --base-url $apiBase --model qwen3-8b --stream --no-proxy --thinking off --max-tokens 128 --prompt '请用三句话解释 prefill 和 decode。' --output-dir "$p3\runs\w31_remote_stream"
+python "$p3\scripts\benchmark.py" --base-url $apiBase --model qwen3-8b --workloads "$p3\configs\workloads_w31.jsonl" --concurrency 1 2 --requests-per-workload 2 --warmup 1 --repeats 1 --no-proxy --output-dir "$p3\runs\w31_remote_smoke"
+```
+
+客户端默认地址已经是 `http://192.168.88.91:7081`；这里显式指定便于核对。Python 命令通过 `--no-proxy` 直连局域网地址；需要认证时自动读取现有 `VLLM_API_KEY` 环境变量，也可用 `--api-key-env` 指定其他变量名。
+
+`TcpTestSucceeded` 为 false 时，先检查服务是否启动并监听 `0.0.0.0:7081`、容器是否发布端口、两台机器的路由及端口防火墙规则。TCP 成功但 HTTP 失败时检查服务日志、URL 与认证；`/v1/models` 成功后再检查模型别名和生成响应。以上步骤用于定位问题，不会修改路由或防火墙。单元测试中的本地模拟 HTTP／SSE 服务只用于代码检查，不代表此远程部署已经连通。
+
 ## 单请求、流式与压测
 
 在另一个终端设置相同 `P3` 后执行。客户端默认发送一条非流式请求；`--stream` 时即时输出 SSE 文本增量。
 
 ```bash
-python "$P3/scripts/client.py" --base-url http://127.0.0.1:7081 --model qwen3-8b --thinking off --max-tokens 128 --prompt "请用三句话解释 prefill 和 decode。" --output-dir "$P3/runs/w31_client"
-python "$P3/scripts/client.py" --base-url http://127.0.0.1:7081 --model qwen3-8b --thinking off --max-tokens 128 --prompt "请用三句话解释 KV cache。" --stream --output-dir "$P3/runs/w31_stream"
-python "$P3/scripts/benchmark.py" --base-url http://127.0.0.1:7081 --model qwen3-8b --workloads "$P3/configs/workloads_w31.jsonl" --concurrency 1 4 --requests-per-workload 20 --warmup 2 --repeats 3 --output-dir "$P3/runs/w31"
+python "$P3/scripts/client.py" --base-url http://192.168.88.91:7081 --model qwen3-8b --thinking off --max-tokens 128 --prompt "请用三句话解释 prefill 和 decode。" --output-dir "$P3/runs/w31_client"
+python "$P3/scripts/client.py" --base-url http://192.168.88.91:7081 --model qwen3-8b --thinking off --max-tokens 128 --prompt "请用三句话解释 KV cache。" --stream --output-dir "$P3/runs/w31_stream"
+python "$P3/scripts/benchmark.py" --base-url http://192.168.88.91:7081 --model qwen3-8b --workloads "$P3/configs/workloads_w31.jsonl" --concurrency 1 4 --requests-per-workload 20 --warmup 2 --repeats 3 --output-dir "$P3/runs/w31"
 ```
 
 先完成单请求，再跑小批量冒烟（如 `--concurrency 1 2 --requests-per-workload 2 --warmup 1 --repeats 1`），最后跑正式基线。正式压测为每类请求分别测试并发 1／4，每组预热后测量三轮，**没有把三类负载混在一个调度窗口中**；长短混合负载留到 W32。
@@ -85,7 +109,8 @@ python "$P3/scripts/summarize.py" "/absolute/path/to/the/run-directory"
 压测保留 `metrics.jsonl`（逐请求）、`cases.jsonl`（每类负载 × 并发 × 重复轮次的墙钟窗口）、`summary.json` 和 `summary.csv`。单请求默认保存前三项，可用 `summarize.py` 追加 CSV。汇总按 case 分开，不把不同负载、并发或重复轮次的吞吐直接相加。
 
 
-服务端生成的 `manifest.json` 与 `startup.log` 保留完整启动计划及日志。压测可追加 `--server-manifest "/absolute/path/to/server-run/manifest.json"`，将服务配置复制到本次记录作为来源说明；客户端不会据此证明当前连接的服务就是该 manifest 对应实例，仍应核对实际服务地址、日志和进程。默认仅绑定 localhost；从其他机器访问前需按自己的网络环境修改服务配置的 `host`，客户端 `--base-url` 使用实际可达地址。
+服务端生成的 `manifest.json` 与 `startup.log` 保留完整启动计划及日志。压测可追加 `--server-manifest "/absolute/path/to/server-run/manifest.json"`，将服务配置复制到本次记录作为来源说明；客户端不会据此证明当前连接的服务就是该 manifest 对应实例，仍应核对实际服务地址、日志和进程。服务端 `host=0.0.0.0` 表示监听本机所有网络接口；客户端连接目标使用 `192.168.88.91`，不能把 `0.0.0.0` 作为目的地址。Linux 服务所在主机也可显式传 `--base-url http://127.0.0.1:7081` 做本机检查；该 loopback 地址只指向执行客户端的那台机器。
+
 ## 指标必须这样读
 
 | 指标 | 当前客户端口径 |
@@ -112,6 +137,7 @@ python "$P3/scripts/summarize.py" "/absolute/path/to/the/run-directory"
 ## P3 后续任务
 
 来源：`00.AI-system-plan-optimized-v3.xlsx`／`案例3_Runtime与训练闭环`。W31 的代码准备与 GPU 验收分开记录；后续计划沿用原表。
+
 | 任务ID | 周次 | 实施任务 | 具体步骤 | 交付物 | 验收标准 | 资源与依赖 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | P3-01 | W31 | API与流式客户端 | 部署Qwen3-8B，固定采样/长度；记录请求到首token及完成时间 | server/client、metrics.jsonl | 可流式生成；EOS与长度截断记录明确 | 本地BF16或W4A16权重 | 代码已准备；GPU待实测 |

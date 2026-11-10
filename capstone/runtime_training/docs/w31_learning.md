@@ -10,7 +10,7 @@ W31 是原计划中的学习进度编号；本轮按 20 小时推进，不因为
 | --- | --- | --- |
 | Prefill／decode | prefill 处理输入并建立 KV；decode 逐步扩展序列并读取已有 KV | 为什么长输入常影响首输出等待，长输出常影响请求总耗时？ |
 | 模型与 tokenizer | 本地权重目录、模型 alias、API served name、dtype、量化方法、tokenizer／chat template | `qwen3-8b-awq` 权重别名与 API 的 `qwen3-8b` 为什么可以不同？ |
-| Chat API | `/health`、`/v1/models`、`/v1/chat/completions`；messages、model、stream、usage | 如何区分连通性、模型名称错误、模板错误和生成失败？ |
+| Chat API | 监听地址与目标地址；`/health`、`/v1/models`、`/v1/chat/completions`；messages、model、stream、usage | 如何从 Windows 区分网络连通性、模型名称错误、模板错误和生成失败？ |
 | 生成控制 | thinking、temperature、top_p、top_k、seed、max_tokens | 固定参数后，为什么仍不应直接宣称跨环境严格逐 token 可复现？ |
 | SSE 协议 | `data:` 事件、空行边界、增量文本、结束原因、`[DONE]`、usage 事件 | role／空文本／usage 事件会不会被误计成首 token？ |
 | API server | 请求校验、协议对象、模板与分词、把生成结果封装成 JSON 或 SSE | 哪些工作在服务前端完成？ |
@@ -80,7 +80,7 @@ flowchart TD
 | 阶段 | 时间 | 顺序与操作 | 验收 |
 | --- | ---: | --- | --- |
 | A：环境与概念 | 2h | 核验本项目 GPU 环境、vLLM 版本、模型目录；复习 prefill／decode／KV；检查服务 dry-run | 环境信息和启动参数能解释 |
-| B：单次 API | 3h | 启动服务；检查健康与模型列表；非流式调用；比较 `max_tokens` 小／大两种情况 | 原始响应、usage、结束原因保留 |
+| B：单次 API | 3h | 重启 Linux 服务；从 Windows 检查 TCP、健康与模型列表；非流式调用；比较 `max_tokens` 小／大两种情况 | 原始响应、usage、结束原因保留 |
 | C：流式客户端 | 3h | 运行 SSE；观察空事件、文本事件、usage、结束事件；理解异常与超时 | 可即时显示，能说明 TTFT 起止点 |
 | D：源码链路 | 5h | 沿请求依次读 API、AsyncLLM、EngineCore、scheduler／KV、runner | 一页请求链路图和源码索引 |
 | E：固定基线 | 5h | 小批量冒烟；三类请求 × 并发 1／4；预热 2 次、每组 20 请求、重复 3 轮 | 原始 JSONL、每轮汇总，无静默丢弃错误 |
@@ -103,6 +103,18 @@ flowchart TD
 
 本项目的服务启动直接使用 `python -m vllm.entrypoints.openai.api_server`，学习和运行所需脚本、配置及服务依赖清单全部位于本目录。完整命令在 [README](../README.md)。客户端默认生成控制沿用代码中的固定值，本周以 thinking off 和短输出先跑通，再固定负载。修改 thinking、dtype、精度、模板或输出预算会改变工作量，不能在比较中悄悄更换。
 
+### Windows 到 Linux 的服务链路
+
+本周部署约定：Linux 服务监听 **`0.0.0.0:7081`**，Windows 客户端默认连接 **`http://192.168.88.91:7081`**。`0.0.0.0` 是服务器绑定地址；客户端目的地址必须是服务主机的可达 IP。配置修改后要重启服务；本机模拟测试的 loopback 服务不等于此远程部署。
+
+按顺序验证，每一步只回答一个问题：
+
+1. `Test-NetConnection 192.168.88.91 -Port 7081`：Windows 能否建立 TCP 连接？
+2. `Invoke-RestMethod` 调用 `/health` 和 `/v1/models`：HTTP 服务是否可用，API 模型名称是什么？
+3. 本地 `scripts/client.py --stream --no-proxy`：是否能立即看到远程 SSE 文本增量？
+4. 本地 `scripts/benchmark.py --concurrency 1 2 --requests-per-workload 2 --warmup 1 --repeats 1 --no-proxy`：小规模并发和结果落盘是否成功？
+
+Windows 的客户端和压测仅需 Python 标准库，无需安装 GPU 运行时；认证沿用现有 `VLLM_API_KEY` 环境变量。完整 PowerShell 命令和绝对路径见 [README 的远程访问步骤](../README.md#在-windows-访问远程-gpu-服务)。若 Linux 在容器内，需确认已有启动命令包含端口发布，如 `-p 7081:7081`。无法连通时分层检查监听、容器端口、路由和防火墙；本项目不会自动修改网络配置。
 ## 6. 固定配置与负载设计
 
 基线配置是起点，不是最优配置：
@@ -110,6 +122,7 @@ flowchart TD
 | 配置 | 本周起点 | 为什么记录 |
 | --- | --- | --- |
 | 模型／版本 | Qwen3-8B，vLLM 0.14.1 | 保证源码、参数和测量对应 |
+| 监听／客户端地址 | 服务 `0.0.0.0:7081`；客户端 `http://192.168.88.91:7081` | 绑定地址与请求目的地址分别记录 |
 | dtype／量化 | 本地 BF16 权重；必要时核验 AWQ W4A16 并单独建立基线 | 权重内存和执行路径不同 |
 | max_model_len | 2048 | 输入加生成预算不能超上下文边界 |
 | max_num_seqs | 4 | 引擎每步可调度序列上限，与 HTTP 并发不同 |

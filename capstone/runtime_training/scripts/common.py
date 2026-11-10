@@ -46,7 +46,8 @@ def positive_float(value):
 
 
 def add_connection_arguments(parser):
-    parser.add_argument("--base-url", default="http://127.0.0.1:7081")
+    parser.add_argument("--base-url", default="http://192.168.88.91:7081",
+                        help="server URL for Windows/LAN clients; override for other deployments")
     parser.add_argument("--model", help="served alias; defaults to first /v1/models entry")
     parser.add_argument("--timeout", type=positive_float, default=180,
                         help="socket connect/read timeout, not a total request deadline")
