@@ -46,11 +46,8 @@ services:
         target: /workspace
         bind:
           create_host_path: false
-    networks:
-      - cutedsl_shared
 
+# Compose creates a project-scoped bridge network; Docker allocates its subnet.
 networks:
-  # Reuse the existing 172.22.0.0/16 bridge, without creating an overlapping subnet.
-  cutedsl_shared:
-    external: true
-    name: ${CUTEDSL_NETWORK:-cutedsl-dev_default}
+  default:
+    driver: bridge

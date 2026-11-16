@@ -33,11 +33,11 @@
 | 端口范围 | 宿主机和容器 TCP 7501–7599，同号映射 |
 | 共享内存 | 私有 IPC，默认 16gb |
 | bind mount | `/home/cdky/vic/project/02_kycv/WVisonGuard/train_part` → `/workspace` |
-| 网络 | 复用 external network `cutedsl-dev_default` |
-| 子网/网关 | 实测 `172.22.0.0/16` / `172.22.0.1` |
-| 容器 IP | Docker 自动分配，不占用旧容器 `172.22.0.2` |
+| 网络 | 独立 Compose bridge：`vllm033-dev_default`（默认项目名） |
+| 子网/网关 | Docker 从地址池自动分配，无需手动指定 |
+| 容器 IP | 在新项目网络中自动分配 |
 
-原 YAML 没有显式 IPAM，使用 Compose 默认 bridge；本次依据实际容器检查复用该现有网络，不能另建相同子网，否则会重叠。external 网络不会由新项目创建或删除。旧项目执行 down 时也可能因仍有新容器连接而无法删除该网络；若要迁移/删除网络，应先分别停止依赖容器。
+新项目使用独立 bridge 网络，不依赖 cutedsl-dev_default。Compose up 创建网络，down 删除本项目网络；不影响旧 cutedsl 网络。192.168.88.91 是物理机局域网 IP，Docker bridge 的子网和网关是容器内部网络地址。客户端通过 192.168.88.91:7501 进入宿主机，再由端口映射转发到新容器的 7501。此前记录的 172.22.0.0/16 和 172.22.0.1 属于旧容器网络，不需要写入新配置。
 
 **共享内存差异：**旧文件同时设置 `ipc: host` 和 `shm_size`，但 host IPC 使用宿主机 `/dev/shm`。新配置使用 `ipc: private` 使 16gb 设置生效。若确实需要跨容器共享 host IPC，可改为 host，但应接受 shm_size 不再控制其大小。
 
@@ -64,11 +64,10 @@ id -u
 id -g
 nvidia-smi
 docker compose version
-docker network inspect cutedsl-dev_default
 test -d /home/cdky/vic/project/02_kycv/WVisonGuard/train_part
 ```
 
-实测 Compose 是 v2.21.0；宿主机 NVIDIA Container Toolkit 已能支持现有 GPU 容器。编辑 `.env.vllm033`，核对工作目录、用户编号、网络名。路径指向 Linux 宿主机，不能填写 Windows 的 D:\ 路径。`create_host_path: false` 使路径错误时直接报错，不悄悄创建空目录。
+实测 Compose 是 v2.21.0；宿主机 NVIDIA Container Toolkit 已能支持现有 GPU 容器。编辑 `.env.vllm033`，核对工作目录和用户编号；无需设置 CUTEDSL_NETWORK，旧参数文件里该变量可以删除。路径指向 Linux 宿主机，不能填写 Windows 的 D:\ 路径。`create_host_path: false` 使路径错误时直接报错，不悄悄创建空目录。
 
 如果复制到了其它 Linux 目录，只需修改 cd；build context 相对于 Compose 文件解析，仍为 `../dockerfile`，挂载目录则由 `.env.vllm033` 的绝对路径决定。
 
@@ -94,7 +93,7 @@ docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml exec v
 
 没有镜像下载权限或网络故障时，build 会失败；不要在旧容器里临时 pip upgrade 来替代。固定 digest 保证基础镜像内容固定，apt 仓库包并未锁定到快照，所以整个派生镜像不是逐字节可复现构建。
 
-已通过远端 Docker Compose v2.21.0 的 config 解析检查：GPU count=all、99 个端口映射、16 GiB shm、外部网络及 bind mount 均正确解析。检查通过标准输入完成，build context 的实际路径仍需在复制后的目录用上述 config 命令确认。本次没有实际构建镜像，构建成功和以下验收都需后续执行确认。
+已通过远端 Docker Compose v2.21.0 的 config 解析检查：GPU count=all、99 个端口映射、16 GiB shm、独立默认网络及 bind mount 均正确解析。检查通过标准输入完成，build context 的实际路径仍需在复制后的目录用上述 config 命令确认。本次没有实际构建镜像，构建成功和以下验收都需后续执行确认。
 
 ## 5. 容器内检查
 
@@ -193,11 +192,11 @@ docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml logs -
 docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml stop
 docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml start
 
-# 删除此项目容器，不删除 bind mount 的工作文件，也不删除 external 网络。
+# 删除此项目容器和它的独立网络，不删除 bind mount 的工作文件。
 docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml down
 ```
 
-- external 网络不存在：检查旧项目实际网络名，修改 CUTEDSL_NETWORK；不要直接创建重叠的 172.22.0.0/16 网络。
+- 网络地址池耗尽或与局域网/VPN 路由冲突：先检查 docker network ls 和宿主机路由，再选择不冲突的地址池；默认不硬编码子网。
 - 端口被占用：先识别占用者，调整自己的端口映射或服务端口，不结束未知进程。
 - bind mount 写入失败：确认主机目录所有者与 UID/GID；不递归 chown 整个共享工作目录。
 - sudo 失败：确认运行的是新派生镜像，重新构建；官方基础镜像不保证普通用户免密 sudo。
@@ -213,3 +212,13 @@ docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml down
 - [NVIDIA CUDA 驱动兼容](https://docs.nvidia.com/deploy/cuda-compatibility/latest/minor-version-compatibility.html)
 
 GitHub 的该发布展示名称为 v0.33.0，实际 tag 为 v0.33.0rc3；Docker Hub v0.33.0 标签已单独查询确认。本配置使用明确镜像 digest，不依赖 GitHub tag 推导镜像是否存在。
+
+## 从旧版共享网络配置切换
+
+若此前已启动新容器，请先同步更新后的 Compose 文件，然后在 Linux 的 container 目录执行以下命令，仅重建新服务，不操作 cutedsl_dev：
+
+```bash
+docker compose --env-file .env.vllm033 -f docker-compose-vllm033-dev.yaml up -d --no-build --force-recreate vllm033_dev
+```
+
+这会中断新容器内正在运行的进程；手动启动的模型需重新启动。若尚未构建/启动，则直接按第 4 节首次执行即可。
