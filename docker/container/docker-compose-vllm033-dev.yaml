@@ -1,0 +1,56 @@
+name: ${VLLM_COMPOSE_PROJECT_NAME:-vllm033-dev}
+
+services:
+  vllm033_dev:
+    build:
+      context: ../dockerfile
+      dockerfile: Dockerfile.vllm033_dev
+      args:
+        USER_NAME: ${VLLM_DOCKER_USER:-vllmdev}
+        USER_UID: ${USER_ID:-1000}
+        USER_GID: ${GROUP_ID:-1000}
+    image: ${VLLM_DEV_IMAGE:-ai-system/vllm-dev:0.33.0-cu130}
+    container_name: ${VLLM_CONTAINER_NAME:-vllm033_dev}
+    hostname: vllm033-dev
+    restart: unless-stopped
+    init: true
+    stdin_open: true
+    tty: true
+    # Retain the existing cutedsl development-container privilege setting.
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    # Private IPC makes shm_size effective; ipc: host would use host /dev/shm.
+    ipc: private
+    shm_size: ${SHM_SIZE:-16gb}
+    working_dir: /workspace
+    ports:
+      - "7501-7599:7501-7599"
+    environment:
+      HISTFILE: /workspace/.vllm033_bash_history
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_VISIBLE_DEVICES: all
+      PYTHONUNBUFFERED: "1"
+      PYTHONNOUSERSITE: "1"
+      TORCH_CUDA_ARCH_LIST: "8.9"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_PATH:-/home/cdky/vic/project/02_kycv/WVisonGuard/train_part}
+        target: /workspace
+        bind:
+          create_host_path: false
+    networks:
+      - cutedsl_shared
+
+networks:
+  # Reuse the existing 172.22.0.0/16 bridge, without creating an overlapping subnet.
+  cutedsl_shared:
+    external: true
+    name: ${CUTEDSL_NETWORK:-cutedsl-dev_default}

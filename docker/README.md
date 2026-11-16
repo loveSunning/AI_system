@@ -1,5 +1,7 @@
 # CuTe DSL CUDA 12.9 开发容器
 
+vLLM 0.33.0 的独立开发容器、sudo/GPU/网络/挂载配置和启动步骤见 [vLLM 0.33.0 运行指南](README.vllm033.md)。
+
 这套配置面向 NVIDIA GeForce RTX 4090 D（Ada，Compute Capability 8.9），包含：
 
 - Ubuntu 22.04

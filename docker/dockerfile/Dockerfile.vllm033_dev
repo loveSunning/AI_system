@@ -1,0 +1,53 @@
+# Official vLLM 0.33.0 CUDA 13.0 runtime, verified 2026-11-16.
+# Override BASE_IMAGE with a reviewed tag@sha256 digest if needed.
+ARG BASE_IMAGE=vllm/vllm-openai:v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+FROM ${BASE_IMAGE}
+
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+ARG USER_NAME=vllmdev
+ARG USER_UID=1000
+ARG USER_GID=1000
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Keep the official Python / PyTorch / CUDA package combination unchanged.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sudo bash-completion ca-certificates curl git less vim-tiny \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu-derived bases can already have UID 1000: reuse that account.
+RUN set -eux; \
+    test "${USER_UID}" -gt 0; test "${USER_GID}" -gt 0; \
+    if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
+    fi; \
+    existing_user="$(getent passwd "${USER_UID}" | cut -d: -f1 || true)"; \
+    if [ -n "${existing_user}" ]; then \
+        if [ "${existing_user}" != "${USER_NAME}" ]; then \
+            usermod --login "${USER_NAME}" "${existing_user}"; \
+        fi; \
+        usermod --gid "${USER_GID}" --shell /bin/bash "${USER_NAME}"; \
+    else \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
+            --create-home --shell /bin/bash "${USER_NAME}"; \
+    fi; \
+    mkdir -p "/home/${USER_NAME}" /workspace; \
+    usermod --home "/home/${USER_NAME}" "${USER_NAME}"; \
+    chown "${USER_UID}:${USER_GID}" "/home/${USER_NAME}" /workspace; \
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USER_NAME}" > "/etc/sudoers.d/${USER_NAME}"; \
+    chmod 0440 "/etc/sudoers.d/${USER_NAME}"; \
+    visudo -cf "/etc/sudoers.d/${USER_NAME}"
+
+ENV HOME=/home/${USER_NAME} \
+    PYTHONUNBUFFERED=1 \
+    PYTHONNOUSERSITE=1
+WORKDIR /workspace
+USER ${USER_UID}:${USER_GID}
+
+# Metadata check does not initialize CUDA or require a GPU during build.
+RUN python3 -c "import importlib.metadata as m; assert m.version('vllm') == '0.33.0', m.version('vllm')" \
+    && sudo -n true
+
+# The official image starts `vllm serve`; development container stays idle.
+ENTRYPOINT []
+CMD ["sleep", "infinity"]

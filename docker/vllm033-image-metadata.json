@@ -1,0 +1,45 @@
+{
+  "creator": 34668080,
+  "id": 1379089254,
+  "images": [
+    {
+      "architecture": "amd64",
+      "features": "",
+      "variant": null,
+      "digest": "sha256:91ee972ab751fb7180bc71c175865e36b091686600dca783d52b2511399810b3",
+      "os": "linux",
+      "os_features": "",
+      "os_version": null,
+      "size": 9738495250,
+      "status": "active",
+      "last_pulled": "2026-11-16T01:50:41.570054302Z",
+      "last_pushed": "2026-11-02T02:55:33.323267915Z"
+    },
+    {
+      "architecture": "arm64",
+      "features": "",
+      "variant": null,
+      "digest": "sha256:e3481489818d3e563cae517b84ab959cc8b69f85a9fbb771c189140131ffc65c",
+      "os": "linux",
+      "os_features": "",
+      "os_version": null,
+      "size": 10901645367,
+      "status": "active",
+      "last_pulled": "2026-11-16T01:52:27.118880482Z",
+      "last_pushed": "2026-11-02T03:06:33.813435707Z"
+    }
+  ],
+  "last_updated": "2026-11-02T03:06:39.994524Z",
+  "last_updater": 34668080,
+  "last_updater_username": "vllmbot",
+  "name": "v0.33.0",
+  "repository": 22490489,
+  "full_size": 10901645367,
+  "v2": true,
+  "tag_status": "active",
+  "tag_last_pulled": "2026-11-16T01:52:27.118880482Z",
+  "tag_last_pushed": "2026-11-02T03:06:39.994524Z",
+  "media_type": "application/vnd.docker.distribution.manifest.list.v2+json",
+  "content_type": "image",
+  "digest": "sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e"
+}
